@@ -1,0 +1,6 @@
+# One pinned toolchain for every crate: native tests, the NEAR contract (cargo near) and the
+# OutLayer referee (wasm32-wasip2).
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown", "wasm32-wasip2"]

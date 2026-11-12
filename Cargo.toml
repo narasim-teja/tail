@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+# The contract builds for wasm32-unknown-unknown with cargo near and the referee module for
+# wasm32-wasip2; each is its own workspace so their dependency trees and profiles stay apart.
+exclude = ["contracts", "crates/referee-wasi", "spikes", "vendor"]
+
+[workspace.package]
+edition = "2021"
+license = "AGPL-3.0-only"
+publish = false
+# crates/referee-wasi builds these with Rust 1.94.1 (OutLayer WASI ceiling). clippy::incompatible_msrv
+# then rejects any newer std API at the gate, before it can break the enclave build.
+rust-version = "1.94"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+# Docs quote the spec (SHA256(seed ‖ k), eph_pk, …); backticking every term hurts readability.
+doc_markdown = "allow"
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true

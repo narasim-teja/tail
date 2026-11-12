@@ -1,0 +1,6 @@
+[install]
+exact = true
+
+[test]
+# Only our own tests: third-party clones and throwaway spikes have their own runners.
+pathIgnorePatterns = ["vendor/**", "spikes/**", "**/node_modules/**"]

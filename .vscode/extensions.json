@@ -1,0 +1,8 @@
+{
+  "recommendations": [
+    "biomejs.biome",
+    "rust-lang.rust-analyzer",
+    "swiftlang.swift-vscode",
+    "tamasfe.even-better-toml"
+  ]
+}
