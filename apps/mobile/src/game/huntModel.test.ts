@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DARK_LEAK_MS, HintKind, LOCK_EPOCHS, type PlayerKeys, TargetStatus } from "@tail/protocol";
 import { hudView } from "./hud";
-import { huntModel } from "./huntModel";
+import { huntModel, taggedLines } from "./huntModel";
 import type { SessionSnapshot } from "./session";
 
 const NOW = 1_800_000_000_000;
@@ -119,5 +119,33 @@ describe("hunt model", () => {
       target: "x",
     });
     expect(huntModel(snap({ hud }), ctx, NOW).tagged).toBe(true);
+  });
+
+  test("a tagged HUD that names the hunter carries the name to the tagged screen", () => {
+    const hud = hudView({
+      tick: 2,
+      epoch: 5,
+      lock: 0,
+      heat: 0,
+      head: 0n,
+      status: TargetStatus.Out,
+      target: "",
+      taggedBy: "maya.tail.testnet",
+    });
+    expect(huntModel(snap({ hud }), ctx, NOW).taggedBy).toBe("maya.tail.testnet");
+    expect(taggedLines("maya.tail.testnet", "$5.40")).toEqual({
+      title: "maya got you",
+      line: "Your head, $5.40, is theirs now.",
+      more: null,
+    });
+  });
+
+  test("a tagged HUD without a name falls back to your hunter and the replay", () => {
+    expect(huntModel(snap(), ctx, NOW).taggedBy).toBeNull();
+    expect(taggedLines(null, "$5.40")).toEqual({
+      title: "Tagged",
+      line: "Your head, $5.40, went to your hunter.",
+      more: "The replay shows who, once the match ends.",
+    });
   });
 });

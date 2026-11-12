@@ -41,6 +41,17 @@ describe("HUD", () => {
     expect(openHud(sk, seal(pk, encodeHud(hud), "tail/hud"))).toEqual(hud);
   });
 
+  test("an out player's sealed HUD names who took their head", () => {
+    const hud: Hud = { ...base, status: TargetStatus.Out, target: "", taggedBy: "maya.tail.testnet" };
+    const opened = openHud(sk, seal(pk, encodeHud(hud), "tail/hud"));
+    expect(opened).toEqual(hud);
+    expect(hudView(opened).taggedBy).toBe("maya.tail.testnet");
+  });
+
+  test("a HUD of a player still in names no one", () => {
+    expect(hudView(openHud(sk, seal(pk, encodeHud(base), "tail/hud"))).taggedBy).toBeNull();
+  });
+
   test("a HUD sealed under another context does not open", () => {
     expect(() => openHud(sk, seal(pk, encodeHud(base), "tail/keys"))).toThrow();
   });

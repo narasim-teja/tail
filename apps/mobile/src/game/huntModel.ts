@@ -38,6 +38,8 @@ export interface HuntModel {
   landedAtMs: number | null;
   tags: number;
   tagged: boolean;
+  /** Once tagged: the account that took your head, when the referee's HUD names it. */
+  taggedBy: string | null;
   /** No HUD yet: the referee has not ticked since you started. */
   waiting: boolean;
   banner: Banner | null;
@@ -54,6 +56,27 @@ export interface HuntModel {
 }
 
 export const money = (units: bigint) => `$${formatAmount(units)}`;
+
+/** "maya.tail-dev.testnet" → "maya": friends know each other by handle. */
+export const handleOf = (account: string) => account.split(".")[0] ?? account;
+
+/**
+ * The tagged screen's lines. The HUD names who took your head; without the name (a HUD from a
+ * referee older than the field) it says "your hunter" and points at the replay instead.
+ */
+export function taggedLines(
+  taggedBy: string | null,
+  head: string,
+): { title: string; line: string; more: string | null } {
+  if (taggedBy) {
+    return { title: `${handleOf(taggedBy)} got you`, line: `Your head, ${head}, is theirs now.`, more: null };
+  }
+  return {
+    title: "Tagged",
+    line: `Your head, ${head}, went to your hunter.`,
+    more: "The replay shows who, once the match ends.",
+  };
+}
 
 export function hintOptions(stake: bigint): HintOption[] {
   return [
@@ -113,6 +136,7 @@ export function huntModel(
     landedAtMs: s.landed?.atMs ?? null,
     tags: s.tags,
     tagged: hud?.status === "out",
+    taggedBy: hud?.taggedBy ?? null,
     waiting: hud === null,
     banner,
     me: s.lastFix ? { lat: s.lastFix.lat, lon: s.lastFix.lon, heading: s.lastFix.heading } : null,

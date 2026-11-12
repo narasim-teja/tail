@@ -7,7 +7,7 @@ import type { HintKind } from "@tail/protocol";
 import { useEffect, useRef, useState } from "react";
 import { Animated, Linking, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { type HuntModel, huntModel } from "../game/huntModel";
+import { type HuntModel, handleOf, huntModel, taggedLines } from "../game/huntModel";
 import { useApp } from "../state/app";
 import { Icon } from "../ui/brand";
 import { heatIntervalMs } from "../ui/cadence";
@@ -30,9 +30,6 @@ import { ease, useReduceMotion } from "../ui/motion";
 import { HintSheet } from "../ui/sheet";
 import { color, font, maxScale, motion, radius, space } from "../ui/theme";
 import { DISPATCH_MS, DispatchStrip, WarningBanner } from "../ui/top";
-
-/** "maya.tail-dev.testnet" → "maya": friends know each other by handle. */
-export const handleOf = (account: string) => account.split(".")[0] ?? account;
 
 export interface HuntActions {
   onStrike: () => void;
@@ -91,7 +88,7 @@ export function HuntView({
   }, [m.landedAtMs, reduceMotion, flash, slide]);
 
   if (m.blocked) return <BlockedView what={m.blocked} onOpenSettings={actions.onOpenSettings} />;
-  if (m.tagged) return <TaggedView head={m.head} onResults={actions.onResults} />;
+  if (m.tagged) return <TaggedView head={m.head} taggedBy={m.taggedBy} onResults={actions.onResults} />;
 
   const tone: Tone = full ? "persimmon" : "paper";
   return (
@@ -212,17 +209,28 @@ export function HuntView({
   );
 }
 
-/** Tagged: the screen drops to ink. Who tagged you is not in the HUD yet (see README). */
-export function TaggedView({ head, onResults }: { head: string; onResults: () => void }) {
+/** Tagged: the screen drops to ink and names who got you, from the referee's HUD. */
+export function TaggedView({
+  head,
+  taggedBy,
+  onResults,
+}: {
+  head: string;
+  taggedBy: string | null;
+  onResults: () => void;
+}) {
+  const t = taggedLines(taggedBy, head);
   return (
     <Screen tone="ink" scroll={false} footer={<Button title="See results" onPress={onResults} />}>
       <View style={styles.center}>
         <Icon name="strike" size={56} tint={color.paper} />
-        <Display center>Tagged</Display>
-        <Body center>{`Your head, ${head}, went to your hunter.`}</Body>
-        <Caption center muted>
-          The replay shows who, once the match ends.
-        </Caption>
+        <Display center>{t.title}</Display>
+        <Body center>{t.line}</Body>
+        {t.more ? (
+          <Caption center muted>
+            {t.more}
+          </Caption>
+        ) : null}
       </View>
     </Screen>
   );

@@ -67,6 +67,8 @@ export interface HudView {
   canStrike: boolean;
   leak: { lat: number; lon: number } | null;
   hint: { id: number; text: string } | null;
+  /** Once out: the account that took your head. */
+  taggedBy: string | null;
 }
 
 const cellCenter = (c: GridCell) => ({ lat: c.latE7 / 1e7, lon: c.lonE7 / 1e7 });
@@ -83,6 +85,7 @@ export function hudView(h: Hud): HudView {
     canStrike: status === "hunting" && h.lock >= LOCK_EPOCHS,
     leak: h.leak ? cellCenter(h.leak) : null,
     hint: h.hintFact ? { id: h.hintFact.hintId, text: describeHintFact(h.hintFact) } : null,
+    taggedBy: h.taggedBy ?? null,
   };
 }
 
