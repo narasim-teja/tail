@@ -4,19 +4,28 @@
 //
 //   cd contracts/tail && cargo near build non-reproducible-wasm && cd e2e && bun run deploy.ts --fresh
 //
-// `--fresh` is required when the account exists: it deletes it first (NEAR back to the parent),
-// which wipes every balance and match on it. Never run it while a match is live.
+// When the account exists, pass one of:
+//   --upgrade  deploy the new code in place with the account's full-access key from .keys/; state
+//              (balances, matches, pinned keys) is kept, so only use it when the state layout is
+//              unchanged. Checks the on-chain code hash and that the real keys are still pinned.
+//   --fresh    delete the account first (NEAR back to the parent), which wipes every balance and
+//              match on it. Never run it while a match is live.
 
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { Account, type KeyPairString } from "near-api-js";
 import {
   ALLOWED_TOKENS,
   createContract,
   deleteContract,
   exists,
+  keysDir,
   log,
   must,
   parentId,
   provider,
   registerOnToken,
+  wasm,
 } from "./common.ts";
 
 const contractId = `tail.${parentId}`;
@@ -46,22 +55,50 @@ if (outlayerVrf !== vrfPk) throw new Error(`referee vrf_pk ${vrfPk} is not OutLa
 log(`referee_pk ${refereePk}`);
 log(`vrf_pk ${vrfPk} (matches OutLayer /vrf/pubkey)`);
 
-if (await exists(contractId)) {
-  if (!process.argv.includes("--fresh"))
-    throw new Error(`${contractId} exists; pass --fresh to delete and recreate it`);
-  await deleteContract(contractId);
+if ((await exists(contractId)) && process.argv.includes("--upgrade")) {
+  const key = JSON.parse(readFileSync(`${keysDir}${contractId}.json`, "utf8")).private_key as KeyPairString;
+  const code = wasm();
+  await new Account(contractId, provider, key).deployContract(code);
+  const local = bs58(createHash("sha256").update(code).digest());
+  // The view can trail the deploy by a block or two, so re-read for a few seconds.
+  let onChain = { code_hash: "" };
+  for (let i = 0; i < 10 && onChain.code_hash !== local; i++) {
+    if (i) await Bun.sleep(1_000);
+    onChain = (await provider.viewAccount({ accountId: contractId })) as unknown as { code_hash: string };
+  }
+  if (onChain.code_hash !== local)
+    throw new Error(`code hash ${onChain.code_hash} is not the local ${local}`);
+  log(`upgraded ${contractId} in place: code hash ${local} (${code.length} bytes)`);
+} else {
+  if (await exists(contractId)) {
+    if (!process.argv.includes("--fresh")) {
+      throw new Error(`${contractId} exists; pass --upgrade (keep state) or --fresh (wipe it)`);
+    }
+    await deleteContract(contractId);
+  }
+  await createContract(contractId, {
+    owner: parentId,
+    referee_pk: refereePk,
+    vrf_pk: vrfPk,
+    allowed_tokens: ALLOWED_TOKENS,
+  });
+  // The contract must be registered on each token before anyone can ft_transfer_call to it.
+  for (const token of ALLOWED_TOKENS) await registerOnToken(token, contractId);
 }
-await createContract(contractId, {
-  owner: parentId,
-  referee_pk: refereePk,
-  vrf_pk: vrfPk,
-  allowed_tokens: ALLOWED_TOKENS,
-});
-// The contract must be registered on each token before anyone can ft_transfer_call to it.
-for (const token of ALLOWED_TOKENS) await registerOnToken(token, contractId);
 const config = (await provider.callFunction({ contractId, method: "get_config", args: {} })) as Record<
   string,
   unknown
 >;
 if (config["referee_pk"] !== refereePk || config["vrf_pk"] !== vrfPk) throw new Error("pinned keys differ");
 log(JSON.stringify(config, null, 1));
+
+function bs58(bytes: Uint8Array) {
+  const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  let n = BigInt(`0x${Buffer.from(bytes).toString("hex")}`);
+  let out = "";
+  while (n > 0n) {
+    out = alphabet[Number(n % 58n)] + out;
+    n /= 58n;
+  }
+  return out;
+}

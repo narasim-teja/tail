@@ -9,7 +9,7 @@
 //! balance per allowed token, and `create_match` pays for the largest a match can grow. Nothing
 //! later allocates new storage, so a refund can never fail for lack of it.
 
-use curve25519_dalek::edwards::CompressedEdwardsY;
+use curve25519_dalek::edwards::{CompressedEdwardsY, EdwardsPoint};
 use near_sdk::borsh::BorshDeserialize;
 use near_sdk::json_types::{Base64VecU8, U128};
 use near_sdk::serde_json::json;
@@ -61,7 +61,11 @@ pub const BALANCE_RECORD_BYTES: u128 = 200;
 
 /// Circle's USDC is untested here; 20 Tgas is the usual NEP-141 transfer budget.
 const FT_TRANSFER_GAS: Gas = Gas::from_tgas(20);
-const ON_WITHDRAW_GAS: Gas = Gas::from_tgas(5);
+/// The refund path writes one balance and logs; it burns well under this (see the e2e), with margin.
+const ON_WITHDRAW_GAS: Gas = Gas::from_tgas(10);
+/// What `withdraw` must be called with: its own execution, the 20 + 10 Tgas it attaches, and the
+/// receipt costs. Less could leave the callback without the gas to restore a failed transfer.
+pub const WITHDRAW_MIN_GAS: Gas = Gas::from_tgas(50);
 
 #[near(serializers = [borsh, json])]
 #[serde(rename_all = "snake_case")]
@@ -246,16 +250,21 @@ impl Tail {
         self.payouts.insert(account_id, payout_account);
     }
 
-    /// Repoints `account_id`'s payout. Only its current payout account can, so a stolen player key
-    /// (which can only call the game methods) cannot redirect winnings.
+    /// Repoints `account_id`'s payout. Either the account itself or its current payout account
+    /// may, with exactly 1 yocto attached. Function-call keys cannot attach a deposit, so a stolen
+    /// player key cannot redirect winnings, while the account's owner (full-access key) can always
+    /// undo a payout its parent set at registration.
+    #[payable]
     pub fn set_payout(&mut self, account_id: AccountId, payout_account: AccountId) {
+        assert_one_yocto();
         let current = self
             .payouts
             .get(&account_id)
             .unwrap_or_else(|| env::panic_str("account not registered"));
+        let caller = env::predecessor_account_id();
         require!(
-            env::predecessor_account_id() == *current,
-            "only the current payout account can change it"
+            caller == account_id || caller == *current,
+            "only the account or its current payout account can change it"
         );
         check_payout(&payout_account);
         self.payouts.insert(account_id, payout_account);
@@ -280,8 +289,12 @@ impl Tail {
     /// Pays `amount` of `token` from the caller's internal balance to their payout account. The
     /// balance is debited first and restored by `on_withdraw` if the transfer fails. The contract
     /// attaches the 1 yocto `ft_transfer` needs, because function-call keys cannot (F18). Call it
-    /// with at least 40 Tgas: 20 go to `ft_transfer` and 5 to the callback.
+    /// with at least 50 Tgas: 20 go to `ft_transfer` and 10 to the callback.
     pub fn withdraw(&mut self, token: AccountId, amount: U128) -> Promise {
+        require!(
+            env::prepaid_gas() >= WITHDRAW_MIN_GAS,
+            "withdraw needs at least 50 Tgas"
+        );
         let who = env::predecessor_account_id();
         let payout = self
             .payouts
@@ -866,9 +879,15 @@ fn parse_key(s: &str, what: &str) -> [u8; 32] {
 }
 
 pub fn is_strong_key(pk: &[u8; 32]) -> bool {
+    canonical_point(pk).is_some_and(|p| !p.is_small_order() && p.is_torsion_free())
+}
+
+/// The curve point `pk` encodes, only if `pk` is its one canonical encoding (`y < p`). Decompression
+/// alone also accepts `y + p`, a second spelling of the same key.
+pub fn canonical_point(pk: &[u8; 32]) -> Option<EdwardsPoint> {
     CompressedEdwardsY(*pk)
         .decompress()
-        .is_some_and(|p| p.compress().0 == *pk && !p.is_small_order() && p.is_torsion_free())
+        .filter(|p| p.compress().0 == *pk)
 }
 
 fn root_view(r: &Root) -> RootView {

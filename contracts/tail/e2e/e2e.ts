@@ -320,12 +320,20 @@ async function run() {
   const out = await fails(() => callAs(p1.acct, "withdraw", { token: TOKEN, amount: "1" }, 0n, 50));
   record("the tagged player has nothing to withdraw", out.includes("balance too small"), out);
 
-  const refunded = await callAs<boolean>(
-    p2.acct,
-    "withdraw",
-    { token: TOKEN, amount: settled[2]?.toString() },
-    0n,
-    50,
+  const res = await p2.acct.callFunctionRaw({
+    contractId,
+    methodName: "withdraw",
+    args: { token: TOKEN, amount: settled[2]?.toString() },
+    gas: teraToGas(50),
+  });
+  const status = res.status as { SuccessValue?: string };
+  const refunded = JSON.parse(Buffer.from(status.SuccessValue ?? "", "base64").toString() || "null");
+  // The refund callback is the receipt that logs the restore; its gas is the margin to watch.
+  const callback = res.receipts_outcome.find((r) =>
+    r.outcome.logs.some((l) => l.includes("balance restored")),
+  );
+  gasNotes.push(
+    `on_withdraw refund path: ${(Number(callback?.outcome.gas_burnt ?? 0) / 1e12).toFixed(2)} Tgas of 10`,
   );
   record(
     "a withdraw whose ft_transfer fails restores the internal balance",

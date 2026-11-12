@@ -1836,11 +1836,15 @@ fn credits_withdraws_and_failed_withdraw_refunds_never_grow_storage() {
     assert_eq!(fx.bal("alice.testnet"), 900);
 }
 
+fn as_with_one_yocto(fx: &Fx, who: &str) {
+    ctx(&acc(who), fx.now, NearToken::from_yoctonear(1));
+}
+
 #[test]
-fn the_payout_account_can_repoint_the_payout() {
+fn the_payout_account_can_repoint_the_payout_with_one_yocto() {
     let mut fx = Fx::empty();
     fx.register_with_payout("alice.testnet", "alice-cold.testnet");
-    fx.as_("alice-cold.testnet");
+    as_with_one_yocto(&fx, "alice-cold.testnet");
     fx.c.set_payout(acc("alice.testnet"), acc("alice-new.testnet"));
     assert_eq!(
         fx.c.get_payout(acc("alice.testnet")),
@@ -1849,12 +1853,372 @@ fn the_payout_account_can_repoint_the_payout() {
 }
 
 #[test]
-#[should_panic(expected = "only the current payout account can change it")]
-fn the_player_key_cannot_repoint_a_payout_held_by_another_account() {
+#[should_panic(expected = "Requires attached deposit of exactly 1 yoctoNEAR")]
+fn the_payout_account_cannot_repoint_the_payout_without_one_yocto() {
+    let mut fx = Fx::empty();
+    fx.register_with_payout("alice.testnet", "alice-cold.testnet");
+    fx.as_("alice-cold.testnet");
+    fx.c.set_payout(acc("alice.testnet"), acc("alice-new.testnet"));
+}
+
+/// Re-review regression: a parent registered its child with a payout the parent controlled, and
+/// the child could never take it back.
+#[test]
+fn the_account_itself_can_override_a_payout_its_parent_set() {
+    let mut fx = Fx::empty();
+    ctx(&acc("relay.testnet"), fx.now, fx.registration_deposit());
+    fx.c.register_for(acc("victim.relay.testnet"), acc("thief.testnet"));
+    as_with_one_yocto(&fx, "victim.relay.testnet");
+    fx.c.set_payout(acc("victim.relay.testnet"), acc("victim.relay.testnet"));
+    fx.top_up("victim.relay.testnet", &usdc(), 5);
+    fx.as_("victim.relay.testnet");
+    let _ = fx.c.withdraw(usdc(), U128(5));
+    let (_, args, _, _) = ft_transfer_receipt();
+    assert_eq!(args["receiver_id"], "victim.relay.testnet");
+}
+
+/// A function-call key cannot attach the 1 yocto, so a stolen player key cannot redirect winnings.
+#[test]
+#[should_panic(expected = "Requires attached deposit of exactly 1 yoctoNEAR")]
+fn a_player_function_call_key_cannot_repoint_its_payout() {
     let mut fx = Fx::empty();
     fx.register_with_payout("alice.testnet", "alice-cold.testnet");
     fx.as_("alice.testnet");
     fx.c.set_payout(acc("alice.testnet"), acc("thief.testnet"));
+}
+
+#[test]
+#[should_panic(expected = "only the account or its current payout account can change it")]
+fn a_stranger_cannot_repoint_a_payout_even_with_one_yocto() {
+    let mut fx = Fx::empty();
+    fx.register_with_payout("alice.testnet", "alice-cold.testnet");
+    as_with_one_yocto(&fx, "mallory.testnet");
+    fx.c.set_payout(acc("alice.testnet"), acc("mallory.testnet"));
+}
+
+#[test]
+#[should_panic(expected = "account not registered")]
+fn repointing_the_payout_of_an_unregistered_account_is_refused() {
+    let mut fx = Fx::empty();
+    as_with_one_yocto(&fx, "alice.testnet");
+    fx.c.set_payout(acc("alice.testnet"), acc("alice-cold.testnet"));
+}
+
+#[test]
+#[should_panic(expected = "payout cannot be this contract")]
+fn repointing_the_payout_to_this_contract_is_refused() {
+    let mut fx = Fx::empty();
+    fx.register("alice.testnet");
+    as_with_one_yocto(&fx, "alice.testnet");
+    fx.c.set_payout(acc("alice.testnet"), contract());
+}
+
+fn invites(n: usize) -> Vec<AccountId> {
+    (0..n).map(|i| acc(&format!("i{i:02}.testnet"))).collect()
+}
+
+/// Re-review: the invite cap bounds what `create_match` charged for, so it must hold.
+#[test]
+#[should_panic(expected = "too many invites")]
+fn create_match_with_more_invites_than_seats_is_refused() {
+    let mut fx = Fx::empty();
+    fx.create(MatchConfig {
+        invites: invites(MAX_INVITES + 1),
+        ..cfg(usdc(), 0)
+    });
+}
+
+#[test]
+fn create_match_with_one_invite_per_seat_is_accepted() {
+    let mut fx = Fx::empty();
+    fx.id = fx.create(MatchConfig {
+        invites: invites(MAX_INVITES),
+        ..cfg(usdc(), 0)
+    });
+    assert_eq!(fx.view().invites.len(), MAX_INVITES);
+}
+
+#[test]
+#[should_panic(expected = "too many invites")]
+fn set_invites_with_more_invites_than_seats_is_refused() {
+    let mut fx = Fx::empty();
+    fx.id = fx.create(cfg(usdc(), 0));
+    fx.as_("host.testnet");
+    fx.c.set_invites(hex::encode(fx.id), invites(MAX_INVITES + 1));
+}
+
+#[test]
+fn set_invites_with_one_invite_per_seat_is_accepted() {
+    let mut fx = Fx::empty();
+    fx.id = fx.create(cfg(usdc(), 0));
+    fx.as_("host.testnet");
+    fx.c.set_invites(hex::encode(fx.id), invites(MAX_INVITES));
+    assert_eq!(fx.view().invites.len(), MAX_INVITES);
+}
+
+/// A running match whose Start committed to the VRF signature over `alpha`.
+fn running_with_alpha(alpha: &str) -> Fx {
+    let mut fx = Fx::locked();
+    let Verdict::Start {
+        players_hash,
+        start_ms,
+        end_ms,
+        ..
+    } = fx.start_body()
+    else {
+        unreachable!()
+    };
+    fx.verdict(Verdict::Start {
+        players_hash,
+        ring_commit: ring_commit(&vrf_sig(alpha)),
+        start_ms,
+        end_ms,
+    });
+    fx
+}
+
+/// Re-review: the alpha cap bounds the stored reveal, so it must hold.
+#[test]
+#[should_panic(expected = "alpha too long")]
+fn end_with_an_alpha_one_byte_over_the_limit_is_refused() {
+    let id = Fx::locked().id;
+    let alpha = format!("{}:{}", "v".repeat(MAX_ALPHA_LEN - 32), hex::encode(id));
+    assert_eq!(alpha.len(), MAX_ALPHA_LEN + 1);
+    let mut fx = running_with_alpha(&alpha);
+    fx.verdict(Verdict::End {
+        vrf_signature: vrf_sig(&alpha),
+        alpha,
+        log_size: 1,
+        root: [0; 32],
+    });
+}
+
+#[test]
+fn end_with_an_alpha_exactly_at_the_limit_settles() {
+    let id = Fx::locked().id;
+    let alpha = format!("{}:{}", "v".repeat(MAX_ALPHA_LEN - 33), hex::encode(id));
+    assert_eq!(alpha.len(), MAX_ALPHA_LEN);
+    let mut fx = running_with_alpha(&alpha);
+    fx.verdict(Verdict::End {
+        vrf_signature: vrf_sig(&alpha),
+        alpha,
+        log_size: 1,
+        root: [0; 32],
+    });
+    assert_eq!(fx.view().phase, Phase::Ended);
+}
+
+/// `y = 3` is on the curve with large order. `p + 3` spells the same point a second way; only
+/// the canonical spelling is a key. (No torsion-free point has `y < 19`, so the torsion check
+/// would also catch this one; this test pins the canonical check on its own.)
+#[test]
+fn a_non_canonical_encoding_of_a_large_order_point_is_refused() {
+    let mut canonical = [0u8; 32];
+    canonical[0] = 3;
+    let mut non_canonical = [0xff; 32];
+    non_canonical[0] = 0xed + 3; // p = 2^255 - 19 is ed ff … ff 7f in little endian
+    non_canonical[31] = 0x7f;
+    let point = CompressedEdwardsY(canonical).decompress().unwrap();
+    assert!(!point.is_small_order());
+    assert_eq!(
+        CompressedEdwardsY(non_canonical).decompress(),
+        Some(point),
+        "same point"
+    );
+    assert_eq!(canonical_point(&non_canonical), None);
+    assert!(!is_strong_key(&non_canonical));
+}
+
+#[test]
+fn the_canonical_encoding_of_a_large_order_point_decodes() {
+    let mut canonical = [0u8; 32];
+    canonical[0] = 3;
+    assert!(canonical_point(&canonical).is_some_and(|p| !p.is_small_order()));
+}
+
+#[test]
+#[should_panic(expected = "attach exactly registration_deposit")]
+fn register_for_with_one_yocto_more_than_the_registration_deposit_is_refused() {
+    let mut fx = Fx::empty();
+    let more = fx
+        .registration_deposit()
+        .saturating_add(NearToken::from_yoctonear(1));
+    ctx(&acc("alice.testnet"), fx.now, more);
+    fx.c.register_for(acc("alice.testnet"), acc("alice.testnet"));
+}
+
+#[test]
+fn register_for_with_exactly_the_registration_deposit_is_accepted() {
+    let mut fx = Fx::empty();
+    ctx(&acc("alice.testnet"), fx.now, fx.registration_deposit());
+    fx.c.register_for(acc("alice.testnet"), acc("alice.testnet"));
+    assert_eq!(fx.c.get_payout(acc("alice.testnet")), Some(acc("alice.testnet")));
+}
+
+fn as_with_gas(fx: &Fx, who: &str, gas: Gas) {
+    testing_env!(VMContextBuilder::new()
+        .current_account_id(contract())
+        .predecessor_account_id(acc(who))
+        .signer_account_id(acc(who))
+        .block_timestamp(fx.now * 1_000_000)
+        .prepaid_gas(gas)
+        .build());
+}
+
+#[test]
+#[should_panic(expected = "withdraw needs at least 50 Tgas")]
+fn a_withdraw_with_less_than_fifty_tgas_is_refused() {
+    let mut fx = Fx::empty();
+    fx.register("alice.testnet");
+    fx.top_up("alice.testnet", &usdc(), 900);
+    as_with_gas(&fx, "alice.testnet", Gas::from_tgas(49));
+    let _ = fx.c.withdraw(usdc(), U128(900));
+}
+
+#[test]
+fn a_withdraw_with_fifty_tgas_gives_the_refund_callback_ten() {
+    let mut fx = Fx::empty();
+    fx.register("alice.testnet");
+    fx.top_up("alice.testnet", &usdc(), 900);
+    as_with_gas(&fx, "alice.testnet", WITHDRAW_MIN_GAS);
+    let _ = fx.c.withdraw(usdc(), U128(900));
+    let callback = get_created_receipts()
+        .into_iter()
+        .nth(1)
+        .expect("the callback receipt");
+    let MockAction::FunctionCallWeight {
+        method_name,
+        prepaid_gas,
+        ..
+    } = &callback.actions[0]
+    else {
+        panic!("not a function call")
+    };
+    assert_eq!(method_name, b"on_withdraw");
+    assert_eq!(*prepaid_gas, Gas::from_tgas(10));
+}
+
+/// Every stored byte outside the contract's own state record, as NEAR counts it.
+fn stored_bytes() -> u128 {
+    let s = near_sdk::mock::with_mocked_blockchain(near_sdk::MockedBlockchain::take_storage);
+    let n = s
+        .iter()
+        .filter(|(k, _)| k.as_slice() != b"STATE")
+        .map(|(k, v)| (k.len() + v.len() + 40) as u128)
+        .sum();
+    near_sdk::env::set_blockchain_interface(near_sdk::MockedBlockchain::new(
+        VMContextBuilder::new().current_account_id(contract()).build(),
+        near_sdk::test_vm_config(),
+        near_sdk::RuntimeFeesConfig::test(),
+        vec![],
+        s,
+        std::collections::HashMap::default(),
+        None,
+    ));
+    n
+}
+
+/// Re-review port: through the real methods with every id at 64 characters (one token too),
+/// registrations with repointed payouts, one full match (invites, sponsors, 120 checkpoints, a
+/// maximal alpha, End) and one aborted, and withdraws refunded: storage stays within what the
+/// deposits paid for.
+#[test]
+fn storage_never_exceeds_the_deposits_with_maximal_ids() {
+    let long = |p: &str| acc(&format!("{p}{}", "x".repeat(64 - p.len())));
+    let tok = acc(&"f".repeat(64));
+    let _ = deploy();
+    ctx(&contract(), T0, NearToken::from_yoctonear(0));
+    let c = Tail::new(
+        owner(),
+        pk_hex(&referee()),
+        pk_hex(&vrf()),
+        vec![usdc(), tok.clone()],
+    );
+    let mut fx = Fx {
+        c,
+        now: T0,
+        id: [0; 16],
+        seq: 0,
+    };
+    let mut paid: u128 = 0;
+    let players: Vec<AccountId> = (0..MAX_PLAYERS).map(|i| long(&format!("p{i:02}"))).collect();
+    let sponsors: Vec<AccountId> = (0..MAX_SPONSORS).map(|i| long(&format!("s{i}"))).collect();
+    for a in players.iter().chain(sponsors.iter()) {
+        ctx(a, fx.now, fx.registration_deposit());
+        fx.c.register_for(a.clone(), long("payout"));
+        paid += PAYOUT_RECORD_BYTES + 2 * BALANCE_RECORD_BYTES;
+        ctx(&long("payout"), fx.now, NearToken::from_yoctonear(1));
+        fx.c.set_payout(a.clone(), long("payout2"));
+    }
+    for round in 0..2 {
+        ctx(&long("host"), fx.now, match_storage_deposit());
+        let id_hex = fx.c.create_match(MatchConfig {
+            max_players: MAX_PLAYERS,
+            invites: players.clone(),
+            sponsors: sponsors.clone(),
+            start_by_ms: fx.now + 3_600_000,
+            ..cfg(tok.clone(), 1)
+        });
+        paid += MATCH_STORAGE_BYTES;
+        fx.id = parse_hex(&id_hex, "match_id");
+        fx.seq = 0;
+        for p in &players {
+            ctx(&tok, fx.now, NearToken::from_yoctonear(0));
+            let msg = format!(r#"{{"credit":"{p}"}}"#);
+            assert_eq!(fx.c.ft_on_transfer(long("m"), U128(u128::MAX / 64), msg).0, 0);
+            ctx(p, fx.now, NearToken::from_yoctonear(0));
+            fx.c.join_match(id_hex.clone());
+        }
+        for s in &sponsors {
+            ctx(&tok, fx.now, NearToken::from_yoctonear(0));
+            let msg = format!(r#"{{"sponsor":"{id_hex}"}}"#);
+            assert_eq!(fx.c.ft_on_transfer(s.clone(), U128(u128::MAX / 64), msg).0, 0);
+        }
+        ctx(&long("host"), fx.now, NearToken::from_yoctonear(0));
+        fx.c.lock_lobby(id_hex.clone());
+        if round == 1 {
+            fx.now += LOCK_MS;
+            fx.abort();
+        } else {
+            let alpha = format!("{}:{}", "v".repeat(MAX_ALPHA_LEN - 33), id_hex);
+            let ids: Vec<&str> = players.iter().map(|a| a.as_str()).collect();
+            fx.verdict(Verdict::Start {
+                players_hash: players_hash(&ids),
+                ring_commit: ring_commit(&vrf_sig(&alpha)),
+                start_ms: fx.now,
+                end_ms: fx.now + DURATION,
+            });
+            for i in 0..MAX_CHECKPOINTS as u64 {
+                fx.verdict(Verdict::Checkpoint {
+                    log_size: u64::MAX - i,
+                    root: [9; 32],
+                });
+            }
+            fx.verdict(Verdict::End {
+                vrf_signature: vrf_sig(&alpha),
+                alpha,
+                log_size: u64::MAX,
+                root: [1; 32],
+            });
+            assert_eq!(fx.view().phase, Phase::Ended);
+        }
+        for p in &players {
+            ctx(p, fx.now, NearToken::from_yoctonear(0));
+            let b = fx.c.get_balance(p.clone(), tok.clone()).0;
+            let _ = fx.c.withdraw(tok.clone(), U128(b));
+            ctx_with_result(fx.now, PromiseResult::Failed);
+            fx.c.on_withdraw(p.clone(), tok.clone(), U128(b));
+        }
+        fx.c.payouts.flush();
+        fx.c.balances.flush();
+        fx.c.matches.flush();
+        fx.c.checkpoints.flush();
+        let used = stored_bytes();
+        assert!(
+            used <= paid,
+            "round {round}: stored {used} bytes, paid for {paid}"
+        );
+    }
 }
 
 /// Review regression: a lobby with `start_by_ms = u64::MAX` held a sponsor's money forever.
