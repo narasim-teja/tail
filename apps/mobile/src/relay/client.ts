@@ -107,7 +107,9 @@ export interface NewMatch {
   startByMs: number;
 }
 
-export type ChainPhase = "lobby" | "locked" | "running" | "ended" | "aborted";
+/** The contract's phases. A locked lobby is still `lobby`, with `lockedUntilMs` set. */
+export const CHAIN_PHASES = ["lobby", "running", "ended", "aborted"] as const;
+export type ChainPhase = (typeof CHAIN_PHASES)[number];
 export type RelayPhase = "lobby" | "starting" | "running" | "ending" | "ended" | "failed";
 
 export interface ChainPlayer {
@@ -125,6 +127,8 @@ export interface ChainMatch {
   startByMs: number;
   publicReplay: boolean;
   phase: ChainPhase;
+  /** Set once the host locks the lobby: no joins from then on, no leaves until this time. */
+  lockedUntilMs: number | null;
   /** Sorted by account id; index = player number in verdicts and batches. */
   players: ChainPlayer[];
   /** ed25519 key the match pinned at creation; it signs the referee's box key. */
@@ -175,13 +179,20 @@ function parseChain(v: unknown): ChainMatch | null {
     maxPlayers: read.int(c, "max_players"),
     startByMs: read.int(c, "start_by_ms"),
     publicReplay: read.bool(c, "public_replay"),
-    phase: read.str(c, "phase") as ChainPhase,
+    phase: chainPhase(read.str(c, "phase")),
+    lockedUntilMs: read.intOrNull(c, "locked_until_ms"),
     players: read.list(c, "players").map((p) => {
       const o = obj(p, "player");
       return { accountId: read.str(o, "account_id"), head: read.amount(o, "head"), out: read.bool(o, "out") };
     }),
     refereePk: read.hex(c, "referee_pk"),
   };
+}
+
+function chainPhase(s: string): ChainPhase {
+  const phase = CHAIN_PHASES.find((p) => p === s);
+  if (!phase) throw new RelayError(0, `relay answer: unknown match phase ${s}`);
+  return phase;
 }
 
 const circle = (c: Circle) => ({ lat_e7: c.latE7, lon_e7: c.lonE7, radius_m: c.radiusM });
