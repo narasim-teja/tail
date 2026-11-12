@@ -24,12 +24,15 @@ import {
   fromHex,
   HintKind,
   hintPrice,
+  hudDigest,
   merkleLeaf,
   merkleProof,
   merkleRoot,
   merkleVerify,
   open,
   playersHash,
+  replayDigest,
+  requestDigest,
   resolveToken,
   ringCommit,
   seal,
@@ -41,6 +44,7 @@ import {
   uuidToToken,
   verdictDigest,
 } from "../src/index.ts";
+import authV from "../vectors/auth.json";
 import batchV from "../vectors/batch.json";
 import beaconV from "../vectors/beacon.json";
 import merkleV from "../vectors/merkle.json";
@@ -229,4 +233,22 @@ test("hint price is basis points of the stake, rounded down", () => {
   expect(hintPrice(1_000_000n, HintKind.Bearing)).toBe(50_000n);
   expect(hintPrice(1_000_000n, HintKind.Near)).toBe(20_000n);
   expect(hintPrice(49n, HintKind.Near)).toBe(0n);
+});
+
+describe("relay auth", () => {
+  test("request, HUD and replay digests match the vectors", () => {
+    const r = authV.request;
+    expect(toHex(requestDigest(r.method, r.path, r.timeMs, h(r.body)))).toBe(r.digest);
+    const { hud, replay } = authV;
+    expect(toHex(hudDigest(h(hud.nonce), h(hud.matchId), hud.accountId))).toBe(hud.digest);
+    expect(toHex(replayDigest(h(replay.nonce), h(replay.matchId), replay.accountId))).toBe(replay.digest);
+  });
+
+  test("the HUD and replay challenges never collide, and the method is case-insensitive", () => {
+    const { hud } = authV;
+    expect(toHex(replayDigest(h(hud.nonce), h(hud.matchId), hud.accountId))).not.toBe(hud.digest);
+    const r = authV.request;
+    expect(toHex(requestDigest("POST", r.path, r.timeMs, h(r.body)))).toBe(r.digest);
+    expect(toHex(requestDigest("PUT", r.path, r.timeMs, h(r.body)))).not.toBe(r.digest);
+  });
 });

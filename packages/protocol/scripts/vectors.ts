@@ -5,6 +5,9 @@
 import { writeFileSync } from "node:fs";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
+  hudDigest as authHudDigest,
+  replayDigest as authReplayDigest,
+  requestDigest as authRequestDigest,
   type Batch,
   batchClientDataHash,
   batchHash,
@@ -236,6 +239,31 @@ write("seal", {
   playerKeys: { input: keys, borsh: plaintext },
   hud: { input: hud, borsh: encodeHud(hud) },
   hudNoOptions: { borsh: encodeHud(hudBare) },
+});
+
+// ── relay auth ──
+const nonce = seed("nonce");
+const reqBody = utf8('{"match_id":"5f62","sealed":"AAEC"}');
+write("auth", {
+  request: {
+    method: "post",
+    path: "/batch",
+    timeMs: 1794514000123,
+    body: reqBody,
+    digest: authRequestDigest("post", "/batch", 1794514000123, reqBody),
+  },
+  hud: {
+    nonce,
+    matchId,
+    accountId: "alice.tail.testnet",
+    digest: authHudDigest(nonce, matchId, "alice.tail.testnet"),
+  },
+  replay: {
+    nonce,
+    matchId,
+    accountId: "alice.tail.testnet",
+    digest: authReplayDigest(nonce, matchId, "alice.tail.testnet"),
+  },
 });
 
 console.log(`vectors written to ${out}`);

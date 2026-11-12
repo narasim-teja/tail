@@ -1,3 +1,4 @@
+export * from "./auth.ts";
 export * from "./borsh.ts";
 export * from "./bytes.ts";
 export * from "./constants.ts";
