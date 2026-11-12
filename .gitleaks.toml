@@ -1,0 +1,9 @@
+# Default gitleaks rules, plus one allowlist: the golden test vectors. Every value in them is
+# derived from public seeds ("tail/vectors/<label>") so TS and Rust can be checked byte for
+# byte; their `token` and key fields look like API keys to the generic rule but are not secrets.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Deterministic protocol test vectors"
+paths = ['''^packages/protocol/vectors/[a-z]+\.json$''']
