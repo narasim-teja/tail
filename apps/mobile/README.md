@@ -45,6 +45,42 @@ game icons) from source, never copies.
 - Hermes has no `TextDecoder` and no `crypto.getRandomValues`; `src/polyfills.ts` installs a strict
   UTF-8 decoder (tested against the platform one) and `expo-crypto`'s random source.
 
+## Screens
+
+| Screen   | What it shows                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Enrol    | Trail mark, one field (handle), Join; states: checking this phone, handle taken, no App Attest                                                                                                                                                                                                                                                                                                                                                          |
+| Primer   | Three cards (Lock, Heat, Strike), once, skippable                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Home     | Trail mark and handle; balance and Withdraw; Create a match and Scan to join; code entry; recent matches                                                                                                                                                                                                                                                                                                                                                |
+| Create   | Stake, minutes, players, zone radius (centred on you), public replay                                                                                                                                                                                                                                                                                                                                                                                    |
+| Scan     | Camera reads a lobby QR (`tail://join/<id>`); permission asked or Open Settings                                                                                                                                                                                                                                                                                                                                                                         |
+| Lobby    | Big QR first, code and Share, stake, length, players as initials; waiting, ready, starting, failed (retry), called off; Join, Start (host), Leave                                                                                                                                                                                                                                                                                                       |
+| Briefing | The target's handle fills the screen; your head and the start countdown                                                                                                                                                                                                                                                                                                                                                                                 |
+| Hunt     | Target and time left; LOCK arc with its numeral, HEAD, HEAT bar with its numeral; live map (you as the Trail mark, zone edge dotted, safehouses, leaked cell); Handler at thumb reach. Lock full floods persimmon and STRIKE replaces the map; strike sent; landed (flash, new target slides in); dark and out-of-zone banners with countdowns; vehicle freeze; Handler dispatch and pull-down log; hint sheet; tagged (ink); Bluetooth or location off |
+| Results  | Survived, out or last one standing; final head; tags; Watch the replay (Safari); How it's verified                                                                                                                                                                                                                                                                                                                                                      |
+
+## Design system
+
+The look follows `docs/DESIGN.md` and the confirmed brief `docs/briefs/mobile.md`.
+
+- **Tokens** (`src/ui/theme.ts`): colours only from `@tail/brand`; Archivo (the replay's family),
+  embedded by the expo-font config plugin and addressed by PostScript name, with tabular figures
+  on every number; a 4-point spacing scale; motion durations and exponential easings.
+- **Contrast** (`test/contrast.test.ts`): every text/background pair the app draws is listed in
+  `contrastPairs` and checked against WCAG AA. Persimmon on paper (2.9:1) is never text and never
+  the only carrier of a state.
+- **Haptics** (`src/ui/haptics.ts`): heat tick (cadence by heat level, `src/ui/cadence.ts`), lock
+  full, strike sent, tagged, and the Handler's dispatch. They stay on with Reduce Motion.
+- **Reduce Motion** (`src/ui/motion.ts`): the lock-full flood, the landing flash, banners and the
+  hint sheet become instant changes; the heat bar does not pulse.
+- **Brand assets**: the Trail mark (enrol, home, primer, splash, your map marker) and the game
+  icons (lock, heat, head, strike, near, bearing, trend, handler, safehouse, zone, dark,
+  verified) all render from `@tail/brand` strings with react-native-svg. No other icon set.
+- **Design preview** (`src/preview/Preview.tsx`, development builds only, behind `__DEV__`):
+  every screen and every state from the brief, rendered through the live views with fixture
+  data. Open `tail://preview` (list) or `tail://preview/<state>`, add `?frame=small` for a 375 ×
+  667 pt frame. Screenshots of each state are in `screenshots/`.
+
 ## Install (standalone, outside the root workspace)
 
 `package.json` has **no `name` on purpose**: Bun only treats a folder matched by the root
@@ -61,7 +97,7 @@ bun install
 
 ```sh
 cd apps/mobile
-bun test                                   # 73 tests
+bun test                                   # 103 tests
 bunx tsc -p . && bunx tsc -p tsconfig.test.json
 bunx expo export --platform ios --output-dir /tmp/tail-export
 CI=1 bunx expo prebuild --platform ios --clean
@@ -148,6 +184,15 @@ Use xcodebuild directly (the route that worked in the device spike on 2026-11-12
 | Everything else       | `POST /enroll/challenge`, `POST /enroll`, `POST /matches`, `POST /matches/:id/start`, `POST /batch`, `GET /hud` (WebSocket), `POST /dev/topup`, `GET /replay/:id` as in `apps/relay/src/routes`                                                                                                                                                                                                                                      | Served                                                                                             |
 | Mesh node             | An Offline Protocol node whose `off1…` address goes in Settings. It receives `{v: 1, type: "tail/batch", path, account, time_ms, sig, body}`: the exact signed `POST /batch` request, to replay into the relay. Two relay changes needed: accept a carried batch's signature older than the 60 s request window (the batch digest dedupe already stops replays), and enqueue before the SDK's delivery receipt matters for ordering. | **No node yet**                                                                                    |
 
+Two more gaps the design pass needs filled:
+
+- **Zone in `GET /matches/:id`.** The relay stores the zone and safehouses but does not return
+  them. The app accepts `zone: {zone: {latE7, lonE7, radiusM}, safehouses: [...]}` (the shape
+  `GET /replay/:id` already returns), draws it only if it hashes to the chain's `zone_hash`, and
+  uses it for the out-of-zone banner. Until then: no zone edge, no safehouses, no zone banner.
+- **Who tagged you.** The HUD has no field for it (a `@tail/protocol` change), so the tagged
+  screen says your head went to your hunter and the replay shows who.
+
 One relay behaviour to look at: the relay keeps the first copy of each sealed batch by digest
 and answers a repeat with `queued: false`. If the referee ever rejects a batch for a seq gap, the
 phone's resend of that same batch is then dropped as a duplicate, and that player's chain is stuck.
@@ -165,7 +210,5 @@ batch the referee rejected for `Seq`.
 - **Withdraw** is not in the app (the contract allows it from the player key); heads settle into
   the contract balance.
 - **Replay** links to the relay's JSON (`GET /replay/:id`), not to the web replay app.
-- **Reduce Motion**: nothing animates yet, so there is nothing to turn off.
-- **Visual design** is functional, not polished: brand colours and icons, one placeholder family
-  (Avenir Next, set once in `src/ui/theme.ts`) with tabular numerals, segmented lock and heat bars
-  with numbers, STRIKE as the largest target. The design pass restyles `theme.ts` and `kit.tsx`.
+- **Splash mark**: the launch screen is the paper colour; the Trail mark appears on it once
+  `packages/brand` writes `assets/splash-mark-512.png` (`app.config.ts` picks it up when present).

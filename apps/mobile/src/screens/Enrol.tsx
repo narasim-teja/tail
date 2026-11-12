@@ -1,31 +1,102 @@
+// First launch. One field. The phone proves it is a real iPhone (App Attest); the relay then
+// makes a NEAR account whose only key is this phone's and which can only play.
 import { useState } from "react";
+import { StyleSheet, View } from "react-native";
 import { useApp } from "../state/app";
+import { attestor } from "../state/device";
 import { Mark } from "../ui/brand";
-import { Body, Button, ErrorLine, Field, Gap, Row, Screen, Title } from "../ui/kit";
+import { Body, Button, Caption, Display, Field, Gap, Notice, Screen } from "../ui/kit";
+import { space } from "../ui/theme";
 
-/** First launch: pick a handle; the relay checks this is a real iPhone and makes the account. */
-export function Enrol() {
-  const app = useApp();
+export interface EnrolModel {
+  busy: string | null;
+  /** The relay refused the handle; shown under the field. */
+  handleError: string | null;
+  error: string | null;
+  relaySet: boolean;
+  /** App Attest is missing (simulator, very old iPhone): enrolment cannot work here. */
+  unsupported: boolean;
+}
+
+export function EnrolView({
+  m,
+  onJoin,
+  onSettings,
+}: {
+  m: EnrolModel;
+  onJoin: (handle: string) => void;
+  onSettings: () => void;
+}) {
   const [handle, setHandle] = useState("");
+  const ok = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/.test(handle.trim().toLowerCase()) && handle.trim().length >= 2;
   return (
-    <Screen>
-      <Mark />
-      <Title>TAIL</Title>
-      <Body muted>
-        Pick a handle. Your phone proves it is a real iPhone, then you get a NEAR account that can only play.
-      </Body>
-      <Gap />
-      <Field label="Handle" value={handle} onChangeText={setHandle} placeholder="alice" maxLength={40} />
-      <Body muted>{app.settings.relayUrl ? `Relay: ${app.settings.relayUrl}` : "No relay set."}</Body>
-      <ErrorLine text={app.error} />
-      <Row>
-        <Button
-          title={app.busy ?? "Join"}
-          disabled={!!app.busy || handle.trim().length < 2 || !app.settings.relayUrl}
-          onPress={() => void app.enrol(handle)}
+    <Screen
+      footer={
+        m.unsupported ? null : (
+          <>
+            <Button
+              title={m.busy ?? "Join"}
+              busy={!!m.busy}
+              disabled={!ok || !m.relaySet}
+              onPress={() => onJoin(handle)}
+            />
+            <Button kind="quiet" title="Settings" onPress={onSettings} />
+          </>
+        )
+      }
+    >
+      <Gap size="x3" />
+      <Mark size={72} />
+      <View style={styles.title}>
+        <Display>TAIL</Display>
+        <Body muted>Tag your friends in the real world. Every tag comes with proof.</Body>
+      </View>
+      <Gap size="xl" />
+      {m.unsupported ? (
+        <Notice
+          icon="dark"
+          title="This iPhone can't prove itself"
+          detail="TAIL needs App Attest, which this device does not offer. Play on a recent iPhone."
         />
-        <Button title="Settings" kind="plain" onPress={() => app.toggleSettings(true)} />
-      </Row>
+      ) : (
+        <>
+          <Field
+            label="Handle"
+            value={handle}
+            onChangeText={setHandle}
+            placeholder="alice"
+            maxLength={40}
+            error={m.handleError}
+            returnKeyType="go"
+            onSubmitEditing={() => ok && m.relaySet && onJoin(handle)}
+          />
+          <Caption muted>Letters, digits, and - or _ between them. Friends see it.</Caption>
+          {!m.relaySet ? (
+            <Notice title="No relay set" detail="Add the relay address in Settings first." />
+          ) : null}
+          {m.error ? <Notice title="Couldn't join" detail={m.error} /> : null}
+        </>
+      )}
     </Screen>
   );
 }
+
+export function Enrol() {
+  const app = useApp();
+  const taken = app.error?.includes("taken") ? "That handle is taken. Try another." : null;
+  return (
+    <EnrolView
+      m={{
+        busy: app.busy,
+        handleError: taken,
+        error: taken ? null : app.error,
+        relaySet: !!app.settings.relayUrl,
+        unsupported: !attestor.isSupported,
+      }}
+      onJoin={(h) => void app.enrol(h)}
+      onSettings={() => app.toggleSettings(true)}
+    />
+  );
+}
+
+const styles = StyleSheet.create({ title: { gap: space.s } });

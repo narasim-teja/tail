@@ -1,173 +1,360 @@
-import type { IconName } from "@tail/brand";
-import { HINT_TEXT_MAX, HintKind, hintPrice, LEAK_CELL_M, LOCK_EPOCHS } from "@tail/protocol";
-import { useState } from "react";
-import { StyleSheet, View } from "react-native";
-import MapView, { Marker, Polygon } from "react-native-maps";
-import { formatAmount, hintLabel } from "../game/hud";
-import type { SessionSnapshot } from "../game/session";
+// The hero screen (docs/briefs/mobile.md 5). Glanced at for two seconds in sunlight: target and
+// time left small at the top; LOCK and HEAT huge in the upper two-thirds, HEAD between them; the
+// live map below; Handler at thumb reach. Lock full floods the screen persimmon and STRIKE takes
+// the map's place. Tagged drops the screen to ink.
+
+import type { HintKind } from "@tail/protocol";
+import { useEffect, useRef, useState } from "react";
+import { Animated, Linking, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { type HuntModel, huntModel } from "../game/huntModel";
 import { useApp } from "../state/app";
-import { TrailMarker } from "../ui/brand";
-import { Body, Button, Field, Figure, Label, Row, Screen, SegmentBar } from "../ui/kit";
-import { color, radius, space } from "../ui/theme";
+import { Icon } from "../ui/brand";
+import { heatIntervalMs } from "../ui/cadence";
+import { HeadValue, HeatBar, LockArc } from "../ui/game";
+import { haptic } from "../ui/haptics";
+import {
+  Body,
+  Button,
+  Caption,
+  Display,
+  Eyebrow,
+  Figure,
+  Screen,
+  Strong,
+  type Tone,
+  ToneProvider,
+} from "../ui/kit";
+import { MapPanel } from "../ui/map";
+import { ease, useReduceMotion } from "../ui/motion";
+import { HintSheet } from "../ui/sheet";
+import { color, font, maxScale, motion, radius, space } from "../ui/theme";
+import { DISPATCH_MS, DispatchStrip, WarningBanner } from "../ui/top";
 
-const M_PER_DEG = 111_320;
+/** "maya.tail-dev.testnet" → "maya": friends know each other by handle. */
+export const handleOf = (account: string) => account.split(".")[0] ?? account;
 
-const HINT_ICON: Record<HintKind, IconName> = {
-  [HintKind.Near]: "near",
-  [HintKind.Bearing]: "bearing",
-  [HintKind.Trend]: "trend",
-};
-
-/** The leaked 100 m grid cell around its centre, as a square on the map. */
-function cell(c: { lat: number; lon: number }) {
-  const dLat = LEAK_CELL_M / 2 / M_PER_DEG;
-  const dLon = LEAK_CELL_M / 2 / (M_PER_DEG * Math.cos((c.lat * Math.PI) / 180));
-  return [
-    { latitude: c.lat - dLat, longitude: c.lon - dLon },
-    { latitude: c.lat - dLat, longitude: c.lon + dLon },
-    { latitude: c.lat + dLat, longitude: c.lon + dLon },
-    { latitude: c.lat + dLat, longitude: c.lon - dLon },
-  ];
+export interface HuntActions {
+  onStrike: () => void;
+  onHint: (kind: HintKind, question: string) => void;
+  onOpenSettings: () => void;
+  onResults: () => void;
 }
 
-function status(s: SessionSnapshot): string {
-  const parts = [`Epoch ${s.epoch ?? "-"}`, `Sent ${s.seq - s.queued}`];
-  if (s.queued > 1) parts.push(`Waiting ${s.queued}`);
-  if (s.socket !== "live") parts.push("HUD offline");
-  if (s.offline) parts.push(s.carry.kind === "off" ? "No signal" : `No signal, mesh ${s.carry.kind}`);
-  if (s.upload.kind === "waiting") parts.push(s.upload.error);
-  return parts.join("  ·  ");
-}
+export function HuntView({
+  m,
+  nowMs,
+  reduceMotion,
+  actions,
+  sheetOpen: sheetOpenInitial = false,
+}: {
+  m: HuntModel;
+  nowMs: number;
+  reduceMotion: boolean;
+  actions: HuntActions;
+  /** For the design preview: start with the hint sheet up. */
+  sheetOpen?: boolean;
+}) {
+  const inset = useSafeAreaInsets();
+  const [sheet, setSheet] = useState(sheetOpenInitial);
+  // The arc gives way on short screens and while a banner or dispatch is up, so the map keeps
+  // a usable height on a small iPhone.
+  const [height, setHeight] = useState(0);
+  const busyTop = !!m.banner || (!!m.dispatch && nowMs - m.dispatch.atMs < DISPATCH_MS);
+  const arc = height ? Math.round(Math.max(150, Math.min(232, height * 0.3 - (busyTop ? 48 : 0)))) : 232;
+  const full = m.canStrike && !m.tagged;
+  const flood = useRef(new Animated.Value(full ? 1 : 0)).current;
+  const flash = useRef(new Animated.Value(0)).current;
+  const slide = useRef(new Animated.Value(0)).current;
 
-/** Lock, heat, head, the map with only you (and a leaked cell), the Handler, STRIKE. */
-export function Hunt() {
-  const app = useApp();
-  const session = app.session;
-  const [handler, setHandler] = useState(false);
-  const [question, setQuestion] = useState("");
-  if (!session) return null;
-  const s = session.snapshot();
-  const hud = s.hud;
-  const stake = app.match?.chain?.stake ?? 0n;
-  const ask = (kind: HintKind) => {
-    session.hint(kind, question);
-    setQuestion("");
-    setHandler(false);
-  };
+  // Lock full floods persimmon; it recedes if the lock drops. Reduce Motion: an instant change.
+  useEffect(() => {
+    if (reduceMotion) flood.setValue(full ? 1 : 0);
+    else
+      Animated.timing(flood, {
+        toValue: full ? 1 : 0,
+        duration: full ? motion.takeover : motion.base,
+        easing: full ? ease.out : ease.in,
+        useNativeDriver: true,
+      }).start();
+  }, [full, reduceMotion, flood]);
 
+  // Strike landed: a short flash, and the new target's name slides in.
+  useEffect(() => {
+    if (m.landedAtMs === null || reduceMotion) return;
+    flash.setValue(0.85);
+    slide.setValue(1);
+    Animated.parallel([
+      Animated.timing(flash, { toValue: 0, duration: motion.slow, easing: ease.out, useNativeDriver: true }),
+      Animated.timing(slide, { toValue: 0, duration: motion.slow, easing: ease.out, useNativeDriver: true }),
+    ]).start();
+  }, [m.landedAtMs, reduceMotion, flash, slide]);
+
+  if (m.blocked) return <BlockedView what={m.blocked} onOpenSettings={actions.onOpenSettings} />;
+  if (m.tagged) return <TaggedView head={m.head} onResults={actions.onResults} />;
+
+  const tone: Tone = full ? "persimmon" : "paper";
   return (
-    <Screen scroll={false}>
-      <Row>
-        <Figure label="Target">{hud?.target ?? app.briefing?.keys.target ?? "?"}</Figure>
-      </Row>
-      <Figure label="Head" icon="head">
-        {hud ? formatAmount(hud.head) : "-"}
-      </Figure>
-      <SegmentBar label="Lock" value={hud?.lock ?? 0} max={LOCK_EPOCHS} tone="lock" />
-      <SegmentBar label="Heat" value={hud?.heat ?? 0} max={LOCK_EPOCHS} tone="heat" />
-
-      <View style={st.map}>
-        {s.lastFix ? (
-          <MapView
-            style={StyleSheet.absoluteFill}
-            region={{
-              latitude: s.lastFix.lat,
-              longitude: s.lastFix.lon,
-              latitudeDelta: 0.006,
-              longitudeDelta: 0.006,
-            }}
-            showsPointsOfInterests={false}
-            // North stays up, so the Trail mark's rotation is the compass heading.
-            rotateEnabled={false}
-            pitchEnabled={false}
-            accessibilityLabel="Map with your position"
-          >
-            <Marker
-              coordinate={{ latitude: s.lastFix.lat, longitude: s.lastFix.lon }}
-              anchor={{ x: 0.5, y: 0.5 }}
-              accessibilityLabel="You"
-            >
-              <TrailMarker heading={s.lastFix.heading} />
-            </Marker>
-            {hud?.leak ? (
-              <Polygon
-                coordinates={cell(hud.leak)}
-                fillColor={`${color.heat}55`}
-                strokeColor={color.heat}
-                strokeWidth={2}
-              />
-            ) : null}
-          </MapView>
-        ) : (
-          <Body muted center>
-            Finding you.
-          </Body>
-        )}
-      </View>
-      {hud?.leak ? <Label>Your target went dark. Last known cell shown.</Label> : null}
-
-      {s.notes.slice(0, 2).map((n) => (
-        <Body key={`${n.tMs}-${n.text}`} muted={n.kind === "info"}>
-          {n.text}
-        </Body>
-      ))}
-      {hud?.hint ? <Body>{hud.hint.text}</Body> : null}
-
-      {handler ? (
-        <View style={st.sheet}>
-          <Label>Handler. Paid from your head to your target's.</Label>
-          <Field
-            label="Question (optional)"
-            value={question}
-            onChangeText={setQuestion}
-            maxLength={HINT_TEXT_MAX}
-          />
-          <Row>
-            {[HintKind.Near, HintKind.Bearing, HintKind.Trend].map((k) => (
-              <Button
-                key={k}
-                kind="plain"
-                icon={HINT_ICON[k]}
-                title={`${hintLabel[k]} ${formatAmount(hintPrice(stake, k))}`}
-                onPress={() => ask(k)}
-              />
-            ))}
-          </Row>
-          <Button title="Close" kind="plain" onPress={() => setHandler(false)} />
-        </View>
-      ) : (
-        <Button title="Handler" kind="plain" icon="handler" onPress={() => setHandler(true)} />
-      )}
-
-      {hud?.canStrike ? (
-        <Button
-          title="STRIKE"
-          kind="strike"
-          icon="strike"
-          onPress={() => session.strike()}
-          hint="Tags your target"
+    <ToneProvider tone={tone}>
+      <View
+        style={[styles.fill, { backgroundColor: color.paper }]}
+        onLayout={(e) => setHeight(e.nativeEvent.layout.height)}
+      >
+        <Animated.View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, { backgroundColor: color.persimmon, opacity: flood }]}
         />
-      ) : null}
-      <Label>{status(s)}</Label>
+        <View
+          style={[
+            styles.fill,
+            { paddingTop: inset.top + space.s, paddingBottom: Math.max(inset.bottom, space.m) },
+          ]}
+        >
+          <View style={styles.top}>
+            <View style={styles.grow}>
+              <Eyebrow muted>Target</Eyebrow>
+              <Animated.View
+                style={{
+                  transform: [
+                    { translateX: slide.interpolate({ inputRange: [0, 1], outputRange: [0, 48] }) },
+                  ],
+                  opacity: slide.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
+                }}
+              >
+                <Strong lines={1}>{handleOf(m.target)}</Strong>
+              </Animated.View>
+            </View>
+            <View style={styles.right} accessible accessibilityLabel={m.timeLeft}>
+              <Figure>{m.timeLeft}</Figure>
+            </View>
+          </View>
+
+          <View style={styles.overlays}>
+            <WarningBanner banner={m.banner} reduceMotion={reduceMotion} />
+            <DispatchStrip dispatch={m.dispatch} log={m.log} nowMs={nowMs} reduceMotion={reduceMotion} />
+          </View>
+
+          <View style={styles.readouts}>
+            <LockArc value={m.lock} max={m.max} frozenFor={m.frozenFor} size={arc} />
+            <View style={styles.headRow}>
+              <HeadValue value={m.head} landedAtMs={m.landedAtMs} reduceMotion={reduceMotion} />
+              {m.tags > 0 ? (
+                <View
+                  style={styles.right}
+                  accessible
+                  accessibilityLabel={`${m.tags} ${m.tags === 1 ? "tag" : "tags"}`}
+                >
+                  <Eyebrow muted>Tags</Eyebrow>
+                  <Figure>{m.tags}</Figure>
+                </View>
+              ) : null}
+            </View>
+            <HeatBar value={m.heat} max={m.max} reduceMotion={reduceMotion} />
+          </View>
+
+          <View style={styles.lower}>
+            {full && m.strikeSent ? (
+              <View
+                style={[styles.strike, styles.sent]}
+                accessible
+                accessibilityRole="text"
+                accessibilityLabel="Strike sent. The result comes with the next referee update."
+              >
+                <Icon name="strike" size={36} tint={color.persimmon} />
+                <Text maxFontSizeMultiplier={maxScale.number} style={styles.sentText}>
+                  Strike sent
+                </Text>
+                <Caption style={{ color: color.sand }}>Result on the next tick</Caption>
+              </View>
+            ) : full ? (
+              <Button
+                kind="strike"
+                icon="strike"
+                title="Strike"
+                hint="Tags your target while you are still in range"
+                onPress={actions.onStrike}
+                style={styles.strike}
+              />
+            ) : (
+              <MapPanel me={m.me} zone={m.zone} leak={m.leak} />
+            )}
+          </View>
+
+          <View style={styles.bottom}>
+            <Button
+              kind="secondary"
+              icon="handler"
+              title="Handler"
+              onPress={() => setSheet(true)}
+              style={styles.handler}
+            />
+            <Caption muted lines={2} style={styles.status}>
+              {m.waiting ? "Waiting for the referee" : m.status}
+            </Caption>
+          </View>
+        </View>
+        <Animated.View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, { backgroundColor: color.persimmon, opacity: flash }]}
+        />
+        <HintSheet
+          open={sheet}
+          hints={m.hints}
+          reduceMotion={reduceMotion}
+          onClose={() => setSheet(false)}
+          onSend={(kind, q) => {
+            actions.onHint(kind, q);
+            setSheet(false);
+          }}
+        />
+      </View>
+    </ToneProvider>
+  );
+}
+
+/** Tagged: the screen drops to ink. Who tagged you is not in the HUD yet (see README). */
+export function TaggedView({ head, onResults }: { head: string; onResults: () => void }) {
+  return (
+    <Screen tone="ink" scroll={false} footer={<Button title="See results" onPress={onResults} />}>
+      <View style={styles.center}>
+        <Icon name="strike" size={56} tint={color.paper} />
+        <Display center>Tagged</Display>
+        <Body center>{`Your head, ${head}, went to your hunter.`}</Body>
+        <Caption center muted>
+          The replay shows who, once the match ends.
+        </Caption>
+      </View>
     </Screen>
   );
 }
 
-const st = StyleSheet.create({
-  map: {
-    flex: 1,
-    minHeight: 160,
-    borderRadius: radius.m,
-    overflow: "hidden",
-    backgroundColor: color.surfaceSunk,
-    justifyContent: "center",
-  },
-  sheet: {
-    backgroundColor: color.surfaceSunk,
-    borderColor: color.line,
-    borderWidth: StyleSheet.hairlineWidth,
+/** Bluetooth or location is off or denied: the hunt cannot work, so say so in one line. */
+export function BlockedView({
+  what,
+  onOpenSettings,
+}: {
+  what: "bluetooth" | "location";
+  onOpenSettings: () => void;
+}) {
+  return (
+    <Screen scroll={false} footer={<Button title="Open Settings" onPress={onOpenSettings} />}>
+      <View style={styles.center}>
+        <Icon name="dark" size={48} tint={color.ink} />
+        <Display center>{what === "bluetooth" ? "Bluetooth is off" : "Location is off"}</Display>
+        <Body center muted>
+          {what === "bluetooth"
+            ? "TAIL finds players over Bluetooth. Turn it on for TAIL in Settings."
+            : "TAIL needs your location while you play. Allow it in Settings."}
+        </Body>
+      </View>
+    </Screen>
+  );
+}
+
+/** The live hunt: the session's snapshot as a HuntModel, plus the haptic vocabulary. */
+export function Hunt() {
+  const app = useApp();
+  const reduceMotion = useReduceMotion();
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(t);
+  }, []);
+  const session = app.session;
+  const b = app.briefing;
+  const m =
+    session && b
+      ? huntModel(
+          session.snapshot(),
+          { keys: b.keys, stake: app.match?.chain?.stake ?? 0n, zone: app.zone },
+          now,
+        )
+      : null;
+
+  // Heat is felt in the pocket: a beat whose cadence follows heat.
+  const heat = m?.heat ?? 0;
+  useEffect(() => {
+    const every = heatIntervalMs(heat);
+    if (every === null) return;
+    const t = setInterval(() => haptic.heatTick(heat), every);
+    return () => clearInterval(t);
+  }, [heat]);
+  useTransition(m?.canStrike ?? false, haptic.lockFull);
+  useTransition(m?.tagged ?? false, haptic.tagged);
+  useTransition(m?.dispatch?.atMs ?? null, haptic.dispatch);
+
+  if (!session || !m) return null;
+  return (
+    <HuntView
+      m={m}
+      nowMs={now}
+      reduceMotion={reduceMotion}
+      actions={{
+        onStrike: () => {
+          haptic.strikeSent();
+          session.strike();
+        },
+        onHint: (kind, q) => session.hint(kind, q),
+        onOpenSettings: () => void Linking.openSettings(),
+        onResults: () => app.showResults(),
+      }}
+    />
+  );
+}
+
+/** Fires once each time `value` changes to something truthy (not on first render). */
+function useTransition<T>(value: T, fire: () => void) {
+  const prev = useRef(value);
+  useEffect(() => {
+    if (value && value !== prev.current) fire();
+    prev.current = value;
+  }, [value, fire]);
+}
+
+const styles = StyleSheet.create({
+  fill: { flex: 1 },
+  grow: { flex: 1 },
+  top: { flexDirection: "row", alignItems: "flex-start", gap: space.l, paddingHorizontal: space.xl },
+  right: { alignItems: "flex-end" },
+  // Banners and dispatches arrive between the top strip and the readouts; the map gives way.
+  overlays: { paddingHorizontal: space.l, gap: space.s, paddingTop: space.s },
+  sent: {
+    backgroundColor: color.ink,
     borderRadius: radius.l,
-    padding: space.l,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.s,
+  },
+  sentText: {
+    fontFamily: font.black,
+    fontSize: 30,
+    letterSpacing: 2,
+    textTransform: "uppercase",
+    color: color.persimmon,
+  },
+  readouts: { alignItems: "center", paddingHorizontal: space.xl, gap: space.s, paddingTop: space.s },
+  headRow: {
+    alignSelf: "stretch",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+  },
+  lower: { flex: 1, paddingHorizontal: space.l, paddingTop: space.l },
+  strike: { flex: 1 },
+  bottom: {
+    flexDirection: "row",
+    alignItems: "center",
     gap: space.m,
+    paddingHorizontal: space.l,
+    paddingTop: space.m,
+  },
+  handler: { paddingHorizontal: space.l },
+  status: { flex: 1, textAlign: "right" },
+  center: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.m,
+    paddingHorizontal: space.l,
   },
 });
