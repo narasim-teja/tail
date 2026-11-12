@@ -7,7 +7,8 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { decodeSignedVerdict, enrollClientDataHash, equal, type ReplayBundle, sha256 } from "@tail/protocol";
 import { createRelay, type RelayDeps } from "../src/app.ts";
 import { hudDigest, replayDigest, signRequestHeaders } from "../src/auth.ts";
-import { Store } from "../src/db.ts";
+import { Store, type Zone } from "../src/db.ts";
+import { zoneHash } from "../src/matches.ts";
 import { FakeChain, FakeReferee, quietLog, seedDevice, until } from "./fakes.ts";
 
 const PARENT = "relay.testnet";
@@ -234,6 +235,34 @@ describe("signed requests", () => {
 });
 
 // ── Lobby and start ────────────────────────────────────────────────────────────────
+
+describe("the match view", () => {
+  test("serves the zone and safehouses, and they hash to the zone_hash the host was given", async () => {
+    const env = setup();
+    const a = player(env, "ana");
+    const safehouse = { lat_e7: 423_552_000, lon_e7: -710_655_000, radius_m: 25 };
+    const created = await req(
+      env,
+      "POST",
+      "/matches",
+      { ...MATCH, safehouses: [safehouse], start_by_ms: Date.now() + 600_000 },
+      a,
+    );
+    expect(created.status).toBe(200);
+    const view = await req(env, "GET", `/matches/${String(created.json["match_id"])}`);
+    expect(view.status).toBe(200);
+    const zone = view.json["zone"] as Zone;
+    expect(zone).toEqual({
+      zone: { latE7: 423_550_000, lonE7: -710_656_000, radiusM: 1500 },
+      safehouses: [{ latE7: 423_552_000, lonE7: -710_655_000, radiusM: 25 }],
+    });
+    expect(Buffer.from(zoneHash(zone)).toString("hex")).toBe(String(created.json["zone_hash"]));
+    // Twin: a different zone does not hash to the same value.
+    expect(Buffer.from(zoneHash({ ...zone, safehouses: [] })).toString("hex")).not.toBe(
+      String(created.json["zone_hash"]),
+    );
+  });
+});
 
 describe("starting a match", () => {
   test("only the host can start the match", async () => {

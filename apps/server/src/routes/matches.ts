@@ -62,6 +62,9 @@ export function matchRoutes(app: Hono, d: { store: Store; chain: Chain; matches:
       last_seq: m.last_seq,
       players: m.players,
       keys: m.keys ?? [],
+      // The zone and safehouses the host chose. The chain holds only their hash; phones draw
+      // them only after checking SHA256("tail/zone/v1" ‖ …) equals the chain's zone_hash.
+      zone: m.zone,
       chain,
     });
   });
