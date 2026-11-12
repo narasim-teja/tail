@@ -1,0 +1,38 @@
+{
+  "private": true,
+  "version": "0.1.0",
+  "license": "AGPL-3.0-only",
+  "main": "index.ts",
+  "workspaces": [],
+  "scripts": {
+    "start": "expo start --dev-client",
+    "typecheck": "tsc -p . && tsc -p tsconfig.test.json",
+    "test": "bun test",
+    "export": "expo export --platform ios --output-dir dist",
+    "prebuild": "CI=1 expo prebuild --platform ios --clean"
+  },
+  "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@offline-protocol/mesh-sdk": "0.33.0",
+    "expo": "58.0.25",
+    "expo-constants": "58.0.16",
+    "expo-crypto": "58.0.8",
+    "expo-dev-client": "58.0.20",
+    "expo-file-system": "58.0.13",
+    "expo-linking": "58.0.17",
+    "expo-secure-store": "58.0.3",
+    "expo-status-bar": "58.0.5",
+    "react": "19.3.0",
+    "react-native": "0.88.1",
+    "react-native-maps": "1.29.11",
+    "react-native-safe-area-context": "5.11.1",
+    "react-native-svg": "15.16.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "@types/react": "19.3.0",
+    "typescript": "6.0.3"
+  }
+}
