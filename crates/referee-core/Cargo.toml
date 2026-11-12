@@ -1,0 +1,20 @@
+[package]
+name = "referee-core"
+version = "0.1.0"
+description = "TAIL referee rules engine: pure, deterministic, no I/O, no clock, no randomness of its own."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+appattest = { path = "../appattest" }
+borsh = { version = "1", features = ["derive"] }
+tail-protocol = { path = "../tail-protocol", features = ["beacon"] }
+
+[dev-dependencies]
+appattest = { path = "../appattest", features = ["signer"] }
+p256 = { version = "=0.14.0", features = ["ecdsa"] }
+
+[lints]
+workspace = true
