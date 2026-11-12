@@ -1,0 +1,57 @@
+import { describe, expect, test } from "bun:test";
+import { DARK_FORFEIT_MS, DARK_LEAK_MS, VEHICLE_FREEZE_MS, VEHICLE_HOLD_MS } from "@tail/protocol";
+import { bearingDeg, compass8, distanceM, inCircle } from "./geo";
+import { clock, darkState, VehicleWatch, zoneState } from "./rules";
+
+const common = { lat: 42.355, lon: -71.0656 };
+
+describe("geometry", () => {
+  test("distance and bearing agree with known values on Boston Common", () => {
+    const north = { lat: common.lat + 0.001, lon: common.lon };
+    expect(distanceM(common, north)).toBeCloseTo(111.2, 0);
+    expect(compass8(bearingDeg(common, north))).toBe("N");
+    expect(compass8(bearingDeg(common, { lat: common.lat - 0.001, lon: common.lon - 0.001 }))).toBe("SW");
+  });
+
+  test("a point is in the zone up to its radius", () => {
+    const zone = { latE7: 423_550_000, lonE7: -710_656_000, radiusM: 120 };
+    expect(inCircle({ lat: common.lat + 0.001, lon: common.lon }, zone)).toBe(true);
+    expect(inCircle({ lat: common.lat + 0.0012, lon: common.lon }, zone)).toBe(false);
+  });
+});
+
+describe("the phone's view of the rules", () => {
+  test("dark counts up from the last relay contact to the leak", () => {
+    expect(darkState(10_000, null)).toBeNull();
+    expect(darkState(30_000, 10_000)).toEqual({ seconds: 20, leakIn: DARK_LEAK_MS / 1000 - 20 });
+    expect(darkState(10_000 + DARK_LEAK_MS + 5_000, 10_000)?.leakIn).toBe(0);
+  });
+
+  test("out of zone names the way back, the distance to the edge and both countdowns", () => {
+    const zone = { latE7: 423_550_000, lonE7: -710_656_000, radiusM: 100 };
+    const me = { lat: common.lat + 0.002, lon: common.lon };
+    const z = zoneState(40_000, me, zone, 10_000);
+    expect(z?.direction).toBe("S");
+    expect(z?.distanceM).toBe(122);
+    expect(z?.leakIn).toBe(DARK_LEAK_MS / 1000 - 30);
+    expect(z?.forfeitIn).toBe(DARK_FORFEIT_MS / 1000 - 30);
+    expect(zoneState(40_000, me, zone, null)).toBeNull();
+  });
+
+  test("a sustained vehicle speed freezes the lock for the freeze time", () => {
+    const v = new VehicleWatch();
+    v.add(0, 9);
+    v.add(VEHICLE_HOLD_MS - 1, 9);
+    expect(v.frozenFor(VEHICLE_HOLD_MS)).toBeNull();
+    v.add(VEHICLE_HOLD_MS, 9);
+    expect(v.frozenFor(VEHICLE_HOLD_MS)).toBe(VEHICLE_FREEZE_MS / 1000);
+    v.add(VEHICLE_HOLD_MS + 1_000, 1);
+    expect(v.frozenFor(VEHICLE_HOLD_MS + VEHICLE_FREEZE_MS + 1)).toBeNull();
+  });
+
+  test("clocks read as minutes and seconds and never go negative", () => {
+    expect(clock(760_000)).toBe("12:40");
+    expect(clock(5_400)).toBe("0:06");
+    expect(clock(-1)).toBe("0:00");
+  });
+});

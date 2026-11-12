@@ -23,6 +23,14 @@ export const radioPort: RadioPort = {
     const sub = TailRadio.addListener("onFix", fn);
     return () => sub.remove();
   },
+  onRadioState: (fn) => {
+    const sub = TailRadio.addListener("onRadioState", (e) => fn(e.role, e.state));
+    return () => sub.remove();
+  },
+  onLocationState: (fn) => {
+    const sub = TailRadio.addListener("onLocationState", (e) => fn(e.status));
+    return () => sub.remove();
+  },
 };
 
 export const attestor = TailAttest;

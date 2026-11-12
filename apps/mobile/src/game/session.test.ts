@@ -45,6 +45,7 @@ function fakeRadio() {
   let filter: string[] = [];
   let sight: ((s: RadioSighting) => void) | undefined;
   let fix: ((f: RadioFix) => void) | undefined;
+  let radioState: ((role: "peripheral" | "central", state: string) => void) | undefined;
   const radio: RadioPort = {
     startBeacon: () => calls.push("startBeacon"),
     setToken: (u) => tokens.push(u),
@@ -65,6 +66,11 @@ function fakeRadio() {
       fix = fn;
       return () => (fix = undefined);
     },
+    onRadioState: (fn) => {
+      radioState = fn;
+      return () => (radioState = undefined);
+    },
+    onLocationState: () => () => {},
   };
   return {
     radio,
@@ -73,6 +79,7 @@ function fakeRadio() {
     filter: () => filter,
     sight: (s: RadioSighting) => sight?.(s),
     fix: (f: RadioFix) => fix?.(f),
+    radioState: (role: "peripheral" | "central", state: string) => radioState?.(role, state),
   };
 }
 
@@ -125,6 +132,7 @@ function rig(o: { upload?: (r: SignedRequest) => Promise<unknown> } = {}) {
       shutdown: async () => {},
     }),
     carryConfig: { nodeAddress: "off1node", serverUrl: "" },
+    zone: { latE7: 423_550_000, lonE7: -710_660_000, radiusM: 300 },
     now: t.now,
     timers: t.timers,
   });
@@ -248,5 +256,41 @@ describe("hunt session", () => {
     expect(r.carryOffline.slice(0, 2)).toEqual([false, false]);
     expect(r.carryOffline.at(-1)).toBe(true);
     expect(r.s.snapshot().queued).toBeGreaterThan(1);
+  });
+
+  test("a new target on a later HUD counts as a landed strike and clears the sent state", () => {
+    const r = rig();
+    r.s.start();
+    const base = { epoch: 2, lock: LOCK_EPOCHS, heat: 0, head: 5_000_000n, status: TargetStatus.Hunting };
+    r.sendHud({ ...base, tick: 3, target: "bob.tail.testnet" });
+    r.s.strike();
+    expect(r.s.snapshot().strikeSentAtMs).not.toBeNull();
+    r.sendHud({ ...base, tick: 4, lock: 0, head: 10_000_000n, target: "carol.tail.testnet" });
+    const snap = r.s.snapshot();
+    expect(snap.strikeSentAtMs).toBeNull();
+    expect(snap.landed?.target).toBe("carol.tail.testnet");
+    expect(snap.tags).toBe(1);
+  });
+
+  test("leaving the zone starts the out-of-zone clock and coming back stops it", () => {
+    const r = rig();
+    r.s.start();
+    const at = (tMs: number, lat: number) =>
+      r.radio.fix({ tMs, lat, lon: -71.066, acc: 5, speed: 1, course: 0, simulated: null, accessory: null });
+    at(START + 1_000, 42.355);
+    expect(r.s.snapshot().outSinceMs).toBeNull();
+    at(START + 3_000, 42.36);
+    expect(r.s.snapshot().outSinceMs).toBe(START + 3_000);
+    at(START + 5_000, 42.355);
+    expect(r.s.snapshot().outSinceMs).toBeNull();
+  });
+
+  test("Bluetooth switched off or denied blocks the hunt", () => {
+    const r = rig();
+    r.s.start();
+    r.radio.radioState("central", "poweredOn");
+    expect(r.s.snapshot().blocked).toBeNull();
+    r.radio.radioState("peripheral", "unauthorized");
+    expect(r.s.snapshot().blocked).toBe("bluetooth");
   });
 });

@@ -25,8 +25,10 @@ import { ActionQueue } from "./actions";
 import { type Assert, BatchBuilder, type ChainState, type OutboxItem } from "./batch";
 import { currentEpoch, EpochTimer, realTimers, type Timers } from "./epoch";
 import { FixCollector } from "./fixes";
+import { type Circle, inCircle } from "./geo";
 import { describeRejection, formatAmount, type HudView, hudView, openHud } from "./hud";
 import { Outbox, Uploader, type UploadState } from "./outbox";
+import { VehicleWatch } from "./rules";
 import { SightingAggregator } from "./sightings";
 
 /** The parts of tail-radio the session drives. */
@@ -42,6 +44,10 @@ export interface RadioPort {
   setPocketMode(on: boolean): void;
   onSighting(fn: (s: RadioSighting) => void): () => void;
   onFix(fn: (f: RadioFix) => void): () => void;
+  /** Bluetooth manager state per role ("poweredOn", "unauthorized", "poweredOff", …). */
+  onRadioState(fn: (role: "peripheral" | "central", state: string) => void): () => void;
+  /** Location authorisation ("authorizedWhenInUse", "denied", …). */
+  onLocationState(fn: (status: string) => void): () => void;
 }
 
 export interface CarryPort {
@@ -79,6 +85,8 @@ export interface SessionDeps {
       }) => CarryPort)
     | null;
   carryConfig: CarryConfig;
+  /** The match zone, checked against the chain's zone hash; null when the relay sent none. */
+  zone: Circle | null;
   now?: () => number;
   timers?: Timers;
 }
@@ -107,9 +115,36 @@ export interface SessionSnapshot {
   notes: Note[];
   over: boolean;
   pendingActions: number;
+  /** Set when STRIKE was pressed; cleared by the next HUD, which carries the result. */
+  strikeSentAtMs: number | null;
+  /** The last tag you made: when, and who your target is now. */
+  landed: { atMs: number; target: string } | null;
+  /** Tags you made this match. */
+  tags: number;
+  /** When the relay last heard from you, while it has not for OFFLINE_CARRY_MS; else null. */
+  darkSinceMs: number | null;
+  /** When you left the zone; null while inside (or with no zone to judge by). */
+  outSinceMs: number | null;
+  /** Your lock is frozen (vehicle speed) until then; null when not frozen. */
+  frozenUntilMs: number | null;
+  /** What stops the hunt from working at all: Bluetooth or location switched off or denied. */
+  blocked: "bluetooth" | "location" | null;
 }
 
-type UiState = Pick<SessionSnapshot, "epoch" | "token" | "socket" | "hud" | "notes" | "over">;
+type UiState = Pick<
+  SessionSnapshot,
+  | "epoch"
+  | "token"
+  | "socket"
+  | "hud"
+  | "notes"
+  | "over"
+  | "strikeSentAtMs"
+  | "landed"
+  | "tags"
+  | "outSinceMs"
+  | "blocked"
+>;
 
 export class HuntSession {
   private readonly now: () => number;
@@ -129,7 +164,25 @@ export class HuntSession {
   private batchTimer: unknown = null;
   private listeners = new Set<() => void>();
   private snap: SessionSnapshot;
-  private ui: UiState = { epoch: null, token: null, socket: "closed", hud: null, notes: [], over: false };
+  private ui: UiState = {
+    epoch: null,
+    token: null,
+    socket: "closed",
+    hud: null,
+    notes: [],
+    over: false,
+    strikeSentAtMs: null,
+    landed: null,
+    tags: 0,
+    outSinceMs: null,
+    blocked: null,
+  };
+  private readonly vehicle = new VehicleWatch();
+  private radioStates: Record<"peripheral" | "central", string> = {
+    peripheral: "unknown",
+    central: "unknown",
+  };
+  private locationStatus = "unknown";
   private fixCount = 0;
   // iOS reports no course while standing still; the marker keeps pointing the last way you went.
   private heading: number | null = null;
@@ -182,6 +235,20 @@ export class HuntSession {
         this.fixes.add(f);
         this.fixCount++;
         if (f.course >= 0) this.heading = f.course;
+        this.vehicle.add(f.tMs, f.speed);
+        this.checkZone(f);
+      }),
+    );
+    this.unsub.push(
+      r.onRadioState((role, state) => {
+        this.radioStates[role] = state;
+        this.updateBlocked();
+      }),
+    );
+    this.unsub.push(
+      r.onLocationState((status) => {
+        this.locationStatus = status;
+        this.updateBlocked();
       }),
     );
     r.setPocketMode(true);
@@ -247,6 +314,7 @@ export class HuntSession {
 
   strike(): void {
     this.actions.strike();
+    this.update({ strikeSentAtMs: this.now() });
     // Sent with the very next batch instead of waiting up to BATCH_MS: the lock may not last.
     void this.batchNow();
   }
@@ -298,7 +366,18 @@ export class HuntSession {
       case "hud": {
         try {
           const view = hudView(openHud(this.d.boxSk, m.sealed));
-          this.update({ hud: view });
+          const prev = this.ui.hud;
+          // A new target while still hunting means your strike landed and you inherited theirs.
+          const landed =
+            prev && prev.status === "hunting" && view.status === "hunting" && view.target !== prev.target
+              ? { atMs: this.now(), target: view.target }
+              : this.ui.landed;
+          this.update({
+            hud: view,
+            strikeSentAtMs: null,
+            landed,
+            tags: landed !== this.ui.landed ? this.ui.tags + 1 : this.ui.tags,
+          });
           if (view.status !== "hunting") this.stopReporting();
         } catch {
           this.note("info", "A HUD update did not open.");
@@ -341,6 +420,25 @@ export class HuntSession {
     this.update({ notes: [{ tMs: this.now(), text, kind }, ...this.ui.notes].slice(0, 20) });
   }
 
+  private checkZone(f: RadioFix): void {
+    const zone = this.d.zone;
+    if (!zone || !(f.acc >= 0)) return;
+    const inside = inCircle({ lat: f.lat, lon: f.lon }, zone);
+    if (inside && this.ui.outSinceMs !== null) this.update({ outSinceMs: null });
+    if (!inside && this.ui.outSinceMs === null) this.update({ outSinceMs: f.tMs });
+  }
+
+  private updateBlocked(): void {
+    const bad = (s: string) => s === "unauthorized" || s === "poweredOff" || s === "unsupported";
+    const blocked =
+      bad(this.radioStates.peripheral) || bad(this.radioStates.central)
+        ? "bluetooth"
+        : this.locationStatus === "denied" || this.locationStatus === "restricted"
+          ? "location"
+          : null;
+    if (blocked !== this.ui.blocked) this.update({ blocked });
+  }
+
   private update(p: Partial<UiState>): void {
     this.ui = { ...this.ui, ...p };
     this.refresh();
@@ -369,6 +467,8 @@ export class HuntSession {
           : "Relay has no mesh node yet.",
       },
       pendingActions: this.actions.size,
+      darkSinceMs: this.uploader.offline() ? this.uploader.lastContactMs : null,
+      frozenUntilMs: this.vehicle.frozenFor(this.now()) === null ? null : this.vehicle.frozenUntilMs,
     };
   }
 }

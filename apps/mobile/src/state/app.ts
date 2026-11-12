@@ -9,6 +9,7 @@ import { type CarryConfig, MeshCarry } from "../carry/mesh";
 import { genesis } from "../game/batch";
 import { openPlayerKeys } from "../game/hud";
 import { HuntSession } from "../game/session";
+import { checkedZone, type Zone } from "../game/zone";
 import { enrol } from "../identity/enrol";
 import { type Identity, loadIdentity, nearSigner } from "../identity/identity";
 import { keychain } from "../identity/keychain";
@@ -23,11 +24,28 @@ import { decodeMatchRecord, encodeMatchRecord, type MatchRecord } from "./persis
 
 export interface Settings extends CarryConfig {
   relayUrl: string;
+  /** The web replay (apps/replay); the results screen opens `<replayUrl>/?match=<id>`. */
+  replayUrl: string;
   rpcUrl: string;
   contractId: string;
 }
 
-export type Route = "loading" | "enrol" | "home" | "lobby" | "briefing" | "hunt" | "results";
+export type Route =
+  | "loading"
+  | "enrol"
+  | "primer"
+  | "home"
+  | "create"
+  | "scan"
+  | "lobby"
+  | "briefing"
+  | "hunt"
+  | "results";
+
+export interface RecentMatch {
+  matchId: string;
+  atMs: number;
+}
 
 const extra = (Constants.expoConfig?.extra ?? {}) as { contractId?: string | null };
 
@@ -37,10 +55,13 @@ const DEFAULTS: Settings = {
   contractId: extra.contractId ?? "",
   nodeAddress: "",
   serverUrl: "",
+  replayUrl: "",
 };
 
 const SETTINGS_FILE = "settings.json";
 const CURRENT_FILE = "current.json";
+const FLAGS_FILE = "flags.json";
+const RECENT_FILE = "recent.json";
 const matchFile = (id: string) => `match-${id}.json`;
 const POLL_MS = 3_000;
 
@@ -61,6 +82,14 @@ class AppModel {
   session: HuntSession | null = null;
   here: { lat: number; lon: number; acc: number } | null = null;
   showSettings = false;
+  /** A page opened from home: the create form or the QR scanner. */
+  page: "create" | "scan" | null = null;
+  primerSeen = true;
+  recent: RecentMatch[] = [];
+  /** Home: this account's contract balance in the match token, and that token. */
+  wallet: { token: string; balance: bigint } | null = null;
+  /** The player chose to see results while the match still runs (after being tagged). */
+  resultsNow = false;
   busy: string | null = null;
   error: string | null = null;
   ready = false;
@@ -94,7 +123,9 @@ class AppModel {
   get route(): Route {
     if (!this.ready) return "loading";
     if (!this.identity?.accountId) return "enrol";
-    if (!this.matchId) return "home";
+    if (!this.primerSeen) return "primer";
+    if (!this.matchId) return this.page ?? "home";
+    if (this.resultsNow) return "results";
     if (this.session) return this.session.snapshot().over ? "results" : "hunt";
     const phase = this.match?.phase;
     if (phase === "running" || phase === "ending") return "briefing";
@@ -129,6 +160,10 @@ class AppModel {
       const s = files.read(SETTINGS_FILE);
       if (s) this.settings = { ...DEFAULTS, ...(JSON.parse(s) as Partial<Settings>) };
       this.identity = await loadIdentity(keychain);
+      const flags = files.read(FLAGS_FILE);
+      this.primerSeen = flags ? (JSON.parse(flags) as { primerSeen?: boolean }).primerSeen === true : false;
+      const recent = files.read(RECENT_FILE);
+      this.recent = recent ? (JSON.parse(recent) as RecentMatch[]) : [];
       const cur = files.read(CURRENT_FILE);
       const id = cur ? (JSON.parse(cur) as { matchId?: string }).matchId : undefined;
       if (id && isMatchId(id)) this.setMatch(id);
@@ -144,6 +179,70 @@ class AppModel {
     files.write(SETTINGS_FILE, JSON.stringify(this.settings));
     this.showSettings = false;
     this.emit();
+  }
+
+  finishPrimer(): void {
+    this.primerSeen = true;
+    files.write(FLAGS_FILE, JSON.stringify({ primerSeen: true }));
+    this.emit();
+  }
+
+  openPage(page: "create" | "scan" | null): void {
+    this.page = page;
+    this.error = null;
+    this.emit();
+  }
+
+  showResults(): void {
+    this.resultsNow = true;
+    this.emit();
+  }
+
+  /** The zone the relay sent, only if it matches the chain's commitment. */
+  get zone(): Zone | null {
+    const m = this.match;
+    return checkedZone(m?.zone ?? null, m?.chain?.zoneHash ?? null);
+  }
+
+  /** Home: reads this account's balance in the contract's first allowed token. */
+  refreshWallet() {
+    const me = this.me;
+    if (!me || !this.settings.contractId) return;
+    void (async () => {
+      try {
+        const cfg = await this.rpc.view<{ allowed_tokens: string[] }>(
+          this.settings.contractId,
+          "get_config",
+          {},
+        );
+        const token = cfg.allowed_tokens[0];
+        if (!token) return;
+        const bal = await this.rpc.view<string>(this.settings.contractId, "get_balance", {
+          account_id: me,
+          token,
+        });
+        this.wallet = { token, balance: BigInt(bal) };
+        this.emit();
+      } catch (e) {
+        this.error = message(e);
+        this.emit();
+      }
+    })();
+  }
+
+  /** Sends the whole contract balance to this account (the payout account fixed at enrolment). */
+  withdraw() {
+    return this.act("Withdrawing", async () => {
+      const w = this.wallet;
+      if (!w || w.balance === 0n) throw new Error("Nothing to withdraw.");
+      const id = this.need();
+      await this.rpc.functionCall(
+        { accountId: id.accountId as string, publicKey: id.nearPk, secretKey: id.nearSk },
+        this.settings.contractId,
+        { methodName: "withdraw", args: { token: w.token, amount: w.balance.toString() }, gas: PLAYER_GAS },
+      );
+      this.refreshWallet();
+    });
   }
 
   toggleSettings(on: boolean): void {
@@ -249,6 +348,13 @@ class AppModel {
 
   private setMatch(id: string): void {
     this.matchId = id;
+    this.page = null;
+    this.resultsNow = false;
+    this.recent = [{ matchId: id, atMs: Date.now() }, ...this.recent.filter((r) => r.matchId !== id)].slice(
+      0,
+      5,
+    );
+    files.write(RECENT_FILE, JSON.stringify(this.recent));
     this.match = null;
     this.briefing = null;
     files.write(CURRENT_FILE, JSON.stringify({ matchId: id }));
@@ -264,7 +370,9 @@ class AppModel {
     this.briefing = null;
     this.matchId = null;
     this.match = null;
+    this.resultsNow = false;
     files.remove(CURRENT_FILE);
+    this.refreshWallet();
     this.emit();
   }
 
@@ -355,6 +463,7 @@ class AppModel {
         }),
       carry: (d) => new MeshCarry({ config: settings, matchId, ...d }),
       carryConfig: settings,
+      zone: this.zone?.zone ?? null,
     });
     this.session.subscribe(() => this.emit());
     this.stopPolling();

@@ -5,6 +5,8 @@
 //
 // Assumed, not yet served by the relay (see README "What the relay must provide"):
 //   GET /referee → {referee_pk, referee_box_pk, box_pk_sig}   (the referee's `pubkeys`, base64)
+//   GET /matches/:id → `zone: {zone: Circle, safehouses: Circle[]}`  (the relay already stores it;
+//     the app checks it against the chain's zone_hash before drawing it)
 
 import { fromHex, toHex, utf8 } from "@tail/protocol";
 import { fromB64, toB64 } from "../lib/b64";
@@ -133,6 +135,8 @@ export interface ChainMatch {
   players: ChainPlayer[];
   /** ed25519 key the match pinned at creation; it signs the referee's box key. */
   refereePk: Uint8Array;
+  /** SHA256 commitment to the zone and safehouses. */
+  zoneHash: Uint8Array;
 }
 
 export interface SealedKeys {
@@ -150,6 +154,8 @@ export interface MatchView {
   endMs: number | null;
   keys: SealedKeys[];
   chain: ChainMatch | null;
+  /** As the relay sent it; check it against `chain.zoneHash` before use (game/zone.ts). */
+  zone: { zone: Circle; safehouses: Circle[] } | null;
 }
 
 export interface RefereeKeys {
@@ -186,6 +192,27 @@ function parseChain(v: unknown): ChainMatch | null {
       return { accountId: read.str(o, "account_id"), head: read.amount(o, "head"), out: read.bool(o, "out") };
     }),
     refereePk: read.hex(c, "referee_pk"),
+    zoneHash: read.hex(c, "zone_hash"),
+  };
+}
+
+/** A circle in the relay's stored shape (camelCase) or the request shape (snake_case). */
+function parseCircle(v: unknown): Circle {
+  const o = obj(v, "circle");
+  const pick = (camel: string, snake: string) => read.int(o, camel in o ? camel : snake);
+  return {
+    latE7: pick("latE7", "lat_e7"),
+    lonE7: pick("lonE7", "lon_e7"),
+    radiusM: pick("radiusM", "radius_m"),
+  };
+}
+
+function parseZone(v: unknown): { zone: Circle; safehouses: Circle[] } | null {
+  if (v === null || v === undefined) return null;
+  const o = obj(v, "zone");
+  return {
+    zone: parseCircle(o["zone"]),
+    safehouses: Array.isArray(o["safehouses"]) ? o["safehouses"].map(parseCircle) : [],
   };
 }
 
@@ -286,6 +313,7 @@ export class RelayClient {
         };
       }),
       chain: parseChain(r["chain"]),
+      zone: parseZone(r["zone"]),
     };
   }
 
