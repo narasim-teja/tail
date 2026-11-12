@@ -101,7 +101,8 @@ not held; it drains as the window slides.
 
 **End.** A tick ends the match at `end_ms` or when one player is left. Actions with
 `t_ms ≥ end_ms` are refused with `TimeUp`. Survivors keep their heads, and their HUD status
-becomes `WON`. The sum of heads is constant from `Start` to `End`, and the simulator checks
+becomes `WON`. An out player's HUD carries `tagged_by`, the account that took their head: the
+hunter for a `Tag`, the receiver for a `Forfeit`. The sum of heads is constant from `Start` to `End`, and the simulator checks
 that after every tick.
 
 ## Constants

@@ -347,13 +347,13 @@ impl State {
     }
 
     fn alive_count(&self) -> usize {
-        self.players.iter().filter(|p| p.alive).count()
+        self.players.iter().filter(|p| p.alive()).count()
     }
 
     fn hunter_of(&self, p: u16) -> Option<u16> {
         self.players
             .iter()
-            .position(|q| q.alive && q.target == Some(p))
+            .position(|q| q.alive() && q.target == Some(p))
             .map(|i| i as u16)
     }
 
@@ -434,7 +434,7 @@ impl State {
             .players
             .get_mut(b.player as usize)
             .ok_or(Reject::UnknownPlayer)?;
-        if !p.alive {
+        if !p.alive() {
             return Err(Reject::PlayerOut);
         }
         if b.seq != p.next_seq {
@@ -509,7 +509,7 @@ impl State {
         let mut t = BTreeMap::new();
         for e in cur.saturating_sub(KEEP_EPOCHS)..=cur + 2 {
             for (i, p) in self.players.iter().enumerate() {
-                if p.alive {
+                if p.alive() {
                     let tok = beacon_token(&self.secrets.k_tag, &self.secrets.k_players[i], e);
                     t.insert(tok, (i as u16, e));
                 }
@@ -695,7 +695,7 @@ impl State {
         let mut new = Vec::new();
         for a in 0..n {
             for b in a + 1..n {
-                if !self.players[a].alive || !self.players[b].alive {
+                if !self.players[a].alive() || !self.players[b].alive() {
                     continue;
                 }
                 for d in &self.players[a].epochs {
@@ -803,7 +803,7 @@ impl State {
 
     fn live_target(&self, p: u16, t_ms: u64) -> Result<u16, Refuse> {
         let pl = &self.players[p as usize];
-        if !pl.alive {
+        if !pl.alive() {
             return Err(Refuse::PlayerOut);
         }
         if t_ms >= self.end_ms {
@@ -836,7 +836,7 @@ impl State {
         let (l, w) = (loser as usize, winner as usize);
         let head = std::mem::take(&mut self.players[l].head);
         self.players[w].head += head;
-        self.players[l].alive = false;
+        self.players[l].taken_by = Some(winner);
         let next = self.players[l].target.take();
         self.players[w].target = next.filter(|&n| n != winner);
     }
@@ -943,7 +943,7 @@ impl State {
     fn dark_rules(&mut self, now: u64, out: &mut Out) {
         let eff = now.min(self.end_ms);
         for pi in 0..self.players.len() {
-            if !self.players[pi].alive || self.dark_gap(pi, now) <= DARK_GRACE_MS {
+            if !self.players[pi].alive() || self.dark_gap(pi, now) <= DARK_GRACE_MS {
                 continue;
             }
             let p = &mut self.players[pi];
@@ -955,7 +955,7 @@ impl State {
             if self.alive_count() <= 1 {
                 break;
             }
-            if self.players[pi].alive && self.players[pi].dark_ms >= DARK_FORFEIT_MS {
+            if self.players[pi].alive() && self.players[pi].dark_ms >= DARK_FORFEIT_MS {
                 let Some(to) = self.hunter_of(pi as u16) else {
                     continue;
                 };
@@ -973,7 +973,7 @@ impl State {
 
     fn leak(&self, t: u16, now: u64) -> Option<GridCell> {
         let ti = t as usize;
-        if !self.players[ti].alive || self.dark_gap(ti, now) < DARK_LEAK_MS {
+        if !self.players[ti].alive() || self.dark_gap(ti, now) < DARK_LEAK_MS {
             return None;
         }
         let f = self.players[ti].last_fix?;
@@ -991,7 +991,7 @@ impl State {
             .map(|(i, p)| {
                 let me = i as u16;
                 let lock_of = |h: u16, t: u16| self.lock(h, t, cur).min(u32::from(u8::MAX)) as u8;
-                let hud = if p.alive {
+                let hud = if p.alive() {
                     Hud {
                         tick: tick_no,
                         epoch: cur,
@@ -1009,6 +1009,7 @@ impl State {
                             .unwrap_or_default(),
                         leak: p.target.and_then(|t| self.leak(t, now)),
                         hint_fact: facts[i],
+                        tagged_by: None,
                     }
                 } else {
                     Hud {
@@ -1021,6 +1022,7 @@ impl State {
                         target: String::new(),
                         leak: None,
                         hint_fact: None,
+                        tagged_by: p.taken_by.map(|w| self.players[w as usize].account.clone()),
                     }
                 };
                 (me, hud)
@@ -1035,7 +1037,7 @@ impl State {
         for p in &mut self.players {
             p.epochs.retain(|d| d.epoch >= keep_from);
             p.freezes.retain(|&(_, until)| until >= keep_from_ms);
-            if !p.alive {
+            if !p.alive() {
                 // An eliminated player's evidence can never matter again.
                 p.epochs.clear();
                 p.freezes.clear();
@@ -1052,7 +1054,7 @@ impl Player {
             counter: d.counter,
             next_seq: 0,
             prev: [0; 32],
-            alive: true,
+            taken_by: None,
             target,
             head: stake,
             last_fix: None,

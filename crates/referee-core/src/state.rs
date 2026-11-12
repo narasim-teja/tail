@@ -61,7 +61,10 @@ pub(crate) struct Player {
     pub counter: u32,
     pub next_seq: u32,
     pub prev: Hash,
-    pub alive: bool,
+    /// Who took this player's head (hunter on a Tag, receiver on a Forfeit); `None` while
+    /// they are in. One field rather than an `alive` flag beside it, so a player can never be
+    /// out without the HUD being able to say who got them.
+    pub taken_by: Option<u16>,
     pub target: Option<u16>,
     pub head: u128,
     /// Latest accepted fix with `acc ≤ MAX_ACC_M`.
@@ -80,6 +83,12 @@ pub(crate) struct Player {
     pub last_hint_t: Option<u64>,
     /// Ascending by epoch, trailing window only.
     pub epochs: Vec<EpochData>,
+}
+
+impl Player {
+    pub(crate) fn alive(&self) -> bool {
+        self.taken_by.is_none()
+    }
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,7 +126,7 @@ impl fmt::Debug for State {
             .field("match_id", &self.cfg.match_id)
             .field("phase", &self.phase)
             .field("players", &self.players.len())
-            .field("alive", &self.players.iter().filter(|p| p.alive).count())
+            .field("alive", &self.players.iter().filter(|p| p.alive()).count())
             .field("log_size", &self.log.size())
             .field("next_verdict_seq", &self.next_verdict_seq)
             .finish_non_exhaustive()
@@ -168,7 +177,7 @@ impl State {
             .map(|(i, p)| PlayerView {
                 index: i as u16,
                 account: p.account.clone(),
-                alive: p.alive,
+                alive: p.alive(),
                 head: p.head,
                 target: p.target,
                 dark_ms: p.dark_ms,

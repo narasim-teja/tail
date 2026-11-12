@@ -1,5 +1,6 @@
 //! Engine-level rules that do not need a whole simulated match: init, the Start verdict, batch
-//! authenticity, tick ordering, finish, receipts and the sealed state. Each rejection test has a
+//! authenticity, tick ordering, finish, receipts, the sealed state and what an out player's HUD
+//! says. Each rejection test has a
 //! twin where the one broken input is fixed and the batch goes through.
 
 use p256::ecdsa::SigningKey;
@@ -7,9 +8,11 @@ use referee_core::{
     finish, init, tick, Circle, Device, FinishError, HintReceipt, InitError, MatchConfig, Phase, Reject,
     State, TickError, TickInput, TickOutput,
 };
-use tail_protocol::beacon::{derive_player_key, derive_tag_key};
+use tail_protocol::beacon::{beacon_token, derive_player_key, derive_tag_key, epoch_at};
 use tail_protocol::digest::{batch_client_data_hash, batch_hash, verdict_digest};
-use tail_protocol::{ring, Action, Batch, BatchEnvelope, Fix, Hash, LogEntry, Verdict};
+use tail_protocol::{
+    ring, target_status, Action, Batch, BatchEnvelope, Fix, Hash, Hud, LogEntry, Sighting, Verdict,
+};
 
 const START: u64 = 1_800_000_000_000;
 const APP: &str = "TEAM.dev.tail.test";
@@ -597,4 +600,127 @@ fn absurd_device_times_cannot_crash_the_referee_and_play_goes_on() {
     assert_eq!(out.refused.len(), 2);
     let out = tick(out.state, input(2, START + 20_000, Vec::new())).unwrap();
     assert_eq!(out.state.total_heads(), 3_000_000);
+}
+
+// ── who took an out player's head ─────────────────────────────────────────────────
+
+const ACCOUNTS: [&str; 3] = ["a", "b", "c"];
+
+/// Player indices in ring order: `ring[0]` hunts `ring[1]`, who hunts `ring[2]`.
+fn ring_order() -> [u16; 3] {
+    let order = ring::build_ring(&ACCOUNTS, &VRF);
+    std::array::from_fn(|k| ACCOUNTS.iter().position(|a| *a == order[k]).unwrap() as u16)
+}
+
+/// What a phone heard of `other` over the ten seconds before `now`: a strong token for
+/// every epoch those seconds touch.
+fn heard(other: u16, now: u64) -> Vec<Sighting> {
+    let k_tag = derive_tag_key(&K_M);
+    let first = epoch_at(now - 9_999, START).unwrap();
+    let last = epoch_at(now, START).unwrap();
+    (first..=last)
+        .map(|epoch| Sighting {
+            epoch,
+            token: beacon_token(&k_tag, &derive_player_key(&K_M, other), epoch),
+            rssi_max: -60,
+            rssi_med: -62,
+            n: 3,
+        })
+        .collect()
+}
+
+/// One batch covering the ten seconds before `now`, a fix every 2.5 s, standing `north_m`
+/// north of the zone centre.
+fn walk(
+    ph: &mut Phone,
+    now: u64,
+    north_m: i32,
+    sightings: Vec<Sighting>,
+    actions: Vec<Action>,
+) -> BatchEnvelope {
+    let fixes = (0..4).map(|k| fix(now - 7_500 + k * 2_500, north_m)).collect();
+    let mut b = ph.unsigned(now, fixes, actions);
+    b.sightings = sightings;
+    let c = ph.counter + 1;
+    ph.seal(b, c)
+}
+
+fn hud_of(out: &TickOutput, p: u16) -> &Hud {
+    &out.huds.iter().find(|(q, _)| *q == p).unwrap().1
+}
+
+#[test]
+fn a_tagged_players_hud_names_the_hunter_and_a_player_still_in_names_no_one() {
+    let (mut st, mut ph) = three();
+    let [h, t, by] = ring_order();
+    for n in 1..=30u32 {
+        let now = START + u64::from(n) * 10_000;
+        // The hunter keeps striking; strikes before the lock builds are refused, not rejected.
+        let strike = if n >= 6 {
+            vec![Action::Strike { nonce: n }]
+        } else {
+            Vec::new()
+        };
+        let batches = vec![
+            walk(&mut ph[h as usize], now, 0, heard(t, now), strike),
+            walk(&mut ph[t as usize], now, 3, heard(h, now), Vec::new()),
+            walk(&mut ph[by as usize], now, 800, Vec::new(), Vec::new()),
+        ];
+        let out = tick(st, input(n, now, batches)).unwrap();
+        assert_eq!(out.rejected, vec![]);
+        let tagged = out
+            .verdicts
+            .iter()
+            .any(|v| v.body == Verdict::Tag { hunter: h, target: t });
+        if !tagged {
+            for p in [h, t, by] {
+                assert_eq!(hud_of(&out, p).tagged_by, None, "player {p} is still in");
+            }
+            st = out.state;
+            continue;
+        }
+        let gone = hud_of(&out, t);
+        assert_eq!(gone.status, target_status::OUT);
+        assert_eq!(gone.tagged_by.as_deref(), Some(ACCOUNTS[h as usize]));
+        assert_eq!(hud_of(&out, h).tagged_by, None);
+        assert_eq!(hud_of(&out, by).tagged_by, None);
+        // The name stays on every later HUD, not only the one of the tagging tick.
+        let later = tick(out.state, input(n + 1, now + 10_000, Vec::new())).unwrap();
+        assert_eq!(hud_of(&later, t).tagged_by.as_deref(), Some(ACCOUNTS[h as usize]));
+        return;
+    }
+    panic!("the hunter never landed the tag");
+}
+
+#[test]
+fn a_forfeited_players_hud_names_the_account_that_received_the_head() {
+    let (mut st, mut ph) = three();
+    // ring[2] goes dark; its hunter, ring[1], receives the head. ring[0] is never involved.
+    let [bystander, receiver, dark] = ring_order();
+    for n in 1..=25u32 {
+        let now = START + u64::from(n) * 10_000;
+        let batches = vec![
+            walk(&mut ph[bystander as usize], now, 0, Vec::new(), Vec::new()),
+            walk(&mut ph[receiver as usize], now, 500, Vec::new(), Vec::new()),
+        ];
+        let out = tick(st, input(n, now, batches)).unwrap();
+        assert_eq!(out.rejected, vec![]);
+        if out.verdicts.iter().any(|v| {
+            v.body
+                == Verdict::Forfeit {
+                    player: dark,
+                    to: receiver,
+                }
+        }) {
+            let gone = hud_of(&out, dark);
+            assert_eq!(gone.status, target_status::OUT);
+            assert_eq!(gone.tagged_by.as_deref(), Some(ACCOUNTS[receiver as usize]));
+            assert_eq!(hud_of(&out, receiver).tagged_by, None);
+            assert_eq!(hud_of(&out, bystander).tagged_by, None);
+            return;
+        }
+        assert_eq!(hud_of(&out, dark).tagged_by, None, "still in until the forfeit");
+        st = out.state;
+    }
+    panic!("the dark player never forfeited");
 }
