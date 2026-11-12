@@ -1,0 +1,67 @@
+{
+  "input": {
+    "matchId": "5f6232906ba95120646edd0a8b3ce6cb",
+    "player": 1,
+    "seq": 7,
+    "prev": "e617ffecade1762d85a9f15b141095629ce3e827c15ecd9ef8fba91be83ea6e5",
+    "tMs": "1794514000123",
+    "fixes": [
+      {
+        "tMs": "1794514000000",
+        "latE7": 423550000,
+        "lonE7": -710650000,
+        "accM": 8,
+        "speedCmps": 140,
+        "flags": 0
+      },
+      {
+        "tMs": "1794514001000",
+        "latE7": -1,
+        "lonE7": 2147483647,
+        "accM": 65535,
+        "speedCmps": 0,
+        "flags": 1
+      }
+    ],
+    "sightings": [
+      {
+        "epoch": 4000000,
+        "token": "cd5cf3de505f191e5e765110c7cd1df1",
+        "rssiMax": -61,
+        "rssiMed": -128,
+        "n": 255
+      }
+    ],
+    "actions": [
+      {
+        "kind": "Hint",
+        "hint": 1,
+        "nonce": 42,
+        "text": "warmer? 🧊"
+      },
+      {
+        "kind": "Hint",
+        "hint": 0,
+        "nonce": 43
+      },
+      {
+        "kind": "Strike",
+        "nonce": 44
+      }
+    ]
+  },
+  "borsh": "5f6232906ba95120646edd0a8b3ce6cb010007000000e617ffecade1762d85a9f15b141095629ce3e827c15ecd9ef8fba91be83ea6e5fb985ed1a10100000200000080985ed1a101000030dc3e197057a4d508008c0000689c5ed1a1010000ffffffffffffff7fffff0000010100000000093d00cd5cf3de505f191e5e765110c7cd1df1c380ff0300000000012a000000010c0000007761726d65723f20f09fa78a00002b00000000012c000000",
+  "hash": "ecacec6c99ccff9b30be1392312dbc5481896816efdb8a0d19c545a948b4f0d4",
+  "clientDataHash": "57632e61872d0662b657b54ec4672d514b76b137cd3234e6fa90c6469eab7894",
+  "envelope": {
+    "assertion": "418c556f6d3ebe8435aeb190a57855d6a33a85830ac79f43d8517df8a418f8e8",
+    "borsh": "5f6232906ba95120646edd0a8b3ce6cb010007000000e617ffecade1762d85a9f15b141095629ce3e827c15ecd9ef8fba91be83ea6e5fb985ed1a10100000200000080985ed1a101000030dc3e197057a4d508008c0000689c5ed1a1010000ffffffffffffff7fffff0000010100000000093d00cd5cf3de505f191e5e765110c7cd1df1c380ff0300000000012a000000010c0000007761726d65723f20f09fa78a00002b00000000012c00000020000000418c556f6d3ebe8435aeb190a57855d6a33a85830ac79f43d8517df8a418f8e8"
+  },
+  "enroll": {
+    "challenge": "f4e40d75ef2c2f69145d6e54e908986a62a7309a904e724708e2d56ed7461537",
+    "accountId": "alice.tail.testnet",
+    "playerBoxPk": "dd1496da5992ccedcef1e83c7c3caa6c18757bd8ce5be2d98fe941579da5a317",
+    "nearPk": "841d97d0e8c60369840fc737d1e5ce428475a4b95dce338711c47f5e072ef33c",
+    "clientDataHash": "13f0bcea2bf88b366c1d9cdb5d79c503e088dd1275212ebddaa54ee75a85bc24"
+  }
+}

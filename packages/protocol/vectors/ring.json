@@ -1,0 +1,19 @@
+{
+  "accounts": [
+    "dave.tail.testnet",
+    "alice.tail.testnet",
+    "bob.tail.testnet",
+    "carol.tail.testnet",
+    "Zed.tail.testnet"
+  ],
+  "playersHash": "ba9235aeb1b75aa9725ef411753c18b1264171b72e686105e798be9fdb8fe0c7",
+  "vrfSignature": "78bca3f551f894bf6d537d5f6066bc5a44f5b752f8b8e79614577cb655d6028ec875256401a9bebd40898919d3d2123045a34c9434bc9450142a5225c4b0dcff",
+  "ringCommit": "9b4fb437c581a6e62b79603fdc3faa98ee774f7a04762a35f7879b4cc68b9862",
+  "ring": [
+    "carol.tail.testnet",
+    "bob.tail.testnet",
+    "Zed.tail.testnet",
+    "alice.tail.testnet",
+    "dave.tail.testnet"
+  ]
+}
