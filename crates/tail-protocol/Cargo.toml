@@ -1,0 +1,33 @@
+[package]
+name = "tail-protocol"
+version = "0.1.0"
+description = "TAIL wire formats and crypto, byte-identical to packages/protocol (TypeScript)."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# HMAC/HKDF beacon maths (referee, tests). The contract needs neither.
+beacon = ["dep:hmac", "dep:hkdf"]
+# X25519 + ChaCha20-Poly1305 sealing between phones and the referee.
+seal = ["beacon", "dep:x25519-dalek", "dep:chacha20poly1305"]
+
+[dependencies]
+borsh = { version = "1", features = ["derive"] }
+sha2 = { version = "0.10", default-features = false }
+hmac = { version = "0.12", optional = true }
+hkdf = { version = "0.12", optional = true }
+x25519-dalek = { version = "2", optional = true, features = ["static_secrets"] }
+chacha20poly1305 = { version = "0.10", optional = true }
+
+[dev-dependencies]
+# Tests always cover every feature, even under a plain `cargo test --workspace`.
+tail-protocol = { path = ".", features = ["seal"] }
+serde_json = "1"
+hex = "0.4"
+ed25519-dalek = "2"
+
+[lints]
+workspace = true
