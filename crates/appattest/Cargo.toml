@@ -1,0 +1,29 @@
+[package]
+name = "appattest"
+version = "0.1.0"
+description = "Apple App Attest assertion verification (P-256), shared by the TAIL referee and servers."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Produces assertions the way the Secure Enclave does, for simulators and tests only. The
+# referee never enables it.
+signer = []
+
+[dependencies]
+ciborium = "=0.2.2"
+p256 = { version = "=0.14.0", features = ["ecdsa"] }
+sha2 = "=0.11.1"
+x509-cert = "=0.3.0"
+
+[dev-dependencies]
+appattest = { path = ".", features = ["signer"] }
+base64 = "=0.23.1"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+
+[lints]
+workspace = true
