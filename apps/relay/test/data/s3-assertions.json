@@ -1,0 +1,15 @@
+{
+  "source": "the S3 tail-attest run (iPhone 17 Pro): two real Secure Enclave assertions over raw 32-byte clientDataHashes, and the key attested for them",
+  "appId": "LKABS9RZAC.com.lkabs9rzac.tail",
+  "publicKey": "043e4d1182e2eb6219b46aa11d7deb0644447f1abc74c5e42b329117130d351d0de931489da380f370e5e81c89b11bfe6c5419e74d93be29a3b770a19228c98d9d",
+  "assertions": [
+    {
+      "clientDataHash": "aOgYVAjoMurp8aGc7xqXFT9NLywWUZl1kvib8InS3cU=",
+      "object": "omlzaWduYXR1cmVYRjBEAiBPmR5zT3od3Jecrp4+fl2Pe/8exEiPGP3/QEp26o5UPQIgEpb9ixXIWcLoQfaUQpnEvpIxgiYmrz1QrGtPzARAeOZxYXV0aGVudGljYXRvckRhdGFYY7ok5xglIrZqCx44IfGWHABjhETx79EJVLBi4pkw+Wp8wAAAAAGid2FwcGxlX2J1bmRsZV92ZXJzaW9uXzAxYTF4HGFwcGxlX3ZhbGlkYXRpb25fY2F0ZWdvcnlfMDFEAwAAAA=="
+    },
+    {
+      "clientDataHash": "XlWPed2kVcf+d9XMCFp9Djku1iGIAtnEHdevlEEQ2nM=",
+      "object": "omlzaWduYXR1cmVYRzBFAiEA30FnufGsZTLY99pSMgESh5t7/iQ2GREEGD0koir3NFMCIHqT6MZ60NHS8izYP4qoGI8F1dAtpwqgQddIRpBkJr8YcWF1dGhlbnRpY2F0b3JEYXRhWGO6JOcYJSK2agseOCHxlhwAY4RE8e/RCVSwYuKZMPlqfMAAAAACondhcHBsZV9idW5kbGVfdmVyc2lvbl8wMWExeBxhcHBsZV92YWxpZGF0aW9uX2NhdGVnb3J5XzAxRAMAAAA="
+    }
+  ]
+}
