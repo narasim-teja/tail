@@ -1,0 +1,135 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/archivo/wdth.css";
+@import "maplibre-gl/dist/maplibre-gl.css";
+
+/*
+ * TAIL replay tokens. Brand colours (@tail/brand) are written onto :root by main.tsx; the values
+ * below are the same colours in OKLCH so the first paint matches. Everything else is derived in
+ * OKLCH from them: the surface is dusk slate, never black; text is warm, never white.
+ */
+:root {
+  --persimmon: oklch(0.68 0.17 40);
+  --dusk: oklch(0.25 0.025 255);
+  --dusk-ink: oklch(0.945 0.011 75);
+  --ink: oklch(0.24 0.02 45);
+
+  --surface: oklch(from var(--dusk) calc(l + 0.025) c h);
+  --surface-2: oklch(from var(--dusk) calc(l + 0.07) calc(c * 0.9) h);
+  --surface-3: oklch(from var(--dusk) calc(l + 0.12) calc(c * 0.8) h);
+  --rail: oklch(from var(--dusk) calc(l + 0.2) calc(c * 0.7) h);
+  --scrim: oklch(from var(--dusk) calc(l - 0.035) c h);
+  --text: var(--dusk-ink);
+  --text-2: oklch(from var(--dusk-ink) calc(l - 0.13) calc(c + 0.004) h);
+  --text-3: oklch(from var(--dusk-ink) calc(l - 0.27) calc(c + 0.006) h);
+  --hairline: oklch(from var(--dusk) calc(l + 0.1) calc(c * 0.8) h);
+
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: "Archivo Variable", "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --color-persimmon: var(--persimmon);
+  --color-ink: var(--ink);
+  --color-dusk: var(--dusk);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-rail: var(--rail);
+  --color-scrim: var(--scrim);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-hairline: var(--hairline);
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --shadow-lift: 0 18px 48px -12px oklch(from var(--dusk) calc(l - 0.15) c h / 0.7);
+}
+
+@utility z-map {
+  z-index: 0;
+}
+@utility z-chrome {
+  z-index: 10;
+}
+@utility z-sheet {
+  z-index: 30;
+}
+@utility z-tooltip {
+  z-index: 60;
+}
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+/* Numbers that carry the game (clock, heads) are set a little narrow, like a scoreboard. */
+@utility numeral {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  font-stretch: 88%;
+  letter-spacing: -0.005em;
+}
+/* Legibility over the moving map without boxing the text. */
+@utility over-map {
+  text-shadow:
+    0 0 1px oklch(from var(--dusk) calc(l - 0.08) c h),
+    0 1px 10px oklch(from var(--dusk) calc(l - 0.08) c h / 0.9);
+}
+
+html {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+}
+@media (min-width: 1800px) {
+  /* The TV across the room: everything a size up. */
+  html {
+    font-size: 19px;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--dusk);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-optical-sizing: auto;
+  font-kerning: normal;
+  /* Light type on dark reads thin; a hair of tracking and weight compensates. */
+  letter-spacing: 0.006em;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+#root {
+  position: fixed;
+  inset: 0;
+}
+
+::selection {
+  background: var(--surface-3);
+}
+
+:focus-visible {
+  outline-color: var(--text);
+}
+
+/* MapLibre chrome, restyled to sit quietly on dusk. */
+.maplibregl-ctrl.maplibregl-ctrl-attrib {
+  background: transparent;
+  font: 500 0.6875rem / 1.4 var(--font-sans);
+  color: var(--text-3);
+}
+.maplibregl-ctrl.maplibregl-ctrl-attrib a {
+  color: var(--text-3);
+}
+.maplibregl-ctrl.maplibregl-ctrl-attrib.maplibregl-compact {
+  background: var(--surface);
+  color: var(--text-2);
+}
+.maplibregl-ctrl-attrib-button {
+  filter: invert(0.85);
+}
+.maplibregl-canvas:focus-visible {
+  outline: 2px solid var(--text-3);
+  outline-offset: -2px;
+}

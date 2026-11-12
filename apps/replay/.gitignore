@@ -1,0 +1,6 @@
+dist/
+# Generated: screenshots (scripts/shots.ts) and the fixtures the page loads (scripts/make-fixture.ts,
+# run before dev, build and preview). scripts/data/common-paths.json is an input and stays.
+screenshots/
+public/fixtures/
+test-results/
