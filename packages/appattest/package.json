@@ -1,0 +1,17 @@
+{
+  "name": "@tail/appattest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@peculiar/x509": "3.1.0",
+    "cbor-x": "1.6.9",
+    "reflect-metadata": "0.2.2"
+  }
+}
