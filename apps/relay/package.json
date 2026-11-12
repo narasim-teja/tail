@@ -1,0 +1,21 @@
+{
+  "name": "@tail/relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@tail/appattest": "workspace:*",
+    "@tail/log": "workspace:*",
+    "@tail/protocol": "workspace:*",
+    "cbor-x": "1.6.9",
+    "hono": "4.13.18",
+    "near-api-js": "7.5.3"
+  }
+}
