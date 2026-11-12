@@ -5,7 +5,8 @@
   "license": "AGPL-3.0-only",
   "workspaces": [
     "packages/*",
-    "apps/*"
+    "apps/*",
+    "!apps/mobile"
   ],
   "scripts": {
     "check": "bun scripts/check.ts",
