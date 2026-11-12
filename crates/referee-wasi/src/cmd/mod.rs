@@ -26,6 +26,7 @@ pub fn dispatch(name: &str, input: Value) -> Result<Value, String> {
         "voice" => voice::run(input),
         "end" => end::run(input),
         "declassify" => end::declassify(input),
+        "declassify_batches" => end::declassify_batches(input),
         "bench_state" => bench::run(input),
         other => Err(format!("unknown cmd {other:?}")),
     }

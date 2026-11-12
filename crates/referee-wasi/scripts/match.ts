@@ -156,8 +156,13 @@ function batchFor(g: Ghost, ghosts: Ghost[], fromMs: number, toMs: number, start
   const env = { batch, assertion: assertion(g.sk, batchClientDataHash(batch), g.counter) };
   g.seq++;
   g.prev = batchHash(batch);
-  return b64(seal(boxPk, encodeBatchEnvelope(env), "tail/batch"));
+  const sealedB64 = b64(seal(boxPk, encodeBatchEnvelope(env), "tail/batch"));
+  // The relay keeps every sealed batch it forwarded, for declassify_batches after End.
+  keptSealed.push(sealedB64);
+  return sealedB64;
 }
+
+const keptSealed: string[] = [];
 
 // ── keys, enrolment ─────────────────────────────────────────────────────────────
 console.log(`balance before: ${await balance()}`);
@@ -324,6 +329,66 @@ take(e.verdicts, endCall);
 log.push(...e.log.map((x: string) => decodeLogEntry(unb64(x))));
 const { result: d } = await ok("declassify", { match_id: b64(matchId) });
 
+// Trails: every kept sealed batch, plus one sealed for another match and one garbage blob.
+const foreign: Batch = {
+  matchId: new Uint8Array(randomBytes(16)),
+  player: 0,
+  seq: 0,
+  prev: new Uint8Array(32),
+  tMs: BigInt(startMs),
+  fixes: [],
+  sightings: [],
+  actions: [],
+};
+const foreignSealed = b64(
+  seal(boxPk, encodeBatchEnvelope({ batch: foreign, assertion: new Uint8Array(0) }), "tail/batch"),
+);
+const { result: trails, call: trailsCall } = await ok("declassify_batches", {
+  match_id: b64(matchId),
+  state: e.state,
+  sealed: [...keptSealed, foreignSealed, b64(randomBytes(64))],
+});
+
+// Chunk measurement: 500 batches shaped like a 12-player match at 5 s cadence (5 fixes, a
+// sighting of each of 11 others in two epochs, a 115-byte assertion). Their contents are not
+// in this match's log; they only size the largest call the relay makes.
+const big: string[] = [];
+for (let n = 0; n < 500; n++) {
+  const t = startMs + n * 5000;
+  const batch: Batch = {
+    matchId,
+    player: n % 12,
+    seq: n,
+    prev: new Uint8Array(randomBytes(32)),
+    tMs: BigInt(t),
+    fixes: Array.from({ length: 5 }, (_, i) => ({
+      tMs: BigInt(t - 4000 + i * 1000),
+      latE7: ZONE.lat_e7 + n,
+      lonE7: ZONE.lon_e7 - n,
+      accM: 8,
+      speedCmps: 120,
+      flags: 0,
+    })),
+    sightings: Array.from({ length: 22 }, (_, i) => ({
+      epoch: Math.floor(n / 3) + (i % 2),
+      token: new Uint8Array(randomBytes(16)),
+      rssiMax: -60,
+      rssiMed: -70,
+      n: 4,
+    })),
+    actions: [],
+  };
+  big.push(
+    b64(
+      seal(boxPk, encodeBatchEnvelope({ batch, assertion: new Uint8Array(randomBytes(115)) }), "tail/batch"),
+    ),
+  );
+}
+const bigInput = { cmd: "declassify_batches", match_id: b64(matchId), state: e.state, sealed: big };
+const { result: bigOut, call: bigCall } = await ok("declassify_batches", bigInput);
+const chunkRow = `500 batches: request ${(JSON.stringify(bigInput).length / 1024).toFixed(0)} KB, response ${(JSON.stringify(bigOut).length / 1024).toFixed(0)} KB, wall ${bigCall.wall.toFixed(0)} ms, enclave ${bigCall.enclave} ms, returned ${bigOut.batches.length}`;
+const overCap = await refused("declassify_batches", { match_id: b64(matchId), sealed: [...big, big[0]] });
+
 // ── checks ──────────────────────────────────────────────────────────────────────
 console.log("\nchecks");
 check(
@@ -404,6 +469,26 @@ check(
   log.some((x) => x.kind === "HintReceipt"),
   "the voice receipt joined the log",
 );
+const logged = new Set(log.flatMap((x) => (x.kind === "Batch" ? [toHex(x.hash)] : [])));
+const returned = trails.batches.map((b: string) => toHex(sha256(unb64(b))));
+check(
+  returned.length === keptSealed.length &&
+    returned.every((h: string) => logged.has(h)) &&
+    logged.size === returned.length,
+  `declassify_batches: all ${returned.length} batches returned, each SHA256 is a LogEntry::Batch hash`,
+);
+check(
+  trails.refused.length === 2 &&
+    trails.refused[0].index === keptSealed.length &&
+    String(trails.refused[0].reason).includes("another match") &&
+    trails.refused[1].index === keptSealed.length + 1,
+  "a batch of another match and a garbage blob are refused one by one",
+);
+check(
+  bigOut.batches.length === 500 && bigOut.refused.length === 0,
+  `a 500-batch chunk opens in one call (${chunkRow})`,
+);
+check(overCap.includes("at most 500"), "a 501-batch call is refused");
 
 // ── table ───────────────────────────────────────────────────────────────────────
 console.log(`\nvoice: ${voiceRow}`);
@@ -421,6 +506,9 @@ console.log(
   `\ntick wall p50 ${q(walls, 0.5)?.toFixed(0)} ms, p95 ${q(walls, 0.95)?.toFixed(0)} ms; enclave p50 ${q(encl, 0.5)} ms`,
 );
 console.log(`start ${startCall.wall.toFixed(0)} ms, end ${endCall.wall.toFixed(0)} ms wall`);
+console.log(
+  `declassify_batches: ${keptSealed.length + 2} sealed in ${trailsCall.wall.toFixed(0)} ms wall; ${chunkRow}`,
+);
 const s = spend();
 console.log(
   `\nALL OK. ${s.calls} calls, $${s.usd.toFixed(4)} (compute_cost sum). balance after: ${await balance()}`,

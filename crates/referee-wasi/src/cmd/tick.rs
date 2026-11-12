@@ -33,7 +33,7 @@ struct Input {
 }
 
 /// Opens one phone's sealed batch; the error says why it was dropped.
-fn open_batch(box_sk: &[u8; 32], sealed_b64: &str) -> Result<BatchEnvelope, String> {
+pub(super) fn open_batch(box_sk: &[u8; 32], sealed_b64: &str) -> Result<BatchEnvelope, String> {
     let sealed = from_b64("batch", sealed_b64)?;
     let plain = tail_protocol::seal::open(box_sk, &sealed, domain::SEAL_BATCH)
         .map_err(|e| format!("does not open with the referee box key ({e:?})"))?;

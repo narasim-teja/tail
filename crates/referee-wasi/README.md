@@ -36,6 +36,7 @@ engine sets their `seq` and `call_id`. `log` is a list of borsh `LogEntry`s in l
 | `voice`       | `{hint_id, hint, value, question?}`, one entry of a tick's `hints`                                                                                                                                                                                  | `{text, source: "model"\|"template", fact, model, latency_ms, fallback_reason, chat_id, text_sha256, request_sha256, response_sha256, signature, signing_address, signature_kind, signed_text, signature_error, hint_id, receipt}`. `receipt` is a borsh `referee_core::HintReceipt` for the next tick's `receipts`.                             |
 | `end`         | `{match_id, state, last_seq, receipts?}`, only after a tick returned `over`                                                                                                                                                                         | `{call_id, seq, verdicts: [End], log_size, root (hex), state, log}`. The End log size and root are the engine's own.                                                                                                                                                                                                                             |
 | `declassify`  | `{match_id}`, only after End                                                                                                                                                                                                                        | `{match_id, start_ms, end_ms, players: [{account_id, app_attest_pk, player_box_pk, near_pk, enroll_call_id}], ring, k_m (hex), vrf_alpha, vrf_signature (hex), start_call_id, end: {seq, log_size, root, call_id}}`                                                                                                                              |
+| `declassify_batches` | `{match_id, state?, sealed: [sealed BatchEnvelope]}`, only after End (the stored match record says so), at most 500 per call. `state` is the End state blob; when given, it saves a storage read. | `{batches: [borsh Batch], refused: [{index, reason}]}`. Batches come back in input order, without their assertion. One that does not open, does not decode or belongs to another match is refused on its own; the rest of the call goes on. |
 | `bench_state` | `{mode: "sealed"\|"storage", size, state?, last_seq?}`                                                                                                                                                                                              | `{state, bytes, seq, enclave_ms}`. This is the tick's state round trip alone, for measuring. It touches no match.                                                                                                                                                                                                                                |
 
 Player numbers are positions in the byte-sorted account list. `ring[k]` hunts `ring[k+1 mod n]`.
@@ -56,6 +57,12 @@ The engine's rules are in `crates/referee-core/README.md`.
   in the next tick's `receipts` (or in `end`'s). The engine logs a receipt only for a hint it
   issued, once, within 120 s of referee time. `voice` takes the fact from the caller. The
   sealed HUD's `hint_fact` is the one the player can rely on.
+- **Keep every sealed batch it forwards.** After End, it sends them back through
+  `declassify_batches` in chunks of at most 500 (a 60-minute 12-player match is about 8,600
+  batches, so about 18 calls) and serves the trails only to viewers `public_replay` allows.
+  The replay checks each returned batch's SHA256 against the log's `LogEntry::Batch` hashes, so
+  the referee cannot add a trail. Only valid batches are logged; rejected ones come back too
+  but match no log entry.
 - **Tick in real time, and call `end` after `over`.** `now_ms` may lag the host clock but never
   run more than `CLOCK_SKEW_MS` (20 s) ahead of it. A relay that withholds or delays ticks gains
   nothing it could not get by not calling. Nothing here stops a backdated `start_ms` (that is
@@ -128,7 +135,7 @@ timer. After that, or on any error, a template sentence is used. The signature l
 for up to 10 s, and its signed text must end in `sha256(request):sha256(response)` of our exact
 bytes.
 
-## Measured (hosted testnet, 2026-11-12, version `3833d69a…`)
+## Measured (hosted testnet, 2026-11-12)
 
 `scripts/match.ts` runs 3 ghost phones and starts the match 4 minutes in the past so it can
 fast-forward: 3 minutes long, 10 s ticks.
@@ -148,6 +155,8 @@ All checks passed:
 - The End root equals the Merkle root of all 68 returned entries before End (69 with End's own).
 - The VRF reveal verifies, `ring_commit` opens, the declassified ring matches.
 - The voice receipt joined the log, and an old state blob is refused as a rollback.
+- `declassify_batches` returned all 42 sent batches, each hashing to a `LogEntry::Batch`. A
+  batch of another match and a garbage blob were refused one by one.
 
 | tick | sim t | batches | wall     | enclave | state  | verdicts        | lock (hunter) | heat (target) |
 | ---- | ----- | ------- | -------- | ------- | ------ | --------------- | ------------- | ------------- |
@@ -177,6 +186,15 @@ All checks passed:
 - In `smoke.ts` the model missed the 3 s budget once, and the template line was used.
 - The run cost 27 calls, $0.028.
 
+`declassify_batches` with a chunk of 500 batches shaped like a 12-player match at 5 s cadence
+(5 fixes, 22 sightings, a 115-byte assertion):
+- request 559 KB, response 449 KB
+- 9.0 s wall, 2.4 s in the enclave
+- all 500 returned; 501 are refused
+
+The per-call cap is the code's 500. Larger calls were not tried, so OutLayer's own HTTPS body
+limit was not measured. The second match run cost 30 calls, $0.034.
+
 `scripts/latency.ts` measures sealed state against storage read + write at 1, 16 and 128 KB.
 Its numbers are from the main session's run and are not recorded in this file.
 
@@ -201,4 +219,4 @@ The scripts read the repo-root `.env.local`. `REFEREE_PAYMENT_KEY` takes precede
 `OUTLAYER_PAYMENT_KEY`, and `REFEREE_VERSION=<wasm sha256>` pins a deployed version that is not
 active.
 
-Active version: wasm sha256 `3833d69a710d9fca6c212bc923f6fefb900650bb0f85de3a57a9b91a2ae18a55`.
+Active version: wasm sha256 `bc1d952b9ef8fc4c728b3947f0d539662ad2180cb04f2b1f26ca05d299b926fc`.

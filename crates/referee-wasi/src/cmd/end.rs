@@ -3,8 +3,9 @@
 //! once it has ended (TECHNICAL.md 4.8, 4.11). The log itself is the relay's: the engine keeps
 //! only its Merkle frontier.
 
+use super::tick::open_batch;
 use super::{log_b64, open_checked, receipts, sign_all};
-use crate::codec::{b64, fixed_b64, parse, to_borsh, uuid_string};
+use crate::codec::{b64, fixed_b64, from_b64, parse, to_borsh, uuid_string};
 use crate::host;
 use crate::records::{domain, match_record_key, EndRecord, MatchRecord};
 use crate::state;
@@ -116,4 +117,57 @@ pub fn declassify(input: Value) -> Result<Value, String> {
             "call_id": uuid_string(&end.call_id),
         },
     }))
+}
+
+/// Sealed batches per call. A 60-minute 12-player match is about 8,600 batches, so the relay
+/// sends them in chunks; 500 keeps one call's input and output well under the HTTPS and
+/// stdout limits (README, "Measured").
+const MAX_DECLASSIFY_BATCHES: usize = 500;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeclassifyBatchesInput {
+    match_id: String,
+    /// The End state blob. When given, its box key is used and one storage read is saved.
+    #[serde(default)]
+    state: Option<String>,
+    sealed: Vec<String>,
+}
+
+/// Opens the sealed batches the relay kept and returns the plain `Batch`es of this match, for
+/// the replay's trails. Only after End. The assertion is never returned. The replay checks
+/// each batch's SHA256 against the log's `LogEntry::Batch` hashes, so nothing can be added.
+pub fn declassify_batches(input: Value) -> Result<Value, String> {
+    let i: DeclassifyBatchesInput = parse(input)?;
+    let match_id: MatchId = fixed_b64("match_id", &i.match_id)?;
+    if i.sealed.len() > MAX_DECLASSIFY_BATCHES {
+        return Err(format!(
+            "at most {MAX_DECLASSIFY_BATCHES} sealed batches per call"
+        ));
+    }
+    // The stored record is the authority on whether the match has ended.
+    let (_, record) = load_record(&match_id)?;
+    if record.end.is_none() {
+        return Err("match has not ended; nothing is declassified before End".into());
+    }
+    let box_sk = match &i.state {
+        Some(blob) => {
+            let st = state::open(&from_b64("state", blob)?, domain::STATE, &match_id)?;
+            if st.core.phase() != referee_core::Phase::Ended {
+                return Err("the state blob given is not the match's End state".into());
+            }
+            st.box_sk
+        }
+        None => host::box_sk()?,
+    };
+    let mut batches = Vec::with_capacity(i.sealed.len());
+    let mut refused = Vec::new();
+    for (index, sealed) in i.sealed.iter().enumerate() {
+        match open_batch(&box_sk, sealed) {
+            Ok(env) if env.batch.match_id == match_id => batches.push(b64(&to_borsh(&env.batch))),
+            Ok(_) => refused.push(json!({ "index": index, "reason": "batch is for another match" })),
+            Err(reason) => refused.push(json!({ "index": index, "reason": reason })),
+        }
+    }
+    Ok(json!({ "batches": batches, "refused": refused }))
 }
