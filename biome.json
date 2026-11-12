@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/vectors/**/*.json", "!**/*.gen.ts"]
+    "includes": ["**", "!**/vectors/**/*.json", "!**/*.gen.ts", "!crates/referee-wasi/manifest.json"]
   },
   "formatter": {
     "enabled": true,
