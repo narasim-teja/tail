@@ -3,7 +3,7 @@
 // only to refresh the snapshot: the fixture must stay reproducible without the network.
 // Data © OpenStreetMap contributors, ODbL 1.0.
 //
-//   bun apps/replay/scripts/fetch-paths.ts
+//   bun apps/web/scripts/fetch-paths.ts
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";

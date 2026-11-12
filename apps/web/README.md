@@ -9,7 +9,7 @@ target's head counts across to the hunter in the roster. Space pauses, the timel
 tick jumps to its moment, a player or line opens the details sheet, Esc closes it.
 
 Screenshots of every state at phone, laptop and TV sizes are generated, not committed: run
-`bun apps/replay/scripts/shots.ts <url>` against a dev or preview server (they land in
+`bun apps/web/scripts/shots.ts <url>` against a dev or preview server (they land in
 `screenshots/`, which is ignored).
 
 ## Run it
@@ -17,7 +17,7 @@ Screenshots of every state at phone, laptop and TV sizes are generated, not comm
 From the repo root, after `bun install`:
 
 ```sh
-cd apps/replay
+cd apps/web
 bun run dev                     # http://localhost:5173, plays the Boston Common fixture
 ```
 
@@ -56,11 +56,11 @@ only to say when an unfinished match ends), `VITE_NEAR_RPC_TESTNET` (default
 ### Build, test, screenshots
 
 ```sh
-bun run --filter @tail/replay typecheck
-bun test apps/replay                          # verification, tamper and model tests
-cd apps/replay && bun run build                # fixtures, then the static site in dist/
-bun apps/replay/scripts/make-fixture.ts       # write the fixtures without building
-bun apps/replay/scripts/shots.ts http://localhost:5173/   # every state at 390, 1440 and 1920 wide
+bun run --filter @tail/web typecheck
+bun test apps/web                          # verification, tamper and model tests
+cd apps/web && bun run build                # fixtures, then the static site in dist/
+bun apps/web/scripts/make-fixture.ts       # write the fixtures without building
+bun apps/web/scripts/shots.ts http://localhost:5173/   # every state at 390, 1440 and 1920 wide
 ```
 
 ## What the page checks, and how

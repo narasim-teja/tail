@@ -4,7 +4,7 @@
 // checks the contract (get_match, get_heads, get_roots, balances) and at the end the relay's
 // copy of the log against the anchored root. Runs the relay in-process with a fresh database.
 //
-//   ALLOW_GHOSTS=1 bun apps/relay/scripts/ghost-match.ts      (testnet only; ~0.5 NEAR, ~$0.05)
+//   ALLOW_GHOSTS=1 bun apps/server/scripts/ghost-match.ts      (testnet only; ~0.5 NEAR, ~$0.05)
 
 import { createLogger } from "@tail/log";
 import {

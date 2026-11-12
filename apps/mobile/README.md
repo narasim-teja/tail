@@ -122,7 +122,7 @@ What the tests prove:
   and 20 s without the relay switches to the carry path.
 - **Outbox** order, retry and offline rules; **sighting** aggregation and tag filter; **epoch**
   timer; **HUD** decode and view; **NEAR** transactions byte-equal to `near-api-js`; relay request
-  and HUD signatures byte-equal to `apps/relay/src/auth.ts`; the referee box-key check.
+  and HUD signatures byte-equal to `apps/server/src/auth.ts`; the referee box-key check.
 
 ## Build onto a phone
 
@@ -157,7 +157,7 @@ Use xcodebuild directly (the route that worked in the device spike on 2026-11-12
 
 ## Playing a test match
 
-1. Run the relay (`apps/relay`). On the first screen tap **Settings** and enter the relay
+1. Run the relay (`apps/server`). On the first screen tap **Settings** and enter the relay
    address (`http://<Mac LAN IP>:8787` works: local networking is allowed for development) and
    check the contract. **Save**.
 2. Enter a handle, **Join**. The phone generates its keys, App Attest attests them over the
@@ -181,7 +181,7 @@ Use xcodebuild directly (the route that worked in the device spike on 2026-11-12
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
 | The referee's box key | `GET /referee` → `{referee_pk, referee_box_pk, box_pk_sig}` (base64, the referee's `pubkeys` output). The app checks `box_pk_sig` = ed25519 over `SHA256("tail/referee-box/v1" ‖ box_pk)` under the `referee_pk` the match pinned on chain (`get_match`), and refuses to seal otherwise.                                                                                                                                             | **Not served yet.** Without it the briefing stops with the relay's 404 and no batch can be sealed. |
 | Lobby and keys        | `GET /matches/:id` with `chain.players[].{account_id, head, out}`, `chain.referee_pk` (hex), `chain.stake`, `chain.token`, `keys[]`                                                                                                                                                                                                                                                                                                  | Served                                                                                             |
-| Everything else       | `POST /enroll/challenge`, `POST /enroll`, `POST /matches`, `POST /matches/:id/start`, `POST /batch`, `GET /hud` (WebSocket), `POST /dev/topup`, `GET /replay/:id` as in `apps/relay/src/routes`                                                                                                                                                                                                                                      | Served                                                                                             |
+| Everything else       | `POST /enroll/challenge`, `POST /enroll`, `POST /matches`, `POST /matches/:id/start`, `POST /batch`, `GET /hud` (WebSocket), `POST /dev/topup`, `GET /replay/:id` as in `apps/server/src/routes`                                                                                                                                                                                                                                     | Served                                                                                             |
 | Mesh node             | An Offline Protocol node whose `off1…` address goes in Settings. It receives `{v: 1, type: "tail/batch", path, account, time_ms, sig, body}`: the exact signed `POST /batch` request, to replay into the relay. Two relay changes needed: accept a carried batch's signature older than the 60 s request window (the batch digest dedupe already stops replays), and enqueue before the SDK's delivery receipt matters for ordering. | **No node yet**                                                                                    |
 
 Two more gaps the design pass needs filled:

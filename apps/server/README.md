@@ -182,10 +182,10 @@ What a ghost cannot do is produce Apple's attestation. Ghost enrolment
 ## Run
 
 ```sh
-bun apps/relay/src/main.ts                   # reads the repo-root .env.local; listens on RELAY_PORT
-bun test apps/relay                          # unit tests (fakes for the chain and the referee)
-bun apps/relay/scripts/pin-referee.ts        # testnet: pin the deployed referee's keys in the contract
-ALLOW_GHOSTS=1 bun apps/relay/scripts/ghost-match.ts   # testnet: a full 3-ghost match, end to end
+bun apps/server/src/main.ts                   # reads the repo-root .env.local; listens on RELAY_PORT
+bun test apps/server                          # unit tests (fakes for the chain and the referee)
+bun apps/server/scripts/pin-referee.ts        # testnet: pin the deployed referee's keys in the contract
+ALLOW_GHOSTS=1 bun apps/server/scripts/ghost-match.ts   # testnet: a full 3-ghost match, end to end
 ```
 
 Environment (placeholders in `.env.example`): `NEAR_NETWORK` (testnet only), `NEAR_RELAY_ACCOUNT`,

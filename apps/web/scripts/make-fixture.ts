@@ -2,7 +2,7 @@
 // preview). The bundles themselves come from scripts/fixture.ts; see the warning there about
 // the test keys.
 //
-//   bun apps/replay/scripts/make-fixture.ts
+//   bun apps/web/scripts/make-fixture.ts
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

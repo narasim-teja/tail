@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@tail/protocol";
 // The relay's pinned near-api-js, used here only as an independent encoder to compare with.
-import * as nearApi from "../../../relay/node_modules/near-api-js/lib/index.js";
+import * as nearApi from "../../../server/node_modules/near-api-js/lib/index.js";
 import { fromBase58, toBase58 } from "../lib/base58";
 import { encodeTransaction, nearPublicKeyString, PLAYER_GAS, signTransaction, type Transaction } from "./tx";
 

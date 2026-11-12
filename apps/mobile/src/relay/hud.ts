@@ -1,4 +1,4 @@
-// The HUD socket (GET /hud, apps/relay/src/routes/hud.ts). The relay sends a 32-byte challenge;
+// The HUD socket (GET /hud, apps/server/src/routes/hud.ts). The relay sends a 32-byte challenge;
 // the phone answers with its NEAR key's signature over hudDigest(nonce, match_id, account_id).
 // Only then does it receive this player's messages: the sealed PlayerKeys, the latest sealed
 // HUD, every new HUD, Handler lines, rejections, refusals and "over".

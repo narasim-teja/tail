@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { utf8 } from "@tail/protocol";
-import * as relayAuth from "../../../relay/src/auth.ts";
+import * as relayAuth from "../../../server/src/auth.ts";
 import { fromB64, toB64 } from "../lib/b64";
 import { hudDigest, requestDigest, type Signer } from "./auth";
 import { RelayClient } from "./client";
@@ -11,7 +11,7 @@ const sk = ed25519.utils.randomSecretKey();
 const signer: Signer = { accountId: "alice.tail.testnet", sign: (d) => ed25519.sign(d, sk) };
 
 describe("relay authentication", () => {
-  // apps/relay/src/auth.ts is the relay's side; these must agree byte for byte.
+  // apps/server/src/auth.ts is the relay's side; these must agree byte for byte.
   test("request digests match the relay's", () => {
     const body = utf8('{"match_id":"00"}');
     expect(requestDigest("post", "/batch", 1_700_000_000_123, body)).toEqual(

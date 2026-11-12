@@ -15,9 +15,9 @@ crates/referee-core  pure, deterministic rules engine
 crates/referee-sim   scripted matches through referee-core
 crates/referee-wasi  OutLayer enclave wrapper (own workspace, wasm32-wasip2)
 contracts/tail/      NEAR contract (own workspace, cargo near)
-apps/relay/          Bun + Hono relay (untrusted: liveness only)
+apps/server/          Bun + Hono relay (untrusted: liveness only)
 apps/mobile/         Expo dev-client iOS app (+ modules/tail-radio, Swift)
-apps/replay/         web replay + verifier
+apps/web/         web replay + verifier
 docs/, spikes/       local only (gitignored): design docs and throwaway spikes
 vendor/, .keys/      local only: cloned reference repos, generated keys
 ```

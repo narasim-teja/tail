@@ -1,4 +1,4 @@
-// Every call the app makes to the relay (apps/relay, TECHNICAL.md 5.4) lives in this file, so a
+// Every call the app makes to the relay (apps/server, TECHNICAL.md 5.4) lives in this file, so a
 // change in an endpoint's shape is a one-file edit. Bytes are base64 on the wire, match ids are
 // 32 lowercase hex characters, amounts are decimal strings. Answers are checked field by field:
 // a shape change fails here with the field's name, not somewhere in the hunt loop.

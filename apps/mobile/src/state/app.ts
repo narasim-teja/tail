@@ -24,7 +24,7 @@ import { decodeMatchRecord, encodeMatchRecord, type MatchRecord } from "./persis
 
 export interface Settings extends CarryConfig {
   relayUrl: string;
-  /** The web replay (apps/replay); the results screen opens `<replayUrl>/?match=<id>`. */
+  /** The web replay (apps/web); the results screen opens `<replayUrl>/?match=<id>`. */
   replayUrl: string;
   rpcUrl: string;
   contractId: string;

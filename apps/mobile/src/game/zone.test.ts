@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { zoneHash as relayZoneHash } from "../../../relay/src/matches.ts";
+import { zoneHash as relayZoneHash } from "../../../server/src/matches.ts";
 import { checkedZone, type Zone, zoneHash } from "./zone";
 
 const zone: Zone = {

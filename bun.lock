@@ -10,8 +10,8 @@
         "typescript": "7.0.2",
       },
     },
-    "apps/relay": {
-      "name": "@tail/relay",
+    "apps/server": {
+      "name": "@tail/server",
       "version": "0.1.0",
       "dependencies": {
         "@noble/curves": "2.4.0",
@@ -24,8 +24,8 @@
         "near-api-js": "7.5.3",
       },
     },
-    "apps/replay": {
-      "name": "@tail/replay",
+    "apps/web": {
+      "name": "@tail/web",
       "version": "0.1.0",
       "dependencies": {
         "@deck.gl/mapbox": "9.4.1",
@@ -627,9 +627,9 @@
 
     "@tail/protocol": ["@tail/protocol@workspace:packages/protocol"],
 
-    "@tail/relay": ["@tail/relay@workspace:apps/relay"],
+    "@tail/server": ["@tail/server@workspace:apps/server"],
 
-    "@tail/replay": ["@tail/replay@workspace:apps/replay"],
+    "@tail/web": ["@tail/web@workspace:apps/web"],
 
     "@tailwindcss/node": ["@tailwindcss/node@4.3.5", "", { "dependencies": { "@jridgewell/remapping": "^2.3.5", "enhanced-resolve": "^5.24.5", "jiti": "^2.7.0", "lightningcss": "1.33.0", "magic-string": "^1.1.0", "source-map-js": "^1.2.1", "tailwindcss": "4.3.5" } }, "sha512-yT53FzV4ke0cr/BguDxhWMpm5MJu1O2muzk+tKw6lKHjODAsYArBbWwFbJiaksfzFv1tpkO9QHGzmfs1hJT66g=="],
 

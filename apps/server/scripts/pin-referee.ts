@@ -3,7 +3,7 @@
 // Signed by NEAR_RELAY_ACCOUNT, the contract owner, with 1 yocto each. Matches created afterwards
 // pin these keys; running ones keep theirs. Does nothing when the keys already match.
 //
-//   bun apps/relay/scripts/pin-referee.ts
+//   bun apps/server/scripts/pin-referee.ts
 
 import { createLogger } from "@tail/log";
 import { toHex } from "@tail/protocol";

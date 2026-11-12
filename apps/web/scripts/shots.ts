@@ -1,8 +1,8 @@
 // Screenshots of the replay in its key states at phone, laptop and TV sizes, for review and the
 // README. Needs a running dev or preview server.
 //
-//   bunx vite --port 5317 &        (in apps/replay)
-//   bun apps/replay/scripts/shots.ts [baseUrl] [only-state]
+//   bunx vite --port 5317 &        (in apps/web)
+//   bun apps/web/scripts/shots.ts [baseUrl] [only-state]
 //
 // Console errors are printed and make the script exit non-zero.
 
