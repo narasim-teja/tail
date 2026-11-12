@@ -358,6 +358,11 @@ export interface Hud {
   target: string;
   leak?: GridCell;
   hintFact?: HintFact;
+  /**
+   * Once this player is out: the account that took their head (the hunter for a Tag, the
+   * receiver for a Forfeit). Lets the phone name who got them.
+   */
+  taggedBy?: string;
 }
 
 export const encodeHud = (h: Hud) =>
@@ -371,6 +376,7 @@ export const encodeHud = (h: Hud) =>
     .string(h.target)
     .option(h.leak, (w, c) => w.i32(c.latE7).i32(c.lonE7))
     .option(h.hintFact, (w, f) => w.u32(f.hintId).u8(f.hint).u8(f.value))
+    .option(h.taggedBy, (w, a) => w.string(a))
     .bytes();
 export function decodeHud(bytes: Bytes): Hud {
   const r = new Reader(bytes);
@@ -385,6 +391,12 @@ export function decodeHud(bytes: Bytes): Hud {
   };
   const leak = r.option((r2) => ({ latE7: r2.i32(), lonE7: r2.i32() }));
   const hintFact = r.option((r2) => ({ hintId: r2.u32(), hint: r2.u8(), value: r2.u8() }));
+  const taggedBy = r.option((r2) => r2.string());
   r.done();
-  return { ...base, ...(leak ? { leak } : {}), ...(hintFact ? { hintFact } : {}) };
+  return {
+    ...base,
+    ...(leak ? { leak } : {}),
+    ...(hintFact ? { hintFact } : {}),
+    ...(taggedBy !== undefined ? { taggedBy } : {}),
+  };
 }

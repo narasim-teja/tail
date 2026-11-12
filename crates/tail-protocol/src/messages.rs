@@ -195,4 +195,7 @@ pub struct Hud {
     pub target: String,
     pub leak: Option<GridCell>,
     pub hint_fact: Option<HintFact>,
+    /// Once this player is out: the account that took their head (the hunter for a Tag, the
+    /// receiver for a Forfeit). Lets the phone name who got them.
+    pub tagged_by: Option<String>,
 }

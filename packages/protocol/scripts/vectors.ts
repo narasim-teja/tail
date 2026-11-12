@@ -37,6 +37,7 @@ import {
   ringCommit,
   sealWith,
   sha256,
+  TargetStatus,
   toHex,
   tokenToUuid,
   utf8,
@@ -228,6 +229,17 @@ const hud: Hud = {
   hintFact: { hintId: 3, hint: 1, value: 6 },
 };
 const { leak: _leak, hintFact: _hintFact, ...hudBare } = hud;
+// An out player's HUD: no target, no lock, but the account that took their head.
+const hudOut: Hud = {
+  tick: 42,
+  epoch: 36,
+  lock: 0,
+  heat: 0,
+  head: 0n,
+  status: TargetStatus.Out,
+  target: "",
+  taggedBy: "carol.tail.testnet",
+};
 const plaintext = encodePlayerKeys(keys);
 write("seal", {
   recipientSk,
@@ -239,6 +251,7 @@ write("seal", {
   playerKeys: { input: keys, borsh: plaintext },
   hud: { input: hud, borsh: encodeHud(hud) },
   hudNoOptions: { borsh: encodeHud(hudBare) },
+  hudOut: { input: hudOut, borsh: encodeHud(hudOut) },
 });
 
 // ── relay auth ──

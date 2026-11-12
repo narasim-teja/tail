@@ -18,6 +18,7 @@ import {
   derivePlayerKey,
   deriveTagKey,
   encodeBatch,
+  encodeHud,
   encodeLogEntry,
   enrollClientDataHash,
   epochAt,
@@ -37,6 +38,7 @@ import {
   ringCommit,
   seal,
   sealWith,
+  TargetStatus,
   tagMatches,
   toHex,
   tokenToUuid,
@@ -226,6 +228,20 @@ describe("sealing", () => {
     const bare = decodeHud(h(sealV.hudNoOptions.borsh));
     expect(bare.leak).toBeUndefined();
     expect(bare.hintFact).toBeUndefined();
+    expect(toHex(encodeHud(full))).toBe(sealV.hud.borsh);
+    expect(toHex(encodeHud(bare))).toBe(sealV.hudNoOptions.borsh);
+  });
+
+  test("an out player's HUD names who took their head", () => {
+    const out = decodeHud(h(sealV.hudOut.borsh));
+    expect(out.status).toBe(TargetStatus.Out);
+    expect(out.taggedBy).toBe("carol.tail.testnet");
+    expect(toHex(encodeHud(out))).toBe(sealV.hudOut.borsh);
+  });
+
+  test("a HUD of a player still in names no one", () => {
+    expect(decodeHud(h(sealV.hud.borsh)).taggedBy).toBeUndefined();
+    expect(decodeHud(h(sealV.hudNoOptions.borsh)).taggedBy).toBeUndefined();
   });
 });
 

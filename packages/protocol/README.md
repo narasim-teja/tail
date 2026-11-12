@@ -42,7 +42,7 @@ Only the enclave, which holds every `K_p[i]`, can tell whose token it is.
 | `SignedVerdict` | `match_id, seq u32, call_id [u8;16], body Verdict, sig [u8;64]`                            |
 | `LogEntry`      | `Batch`, `Contact`, `Verdict`, `HintReceipt`                                               |
 | `PlayerKeys`    | `match_id, player, start_ms, end_ms, k_tag, k_player, target String`                       |
-| `Hud`           | `tick, epoch, lock, heat, head u128, status, target, leak?, hint_fact?`                    |
+| `Hud`           | `tick, epoch, lock, heat, head u128, status, target, leak?, hint_fact?, tagged_by?`        |
 
 ## Hashes and signatures
 

@@ -192,4 +192,23 @@ fn sealing_matches_and_rejects_tampering() {
     assert_eq!(borsh::to_vec(&hud).unwrap(), bytes(&v["hud"]["borsh"]));
     let bare = Hud::try_from_slice(&bytes(&v["hudNoOptions"]["borsh"])).unwrap();
     assert!(bare.leak.is_none() && bare.hint_fact.is_none());
+    assert_eq!(borsh::to_vec(&bare).unwrap(), bytes(&v["hudNoOptions"]["borsh"]));
+}
+
+#[test]
+fn an_out_players_hud_names_who_took_their_head() {
+    let v = load("seal");
+    let out = Hud::try_from_slice(&bytes(&v["hudOut"]["borsh"])).unwrap();
+    assert_eq!(out.status, tail_protocol::target_status::OUT);
+    assert_eq!(out.tagged_by.as_deref(), Some("carol.tail.testnet"));
+    assert_eq!(borsh::to_vec(&out).unwrap(), bytes(&v["hudOut"]["borsh"]));
+}
+
+#[test]
+fn a_hud_of_a_player_still_in_names_no_one() {
+    let v = load("seal");
+    for key in ["hud", "hudNoOptions"] {
+        let hud = Hud::try_from_slice(&bytes(&v[key]["borsh"])).unwrap();
+        assert_eq!(hud.tagged_by, None, "{key}");
+    }
 }
