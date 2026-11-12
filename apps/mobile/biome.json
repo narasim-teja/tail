@@ -7,7 +7,20 @@
       "correctness": {
         "noReactNativeRawText": {
           "level": "error",
-          "options": { "skip": ["Title", "Body", "Label", "Figure"] }
+          "options": {
+            "skip": [
+              "Eyebrow",
+              "Caption",
+              "Label",
+              "Body",
+              "Strong",
+              "Title",
+              "Display",
+              "Poster",
+              "Num",
+              "Figure"
+            ]
+          }
         }
       }
     }

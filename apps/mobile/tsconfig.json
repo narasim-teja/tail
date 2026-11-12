@@ -10,16 +10,12 @@
     "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": true,
     "types": [],
-    // @tail/protocol and @tail/brand are read from source in packages/, not copied into node_modules.
-    // Its @noble imports resolve to this app's node_modules (the same pinned versions; a test
-    // checks they match), because packages/protocol has no node_modules of its own.
     "paths": {
       "@tail/protocol": ["../../packages/protocol/src/index.ts"],
       "@tail/brand": ["../../packages/brand/src/index.ts"],
       "@noble/*": ["./node_modules/@noble/*"]
     }
   },
-  "include": ["index.ts", "src", "modules/*/index.ts", "expo-env.d.ts"],
-  // Node/Bun-side files: checked by tsconfig.test.json.
+  "include": ["index.ts", "src", "modules/*/index.ts"],
   "exclude": ["node_modules", "ios", "**/*.test.ts", "test", "app.config.ts", "metro.config.js"]
 }

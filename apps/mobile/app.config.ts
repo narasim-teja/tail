@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ExpoConfig } from "expo/config";
+import { colors } from "../../packages/brand/src/index.ts";
 
 // The team id, bundle id and contract live in the repo-root env files (see /.env.example).
 // Expo only loads env files from this folder, so read the root ones here. Values already in the
@@ -34,6 +35,9 @@ const teamId = env("APPLE_TEAM_ID");
 // unregistered one is used; signing for a phone then fails until it is set.
 const bundleId = env("IOS_BUNDLE_ID") ?? "invalid.placeholder.tail";
 
+const ARCHIVO = ["400Regular", "500Medium", "600SemiBold", "700Bold", "800ExtraBold", "900Black"];
+const SPLASH_MARK = "../../packages/brand/assets/splash-mark-512.png";
+
 const config: ExpoConfig = {
   name: "TAIL",
   slug: "tail",
@@ -66,7 +70,30 @@ const config: ExpoConfig = {
       "com.apple.developer.devicecheck.appattest-environment": "development",
     },
   },
-  plugins: ["expo-dev-client"],
+  plugins: [
+    "expo-dev-client",
+    // Archivo, the one family shared with the replay, embedded at build time so text never
+    // renders in a fallback face. Addressed by PostScript name in src/ui/theme.ts.
+    [
+      "expo-font",
+      { fonts: ARCHIVO.map((w) => `node_modules/@expo-google-fonts/archivo/${w}/Archivo_${w}.ttf`) },
+    ],
+    [
+      "expo-splash-screen",
+      {
+        backgroundColor: colors.paper,
+        // The Trail mark on paper. It comes from the brand package; until the brand build writes
+        // SPLASH_MARK the splash is the paper colour alone.
+        ...(existsSync(resolve(__dirname, SPLASH_MARK))
+          ? { image: SPLASH_MARK, imageWidth: 120, resizeMode: "contain" }
+          : {}),
+      },
+    ],
+    [
+      "expo-camera",
+      { cameraPermission: "TAIL reads a friend's lobby code with the camera.", microphonePermission: false },
+    ],
+  ],
   extra: {
     contractId: env("TAIL_CONTRACT") ?? null,
     nearNetwork: env("NEAR_NETWORK") ?? "testnet",
