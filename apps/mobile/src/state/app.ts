@@ -1,0 +1,391 @@
+// The app's state and every action a screen can take. Screens read `app` and call its methods;
+// nothing else talks to the relay, NEAR or the native modules.
+
+import type { PlayerKeys } from "@tail/protocol";
+import Constants from "expo-constants";
+import { useSyncExternalStore } from "react";
+import TailRadio from "../../modules/tail-radio";
+import { type CarryConfig, MeshCarry } from "../carry/mesh";
+import { genesis } from "../game/batch";
+import { openPlayerKeys } from "../game/hud";
+import { HuntSession } from "../game/session";
+import { enrol } from "../identity/enrol";
+import { type Identity, loadIdentity, nearSigner } from "../identity/identity";
+import { keychain } from "../identity/keychain";
+import { NearRpc } from "../near/rpc";
+import { PLAYER_GAS } from "../near/tx";
+import { isMatchId, type MatchView, matchIdBytes, type NewMatch, RelayClient } from "../relay/client";
+import { HudSocket } from "../relay/hud";
+import { checkedRefereeBox } from "../relay/referee";
+import { assertWith, attestor, radioPort } from "./device";
+import { files } from "./files";
+import { decodeMatchRecord, encodeMatchRecord, type MatchRecord } from "./persist";
+
+export interface Settings extends CarryConfig {
+  relayUrl: string;
+  rpcUrl: string;
+  contractId: string;
+}
+
+export type Route = "loading" | "enrol" | "home" | "lobby" | "briefing" | "hunt" | "results";
+
+const extra = (Constants.expoConfig?.extra ?? {}) as { contractId?: string | null };
+
+const DEFAULTS: Settings = {
+  relayUrl: "",
+  rpcUrl: "https://test.rpc.fastnear.com",
+  contractId: extra.contractId ?? "",
+  nodeAddress: "",
+  serverUrl: "",
+};
+
+const SETTINGS_FILE = "settings.json";
+const CURRENT_FILE = "current.json";
+const matchFile = (id: string) => `match-${id}.json`;
+const POLL_MS = 3_000;
+
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+export interface Briefing {
+  keys: PlayerKeys;
+  refereeBoxPk: Uint8Array;
+}
+
+class AppModel {
+  settings: Settings = DEFAULTS;
+  identity: Identity | null = null;
+  matchId: string | null = null;
+  match: MatchView | null = null;
+  balance: bigint | null = null;
+  briefing: Briefing | null = null;
+  session: HuntSession | null = null;
+  here: { lat: number; lon: number; acc: number } | null = null;
+  showSettings = false;
+  busy: string | null = null;
+  error: string | null = null;
+  ready = false;
+
+  private version = 0;
+  private listeners = new Set<() => void>();
+  private poll: ReturnType<typeof setInterval> | null = null;
+  private stopLocating: (() => void) | null = null;
+
+  // ── Store plumbing ──────────────────────────────────────────────────────────────────────
+
+  subscribe = (fn: () => void) => {
+    this.listeners.add(fn);
+    return () => {
+      this.listeners.delete(fn);
+    };
+  };
+  getVersion = () => this.version;
+  private emit() {
+    this.version++;
+    for (const l of this.listeners) l();
+  }
+
+  get relay(): RelayClient {
+    return new RelayClient(this.settings.relayUrl);
+  }
+  private get rpc(): NearRpc {
+    return new NearRpc(this.settings.rpcUrl);
+  }
+
+  get route(): Route {
+    if (!this.ready) return "loading";
+    if (!this.identity?.accountId) return "enrol";
+    if (!this.matchId) return "home";
+    if (this.session) return this.session.snapshot().over ? "results" : "hunt";
+    const phase = this.match?.phase;
+    if (phase === "running" || phase === "ending") return "briefing";
+    if (phase === "ended") return "results";
+    return "lobby";
+  }
+
+  get me(): string | null {
+    return this.identity?.accountId ?? null;
+  }
+
+  /** Runs one user action: shows it as busy, keeps its error for the screen. */
+  private async act<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
+    this.busy = label;
+    this.error = null;
+    this.emit();
+    try {
+      return await fn();
+    } catch (e) {
+      this.error = message(e);
+      return undefined;
+    } finally {
+      this.busy = null;
+      this.emit();
+    }
+  }
+
+  // ── Start-up and settings ───────────────────────────────────────────────────────────────
+
+  async init(): Promise<void> {
+    try {
+      const s = files.read(SETTINGS_FILE);
+      if (s) this.settings = { ...DEFAULTS, ...(JSON.parse(s) as Partial<Settings>) };
+      this.identity = await loadIdentity(keychain);
+      const cur = files.read(CURRENT_FILE);
+      const id = cur ? (JSON.parse(cur) as { matchId?: string }).matchId : undefined;
+      if (id && isMatchId(id)) this.setMatch(id);
+    } catch (e) {
+      this.error = message(e);
+    }
+    this.ready = true;
+    this.emit();
+  }
+
+  saveSettings(s: Settings): void {
+    this.settings = { ...s, relayUrl: s.relayUrl.trim().replace(/\/+$/, "") };
+    files.write(SETTINGS_FILE, JSON.stringify(this.settings));
+    this.showSettings = false;
+    this.emit();
+  }
+
+  toggleSettings(on: boolean): void {
+    this.showSettings = on;
+    this.emit();
+  }
+
+  // ── Enrolment ───────────────────────────────────────────────────────────────────────────
+
+  enrol(handle: string) {
+    return this.act("Checking this phone", async () => {
+      if (!this.settings.relayUrl) throw new Error("Set the relay address first.");
+      const id = this.identity ?? (await loadIdentity(keychain));
+      this.identity = await enrol(handle, id, { relay: this.relay, attest: attestor, secrets: keychain });
+    });
+  }
+
+  // ── Location for creating a match (the zone is centred on the host) ─────────────────────
+
+  startLocating(): void {
+    if (this.stopLocating) return;
+    const sub = TailRadio.addListener("onFix", (f) => {
+      if (f.acc < 0) return;
+      this.here = { lat: f.lat, lon: f.lon, acc: f.acc };
+      this.emit();
+    });
+    TailRadio.startLocation();
+    this.stopLocating = () => {
+      sub.remove();
+      TailRadio.stopLocation();
+    };
+  }
+
+  endLocating(): void {
+    this.stopLocating?.();
+    this.stopLocating = null;
+  }
+
+  // ── Lobby ───────────────────────────────────────────────────────────────────────────────
+
+  createMatch(m: Omit<NewMatch, "zone" | "safehouses" | "startByMs"> & { radiusM: number }) {
+    return this.act("Opening a lobby", async () => {
+      if (!this.here) throw new Error("Waiting for your location.");
+      const { radiusM, ...rest } = m;
+      const { matchId } = await this.relay.createMatch(nearSigner(this.need()), {
+        ...rest,
+        zone: { latE7: Math.round(this.here.lat * 1e7), lonE7: Math.round(this.here.lon * 1e7), radiusM },
+        safehouses: [],
+        // The lobby stays open for an hour; after that anyone can abort it and refund.
+        startByMs: Date.now() + 60 * 60_000,
+      });
+      this.setMatch(matchId);
+      await this.callContract("join_match", { match_id: matchId });
+    });
+  }
+
+  openMatch(code: string) {
+    const id = code.trim().toLowerCase();
+    if (!isMatchId(id)) {
+      this.error = "A match code is 32 letters and digits.";
+      this.emit();
+      return;
+    }
+    this.setMatch(id);
+  }
+
+  join() {
+    return this.act("Joining", () => this.callContract("join_match", { match_id: this.matchId }));
+  }
+
+  leave() {
+    return this.act("Leaving", async () => {
+      await this.callContract("leave_lobby", { match_id: this.matchId });
+      this.closeMatch();
+    });
+  }
+
+  start() {
+    return this.act("Starting", async () => {
+      await this.relay.startMatch(nearSigner(this.need()), this.needMatch());
+      await this.refresh();
+    });
+  }
+
+  topUp(amount: bigint) {
+    return this.act("Topping up", async () => {
+      const me = this.need();
+      await this.relay.topUp(nearSigner(me), me.accountId as string, amount);
+      await this.refresh();
+    });
+  }
+
+  private async callContract(method: string, args: object): Promise<void> {
+    const id = this.need();
+    if (!this.settings.contractId) throw new Error("Set the contract in Settings.");
+    await this.rpc.functionCall(
+      { accountId: id.accountId as string, publicKey: id.nearPk, secretKey: id.nearSk },
+      this.settings.contractId,
+      { methodName: method, args, gas: PLAYER_GAS },
+    );
+    await this.refresh();
+  }
+
+  private setMatch(id: string): void {
+    this.matchId = id;
+    this.match = null;
+    this.briefing = null;
+    files.write(CURRENT_FILE, JSON.stringify({ matchId: id }));
+    this.startPolling();
+    this.emit();
+  }
+
+  /** Back to home. Unsent batches of an unfinished match stay in its file. */
+  closeMatch(): void {
+    this.stopPolling();
+    this.session?.stop();
+    this.session = null;
+    this.briefing = null;
+    this.matchId = null;
+    this.match = null;
+    files.remove(CURRENT_FILE);
+    this.emit();
+  }
+
+  private startPolling(): void {
+    this.stopPolling();
+    void this.refresh();
+    this.poll = setInterval(() => void this.refresh(), POLL_MS);
+  }
+
+  private stopPolling(): void {
+    if (this.poll) clearInterval(this.poll);
+    this.poll = null;
+  }
+
+  async refresh(): Promise<void> {
+    const id = this.matchId;
+    if (!id) return;
+    try {
+      const m = await this.relay.getMatch(id);
+      if (this.matchId !== id) return;
+      this.match = m;
+      if (m.chain && this.me && this.settings.contractId) {
+        const bal = await this.rpc.view<string>(this.settings.contractId, "get_balance", {
+          account_id: this.me,
+          token: m.chain.token,
+        });
+        this.balance = BigInt(bal);
+      }
+      // Nothing changes in the lobby once the hunt runs; the HUD socket takes over.
+      if (this.session || m.phase === "ended" || m.phase === "failed") this.stopPolling();
+    } catch (e) {
+      this.error = message(e);
+    }
+    this.emit();
+  }
+
+  // ── Briefing and hunt ───────────────────────────────────────────────────────────────────
+
+  /** Opens this player's sealed keys and checks the referee's box key against the chain. */
+  brief() {
+    return this.act("Reading your orders", async () => {
+      const id = this.need();
+      const m = this.match;
+      const chain = m?.chain;
+      if (!m || !chain) throw new Error("The match is not on chain yet.");
+      const seat = m.keys.find((k) => k.accountId === id.accountId);
+      if (!seat) throw new Error("You are not in this match.");
+      const keys = openPlayerKeys(id.boxSk, seat.sealed, {
+        matchId: matchIdBytes(m.matchId),
+        player: seat.player,
+      });
+      const refereeBoxPk = checkedRefereeBox(await this.relay.refereeKeys(), chain.refereePk);
+      this.briefing = { keys, refereeBoxPk };
+    });
+  }
+
+  beginHunt(): void {
+    const id = this.need();
+    const b = this.briefing;
+    const m = this.match;
+    if (!b || !m?.chain || !id.attestKeyId || this.session) return;
+    const matchId = m.matchId;
+    const record = this.loadRecord(matchId);
+    const signer = nearSigner(id);
+    const relay = this.relay;
+    const settings = this.settings;
+    this.session = new HuntSession({
+      matchIdHex: matchId,
+      keys: b.keys,
+      stake: m.chain.stake,
+      boxSk: id.boxSk,
+      refereeBoxPk: b.refereeBoxPk,
+      chain: record.chain,
+      outbox: record.outbox,
+      radio: radioPort,
+      assert: assertWith(id.attestKeyId),
+      batchRequest: (sealed) => relay.batchRequest(signer, matchId, sealed),
+      upload: (req) => relay.uploadBatch(req),
+      save: (chain, outbox) =>
+        files.write(matchFile(matchId), encodeMatchRecord({ matchId, chain, outbox: [...outbox] })),
+      hud: (onMessage, onState) =>
+        new HudSocket({
+          url: relay.hudUrl(matchId, signer.accountId),
+          signer,
+          matchId: matchIdBytes(matchId),
+          onMessage,
+          onState,
+        }),
+      carry: (d) => new MeshCarry({ config: settings, matchId, ...d }),
+      carryConfig: settings,
+    });
+    this.session.subscribe(() => this.emit());
+    this.stopPolling();
+    this.session.start();
+    this.emit();
+  }
+
+  private loadRecord(matchId: string): MatchRecord {
+    const text = files.read(matchFile(matchId));
+    return text ? decodeMatchRecord(text) : { matchId, chain: genesis(), outbox: [] };
+  }
+
+  finishMatch(): void {
+    this.closeMatch();
+  }
+
+  private need(): Identity {
+    if (!this.identity?.accountId) throw new Error("Sign in first.");
+    return this.identity;
+  }
+
+  private needMatch(): string {
+    if (!this.matchId) throw new Error("No match open.");
+    return this.matchId;
+  }
+}
+
+export const app = new AppModel();
+
+/** Re-renders the calling component whenever the app state changes. */
+export function useApp(): AppModel {
+  useSyncExternalStore(app.subscribe, app.getVersion);
+  return app;
+}
