@@ -1,0 +1,17 @@
+{
+  "name": "one-sided",
+  "duration_s": 300,
+  "ring": ["alice", "bob", "carol"],
+  "players": [
+    { "name": "alice", "path": [[0, -3, 0]] },
+    { "name": "bob", "path": [[0, 0, 0]] },
+    { "name": "carol", "path": [[0, 1000, 1000]] }
+  ],
+  "radio": [{ "a": "alice", "b": "bob", "from": 0, "to": 300, "dir": "a_hears_b" }],
+  "events": [{ "do": "strike", "t": 150, "player": "alice" }],
+  "expect": {
+    "verdicts": ["Start", "End"],
+    "refusals": [{ "player": "alice", "reason": "Lock" }],
+    "huds": [{ "t": 140, "player": "alice", "lock": 0 }, { "t": 140, "player": "bob", "heat": 0 }]
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "name": "duel-bob-earlier-in-tick",
+  "duration_s": 300,
+  "radio_auto_m": 15,
+  "players": [
+    {
+      "name": "alice",
+      "path": [[0, -2, 0]],
+      "batch_phase_s": 0
+    },
+    {
+      "name": "bob",
+      "path": [[0, 0, 0]],
+      "batch_phase_s": 2
+    }
+  ],
+  "events": [
+    {
+      "do": "strike",
+      "t": 96,
+      "player": "alice"
+    },
+    {
+      "do": "strike",
+      "t": 96,
+      "player": "bob"
+    }
+  ],
+  "expect": {
+    "verdicts": ["Start", "Tag bob alice", "End"],
+    "refusals": [
+      {
+        "player": "alice",
+        "reason": "PlayerOut",
+        "from": 100,
+        "to": 100
+      }
+    ]
+  }
+}

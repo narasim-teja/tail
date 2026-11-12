@@ -1,0 +1,26 @@
+{
+  "name": "simulated-location",
+  "duration_s": 300,
+  "ring": ["alice", "bob", "carol"],
+  "players": [
+    { "name": "alice", "path": [[0, -500, 0]] },
+    { "name": "bob", "path": [[0, 0, 0]] },
+    { "name": "carol", "path": [[0, 1000, 1000]] }
+  ],
+  "events": [
+    { "do": "flags", "player": "bob", "from": 60, "to": 120, "flags": 1 },
+    { "do": "flags", "player": "carol", "from": 200, "to": 205, "flags": 2 }
+  ],
+  "expect": {
+    "verdicts": ["Start", "End"],
+    "rejections": [
+      { "player": "bob", "reason": "FixFlags", "from": 60, "to": 120 },
+      { "player": "carol", "reason": "FixFlags", "from": 200, "to": 210 }
+    ],
+    "huds": [
+      { "t": 90, "player": "alice", "leak": false },
+      { "t": 110, "player": "alice", "leak": true },
+      { "t": 130, "player": "alice", "leak": false }
+    ]
+  }
+}

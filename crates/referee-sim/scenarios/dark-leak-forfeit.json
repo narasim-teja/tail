@@ -1,0 +1,29 @@
+{
+  "name": "dark-leak-forfeit",
+  "duration_s": 600,
+  "ring": ["alice", "bob", "carol"],
+  "players": [
+    { "name": "alice", "path": [[0, -500, 0]] },
+    { "name": "bob", "path": [[0, 0, 0]] },
+    { "name": "carol", "path": [[0, 1000, 1000]] }
+  ],
+  "events": [
+    { "do": "dark", "player": "bob", "from": 60, "to": 120 },
+    { "do": "dark", "player": "bob", "from": 200, "to": 600 }
+  ],
+  "expect": {
+    "verdicts": ["Start", "Forfeit bob alice", "End"],
+    "verdict_times": [{ "verdict": "Forfeit bob alice", "from": 330, "to": 330 }],
+    "huds": [
+      { "t": 100, "player": "alice", "leak": false },
+      { "t": 110, "player": "alice", "leak": true },
+      { "t": 120, "player": "alice", "leak": false },
+      { "t": 240, "player": "alice", "leak": false },
+      { "t": 250, "player": "alice", "leak": true },
+      { "t": 320, "player": "alice", "leak": true, "target": "bob" },
+      { "t": 330, "player": "alice", "target": "carol", "head": 2000000 },
+      { "t": 330, "player": "bob", "status": "out" }
+    ],
+    "heads": { "alice": 2000000, "bob": 0, "carol": 1000000 }
+  }
+}

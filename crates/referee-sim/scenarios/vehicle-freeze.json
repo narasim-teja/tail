@@ -1,0 +1,21 @@
+{
+  "name": "vehicle-freeze",
+  "duration_s": 400,
+  "ring": ["alice", "bob", "carol"],
+  "radio_auto_m": 15,
+  "players": [
+    { "name": "alice", "path": [[0, -602, 0], [50, -2, 0]] },
+    { "name": "bob", "path": [[0, 0, 0]] },
+    { "name": "carol", "path": [[0, 1000, 1000]] }
+  ],
+  "events": [
+    { "do": "strike", "t": 160, "player": "alice" },
+    { "do": "strike", "t": 240, "player": "alice" }
+  ],
+  "expect": {
+    "verdicts": ["Start", "Tag alice bob", "End"],
+    "verdict_times": [{ "verdict": "Tag alice bob", "from": 240, "to": 240 }],
+    "refusals": [{ "player": "alice", "reason": "Lock", "from": 160, "to": 160 }],
+    "huds": [{ "t": 160, "player": "alice", "lock": 0 }, { "t": 160, "player": "bob", "heat": 0 }]
+  }
+}

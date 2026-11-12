@@ -1,0 +1,32 @@
+{
+  "name": "duel-earlier-tick",
+  "duration_s": 300,
+  "radio_auto_m": 15,
+  "players": [
+    {
+      "name": "alice",
+      "path": [[0, -2, 0]],
+      "batch_phase_s": 0
+    },
+    {
+      "name": "bob",
+      "path": [[0, 0, 0]],
+      "batch_phase_s": 0
+    }
+  ],
+  "events": [
+    {
+      "do": "strike",
+      "t": 95,
+      "player": "alice"
+    },
+    {
+      "do": "strike",
+      "t": 101,
+      "player": "bob"
+    }
+  ],
+  "expect": {
+    "verdicts": ["Start", "Tag alice bob", "End"]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "relayed-live-token",
+  "duration_s": 300,
+  "ring": ["alice", "bob", "carol"],
+  "players": [
+    { "name": "alice", "path": [[0, -3, 0]] },
+    { "name": "bob", "path": [[0, 0, 0]] },
+    { "name": "carol", "path": [[0, 1000, 1000]] }
+  ],
+  "events": [
+    { "do": "inject", "hearer": "bob", "of": "alice", "from": 30, "to": 200, "epoch_offset": 0 },
+    { "do": "inject", "hearer": "alice", "of": "bob", "from": 30, "to": 200, "epoch_offset": 0 },
+    { "do": "strike", "t": 150, "player": "alice" }
+  ],
+  "expect": {
+    "verdicts": ["Start", "Tag alice bob", "End"]
+  }
+}

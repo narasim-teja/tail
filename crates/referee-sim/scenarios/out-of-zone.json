@@ -1,0 +1,17 @@
+{
+  "name": "out-of-zone",
+  "duration_s": 500,
+  "zone": { "lat": 42.355, "lon": -71.066, "radius_m": 300 },
+  "ring": ["alice", "bob", "carol"],
+  "players": [
+    { "name": "alice", "path": [[0, -200, 0]] },
+    { "name": "bob", "path": [[0, 0, 0], [60, 0, 0], [120, 400, 0]] },
+    { "name": "carol", "path": [[0, 0, 100], [60, 0, 100], [120, 0, 290]] }
+  ],
+  "expect": {
+    "verdicts": ["Start", "Forfeit bob alice", "End"],
+    "verdict_times": [{ "verdict": "Forfeit bob alice", "from": 290, "to": 290 }],
+    "huds": [{ "t": 150, "player": "alice", "leak": false }, { "t": 160, "player": "alice", "leak": true }],
+    "heads": { "alice": 2000000, "bob": 0, "carol": 1000000 }
+  }
+}

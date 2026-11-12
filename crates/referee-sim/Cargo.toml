@@ -1,0 +1,20 @@
+[package]
+name = "referee-sim"
+version = "0.1.0"
+description = "Runs scripted TAIL matches through referee-core with simulated phones (real tokens, hash chains and App Attest assertions)."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+appattest = { path = "../appattest", features = ["signer"] }
+borsh = { version = "1", features = ["derive"] }
+p256 = { version = "=0.14.0", features = ["ecdsa"] }
+referee-core = { path = "../referee-core" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+tail-protocol = { path = "../tail-protocol", features = ["beacon"] }
+
+[lints]
+workspace = true

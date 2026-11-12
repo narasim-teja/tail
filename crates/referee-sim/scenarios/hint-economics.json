@@ -1,0 +1,174 @@
+{
+  "name": "hint-economics",
+  "duration_s": 900,
+  "ring": ["alice", "bob", "carol"],
+  "players": [
+    {
+      "name": "alice",
+      "path": [[0, 0, 0], [60, 0, 0], [120, 50, 50]]
+    },
+    {
+      "name": "bob",
+      "path": [[0, 70, 70]]
+    },
+    {
+      "name": "carol",
+      "path": [[0, 500, -500]]
+    }
+  ],
+  "events": [
+    {
+      "do": "hint",
+      "t": 20,
+      "player": "alice",
+      "kind": "near",
+      "text": "are they close?"
+    },
+    {
+      "do": "hint",
+      "t": 30,
+      "player": "alice",
+      "kind": "bearing"
+    },
+    {
+      "do": "hint",
+      "t": 50,
+      "player": "alice",
+      "kind": "bearing"
+    },
+    {
+      "do": "hint",
+      "t": 60,
+      "player": "alice",
+      "kind": "7"
+    },
+    {
+      "do": "hint",
+      "t": 120,
+      "player": "alice",
+      "kind": "trend"
+    },
+    {
+      "do": "hint",
+      "t": 200,
+      "player": "alice",
+      "kind": "near",
+      "text": "where????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????"
+    },
+    {
+      "do": "hint",
+      "t": 150,
+      "player": "bob",
+      "kind": "bearing",
+      "every": 30,
+      "count": 22
+    }
+  ],
+  "expect": {
+    "verdicts": [
+      "Start",
+      "Hint alice bob 20000",
+      "Hint alice bob 50000",
+      "Hint alice bob 20000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "Hint bob carol 50000",
+      "End"
+    ],
+    "refusals": [
+      {
+        "player": "alice",
+        "reason": "Cooldown",
+        "from": 30,
+        "to": 30
+      },
+      {
+        "player": "alice",
+        "reason": "UnknownHint",
+        "from": 60,
+        "to": 60
+      },
+      {
+        "player": "alice",
+        "reason": "TextTooLong",
+        "from": 200,
+        "to": 200
+      },
+      {
+        "player": "bob",
+        "reason": "InsufficientHead",
+        "from": 780,
+        "to": 780
+      }
+    ],
+    "huds": [
+      {
+        "t": 20,
+        "player": "alice",
+        "hint": [0, 1],
+        "head": 980000
+      },
+      {
+        "t": 20,
+        "player": "bob",
+        "head": 1020000
+      },
+      {
+        "t": 30,
+        "player": "alice",
+        "head": 980000
+      },
+      {
+        "t": 50,
+        "player": "alice",
+        "hint": [1, 1],
+        "head": 930000
+      },
+      {
+        "t": 120,
+        "player": "alice",
+        "hint": [2, 1],
+        "head": 910000
+      },
+      {
+        "t": 150,
+        "player": "bob",
+        "hint": [1, 3],
+        "head": 1040000
+      },
+      {
+        "t": 150,
+        "player": "carol",
+        "head": 1050000
+      },
+      {
+        "t": 780,
+        "player": "bob",
+        "head": 40000
+      }
+    ],
+    "heads": {
+      "alice": 910000,
+      "bob": 40000,
+      "carol": 2050000
+    }
+  }
+}

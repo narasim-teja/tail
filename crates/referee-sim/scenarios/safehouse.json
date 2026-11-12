@@ -1,0 +1,22 @@
+{
+  "name": "safehouse",
+  "duration_s": 400,
+  "ring": ["alice", "bob", "carol"],
+  "radio_auto_m": 15,
+  "safehouses": [{ "x": 0, "y": 0, "radius_m": 25 }],
+  "players": [
+    { "name": "alice", "path": [[0, -3, 0], [150, -3, 0], [180, 57, 0]] },
+    { "name": "bob", "path": [[0, 0, 0], [150, 0, 0], [180, 60, 0]] },
+    { "name": "carol", "path": [[0, 1000, 1000]] }
+  ],
+  "events": [
+    { "do": "strike", "t": 140, "player": "alice" },
+    { "do": "strike", "t": 250, "player": "alice" }
+  ],
+  "expect": {
+    "verdicts": ["Start", "Tag alice bob", "End"],
+    "verdict_times": [{ "verdict": "Tag alice bob", "from": 250, "to": 250 }],
+    "refusals": [{ "player": "alice", "reason": "Lock", "from": 140, "to": 140 }],
+    "huds": [{ "t": 140, "player": "alice", "lock": 0 }]
+  }
+}

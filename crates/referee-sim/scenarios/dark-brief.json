@@ -1,0 +1,21 @@
+{
+  "name": "dark-brief",
+  "duration_s": 600,
+  "ring": ["alice", "bob", "carol"],
+  "players": [
+    { "name": "alice", "path": [[0, -500, 0]] },
+    { "name": "bob", "path": [[0, 0, 0]] },
+    { "name": "carol", "path": [[0, 1000, 1000]] }
+  ],
+  "events": [
+    { "do": "dark", "player": "bob", "from": 60, "to": 100 },
+    { "do": "dark", "player": "bob", "from": 200, "to": 215 },
+    { "do": "dark", "player": "bob", "from": 300, "to": 315 },
+    { "do": "dark", "player": "bob", "from": 400, "to": 415 }
+  ],
+  "expect": {
+    "verdicts": ["Start", "End"],
+    "huds": [{ "t": 90, "player": "alice", "leak": false }, { "t": 100, "player": "alice", "leak": false }],
+    "heads": { "alice": 1000000, "bob": 1000000, "carol": 1000000 }
+  }
+}
