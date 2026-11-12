@@ -440,6 +440,10 @@ check(
   target.huds.at(-1)?.status === 1,
   `the target's last HUD says OUT (status ${target.huds.at(-1)?.status})`,
 );
+check(
+  target.huds.at(-1)?.taggedBy === hunter.account,
+  `the target's last HUD names the hunter (${target.huds.at(-1)?.taggedBy})`,
+);
 check(stalePrev.includes("rollback"), "an old state blob is refused as a rollback");
 const endV = verdicts.at(-1)?.v.body;
 if (endV?.kind !== "End") throw new Error("FAIL: last verdict is not End");

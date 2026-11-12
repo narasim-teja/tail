@@ -220,4 +220,4 @@ The scripts read the repo-root `.env.local`. `REFEREE_PAYMENT_KEY` takes precede
 `OUTLAYER_PAYMENT_KEY`, and `REFEREE_VERSION=<wasm sha256>` pins a deployed version that is not
 active.
 
-Active version: wasm sha256 `bc1d952b9ef8fc4c728b3947f0d539662ad2180cb04f2b1f26ca05d299b926fc`.
+Active version: wasm sha256 `20446c643bd4b1cc8a017669596ed361506ad557c99464ecfe19beead6d08664` (HUDs carry `tagged_by`).
