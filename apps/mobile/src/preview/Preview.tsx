@@ -44,6 +44,7 @@ const hunt = (o: Partial<HuntModel> = {}): HuntModel => ({
   landedAtMs: null,
   tags: 0,
   tagged: false,
+  taggedBy: null,
   waiting: false,
   banner: null,
   me: ME,
@@ -61,6 +62,7 @@ const huntActions = { onStrike: noop, onHint: noop, onOpenSettings: noop, onResu
 
 const lobby = (o: Partial<LobbyModel> = {}): LobbyModel => ({
   matchId: ID,
+  code: "K7M-4QX",
   stake: 5_000_000n,
   minutes: 30,
   players: [
@@ -244,7 +246,7 @@ export const STATES: Record<string, () => ReactNode> = {
       }),
     ),
   "hunt-sheet": () => H(hunt({ lock: 1 }), { sheet: true }),
-  "hunt-tagged": () => <TaggedView head="$5.40" onResults={noop} />,
+  "hunt-tagged": () => <TaggedView head="$5.40" taggedBy="maya.tail-dev.testnet" onResults={noop} />,
   "hunt-blocked-bt": () => <BlockedView what="bluetooth" onOpenSettings={noop} />,
   "hunt-blocked-loc": () => <BlockedView what="location" onOpenSettings={noop} />,
   "results-survived": () => (

@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { money } from "../game/huntModel";
-import { type RecentMatch, useApp } from "../state/app";
+import { FINDING_LOBBY, type RecentMatch, useApp } from "../state/app";
 import { Mark } from "../ui/brand";
 import {
   Button,
@@ -57,6 +57,7 @@ export function HomeView({
   onOpen: (matchId: string) => void;
 }) {
   const [code, setCode] = useState("");
+  const finding = m.busy === FINDING_LOBBY;
   return (
     <Screen>
       <Row style={styles.header}>
@@ -95,11 +96,19 @@ export function HomeView({
         label="Or enter a code"
         value={code}
         onChangeText={setCode}
-        placeholder="32 letters and digits"
+        placeholder="K7M-4QX"
+        autoCapitalize="characters"
         returnKeyType="go"
         onSubmitEditing={() => code.trim() && onCode(code)}
       />
-      {code.trim() ? <Button kind="secondary" title="Open lobby" onPress={() => onCode(code)} /> : null}
+      {code.trim() ? (
+        <Button
+          kind="secondary"
+          title={finding ? "Finding the lobby" : "Open lobby"}
+          busy={finding}
+          onPress={() => onCode(code)}
+        />
+      ) : null}
 
       {m.recent.length > 0 ? (
         <>
@@ -145,10 +154,10 @@ export function Home() {
       nowMs={Date.now()}
       onCreate={() => app.openPage("create")}
       onScan={() => app.openPage("scan")}
-      onCode={(c) => app.openMatch(c)}
+      onCode={(c) => void app.openMatch(c)}
       onWithdraw={() => void app.withdraw()}
       onSettings={() => app.toggleSettings(true)}
-      onOpen={(id) => app.openMatch(id)}
+      onOpen={(id) => void app.openMatch(id)}
     />
   );
 }

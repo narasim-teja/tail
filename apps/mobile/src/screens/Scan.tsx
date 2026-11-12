@@ -89,7 +89,7 @@ export function Scan() {
     <ScanView
       permission={permission}
       onAllow={() => void request()}
-      onScanned={(id) => app.openMatch(id)}
+      onScanned={(id) => void app.openMatch(id)}
       onBack={() => app.openPage(null)}
     />
   );

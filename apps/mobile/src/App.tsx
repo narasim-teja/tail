@@ -75,10 +75,10 @@ export default function App() {
   useEffect(() => {
     void app.init().finally(() => void SplashScreen.hideAsync());
   }, []);
-  // tail://join/<match id> opens that lobby.
+  // tail://join/<match id> (the lobby QR) or tail://join/<lobby code> (a shared link) opens
+  // that lobby.
   useEffect(() => {
-    const m = url ? /^tail:\/\/join\/([0-9a-f]{32})/.exec(url) : null;
-    if (m?.[1] && app.ready) app.openMatch(m[1]);
+    if (url?.startsWith("tail://join/") && app.ready) void app.openMatch(url);
   }, [url]);
   return (
     <SafeAreaProvider>

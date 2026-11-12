@@ -2,11 +2,6 @@
 // change in an endpoint's shape is a one-file edit. Bytes are base64 on the wire, match ids are
 // 32 lowercase hex characters, amounts are decimal strings. Answers are checked field by field:
 // a shape change fails here with the field's name, not somewhere in the hunt loop.
-//
-// Assumed, not yet served by the relay (see README "What the relay must provide"):
-//   GET /referee → {referee_pk, referee_box_pk, box_pk_sig}   (the referee's `pubkeys`, base64)
-//   GET /matches/:id → `zone: {zone: Circle, safehouses: Circle[]}`  (the relay already stores it;
-//     the app checks it against the chain's zone_hash before drawing it)
 
 import { fromHex, toHex, utf8 } from "@tail/protocol";
 import { fromB64, toB64 } from "../lib/b64";
@@ -71,6 +66,17 @@ const read = {
     const v = read.str(o, k);
     if (!/^[0-9]+$/.test(v)) throw new RelayError(0, `relay answer: ${k} is not an amount`);
     return BigInt(v);
+  },
+  matchId(o: Obj, k: string): string {
+    const v = read.str(o, k);
+    if (!isMatchId(v)) throw new RelayError(0, `relay answer: ${k} is not a match id`);
+    return v;
+  },
+  /** A lobby code, in the form people see: "K7M-4QX". */
+  code(o: Obj, k: string): string {
+    const v = parseLobbyCode(read.str(o, k));
+    if (!v) throw new RelayError(0, `relay answer: ${k} is not a lobby code`);
+    return showLobbyCode(v);
   },
   list(o: Obj, k: string): unknown[] {
     const v = o[k];
@@ -147,6 +153,8 @@ export interface SealedKeys {
 
 export interface MatchView {
   matchId: string;
+  /** The short lobby code as people see it ("K7M-4QX"); null for a match made before codes. */
+  code: string | null;
   host: string;
   phase: RelayPhase;
   error: string | null;
@@ -280,7 +288,7 @@ export class RelayClient {
 
   // ── Matches ──────────────────────────────────────────────────────────────────────────────
 
-  async createMatch(signer: Signer, m: NewMatch): Promise<{ matchId: string }> {
+  async createMatch(signer: Signer, m: NewMatch): Promise<{ matchId: string; code: string }> {
     const body = JSON.stringify({
       stake: m.stake.toString(),
       duration_ms: m.durationMs,
@@ -292,13 +300,28 @@ export class RelayClient {
       start_by_ms: m.startByMs,
     });
     const r = await this.send(this.sign(signer, "/matches", body));
-    return { matchId: read.str(r, "match_id") };
+    return { matchId: read.matchId(r, "match_id"), code: read.code(r, "code") };
+  }
+
+  /**
+   * The open lobby a short code names. The relay answers 404 once the match has started or been
+   * called off, so a stale code reads as "no open lobby" rather than an error.
+   */
+  async resolveCode(code: string): Promise<string> {
+    try {
+      return read.matchId(await this.json("GET", `/join/${code}`), "match_id");
+    } catch (e) {
+      if (e instanceof RelayError && e.status === 404)
+        throw new RelayError(404, "No open lobby with that code.");
+      throw e;
+    }
   }
 
   async getMatch(matchId: string): Promise<MatchView> {
     const r = await this.json("GET", `/matches/${matchId}`);
     return {
       matchId: read.str(r, "match_id"),
+      code: r["code"] === null || r["code"] === undefined ? null : read.code(r, "code"),
       host: read.str(r, "host"),
       phase: read.str(r, "phase") as RelayPhase,
       error: typeof r["error"] === "string" ? r["error"] : null,
@@ -415,4 +438,36 @@ export class RelayClient {
 /** Match ids travel as 32 lowercase hex characters; the protocol uses the 16 bytes. */
 export const matchIdBytes = (id: string) => fromHex(id);
 export const matchIdHex = (b: Uint8Array) => toHex(b);
-export const isMatchId = (s: string) => /^[0-9a-f]{32}$/.test(s);
+export function isMatchId(s: string): boolean {
+  return /^[0-9a-f]{32}$/.test(s);
+}
+
+// Lobby codes (apps/server src/codes.ts): six symbols from Crockford base32 without 0/O, 1/I/L
+// and U, shown as "K7M-4QX". Typed in any case, with or without the dash.
+const CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/** What someone typed, as the six symbols of a lobby code ("K7M4QX"), or null. */
+export function parseLobbyCode(input: string): string | null {
+  const s = input.replace(/[\s-]/g, "").toUpperCase();
+  if (s.length !== 6 || [...s].some((ch) => !CODE_ALPHABET.includes(ch))) return null;
+  return s;
+}
+
+/** "K7M4QX" → "K7M-4QX". */
+export const showLobbyCode = (code: string) => `${code.slice(0, 3)}-${code.slice(3)}`;
+
+/** The link a lobby shares and its QR encodes: `tail://join/` and a match id or a lobby code. */
+export const joinLink = (idOrCode: string) => `tail://join/${idOrCode}`;
+
+/**
+ * What a player typed, scanned or tapped to reach a lobby: a full match id (lobby QR, recent
+ * match), a short lobby code, or a `tail://join/…` link holding either. Null when it is none.
+ */
+export function readJoin(input: string): { matchId: string } | { code: string } | null {
+  const t = input.trim();
+  const inner = /^tail:\/\/join\/(.+)$/i.exec(t)?.[1] ?? t;
+  const id = inner.toLowerCase();
+  if (isMatchId(id)) return { matchId: id };
+  const code = parseLobbyCode(inner);
+  return code ? { code } : null;
+}

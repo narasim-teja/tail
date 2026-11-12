@@ -15,12 +15,22 @@ import { type Identity, loadIdentity, nearSigner } from "../identity/identity";
 import { keychain } from "../identity/keychain";
 import { NearRpc } from "../near/rpc";
 import { PLAYER_GAS } from "../near/tx";
-import { isMatchId, type MatchView, matchIdBytes, type NewMatch, RelayClient } from "../relay/client";
+import {
+  isMatchId,
+  type MatchView,
+  matchIdBytes,
+  type NewMatch,
+  RelayClient,
+  readJoin,
+} from "../relay/client";
 import { HudSocket } from "../relay/hud";
 import { checkedRefereeBox } from "../relay/referee";
 import { assertWith, attestor, radioPort } from "./device";
 import { files } from "./files";
 import { decodeMatchRecord, encodeMatchRecord, type MatchRecord } from "./persist";
+
+/** The busy label while a typed lobby code is looked up; Home shows it on its button. */
+export const FINDING_LOBBY = "Finding the lobby";
 
 export interface Settings extends CarryConfig {
   relayUrl: string;
@@ -299,14 +309,24 @@ class AppModel {
     });
   }
 
-  openMatch(code: string) {
-    const id = code.trim().toLowerCase();
-    if (!isMatchId(id)) {
-      this.error = "A match code is 32 letters and digits.";
+  /**
+   * Opens a lobby from whatever the player has: a short code (asked of the relay, which knows
+   * only open lobbies), a full match id, or a tail://join link holding either.
+   */
+  openMatch(input: string) {
+    const target = readJoin(input);
+    if (!target) {
+      this.error = "Enter the lobby code, like K7M-4QX.";
       this.emit();
-      return;
+      return Promise.resolve();
     }
-    this.setMatch(id);
+    if ("matchId" in target) {
+      this.setMatch(target.matchId);
+      return Promise.resolve();
+    }
+    return this.act(FINDING_LOBBY, async () => {
+      this.setMatch(await this.relay.resolveCode(target.code));
+    });
   }
 
   join() {

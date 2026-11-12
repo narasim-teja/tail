@@ -1,8 +1,11 @@
-// Lobby: a big QR first (friends scan it in person), then the code and share link, players as
-// initials with names, stake and length, Start for the host (enabled at min players), Leave.
+// Lobby: a big QR first (friends scan it in person), then the short code large enough to read
+// across a park and a Share link carrying it, players as initials with names, stake and
+// length, Start for the host (enabled at min players), Leave. The QR keeps the full match id:
+// it never expires, while the short code works only while the lobby is open.
 import { Share, StyleSheet, View } from "react-native";
 import Svg, { Path, Rect } from "react-native-svg";
 import { money } from "../game/huntModel";
+import { joinLink } from "../relay/client";
 import { useApp } from "../state/app";
 import {
   Avatar,
@@ -13,6 +16,7 @@ import {
   Figure,
   Label,
   Notice,
+  Num,
   Row,
   Screen,
   Strong,
@@ -31,6 +35,8 @@ export type LobbyState =
 
 export interface LobbyModel {
   matchId: string;
+  /** "K7M-4QX"; null for a match the relay made before lobby codes. */
+  code: string | null;
   stake: bigint | null;
   minutes: number | null;
   players: { id: string; host: boolean; me: boolean }[];
@@ -51,8 +57,15 @@ export interface LobbyActions {
   onBack: () => void;
 }
 
-/** "ABCD EFGH …": the code in groups of four, easy to read aloud. */
+/** "ABCD EFGH …": a full match id in groups of four, for a lobby that has no short code. */
 export const groupCode = (id: string) => (id.toUpperCase().match(/.{1,4}/g) ?? []).join(" ");
+
+/** What Share sends: the code to type and a link that opens the lobby. */
+export function shareMessage(m: Pick<LobbyModel, "matchId" | "code">): string {
+  return m.code
+    ? `Join my TAIL hunt. Code ${m.code}, or open ${joinLink(m.code)}`
+    : `Join my TAIL hunt: ${joinLink(m.matchId)}`;
+}
 
 function Qr({ value, size }: { value: string; size: number }) {
   const q = qrPath(value);
@@ -85,7 +98,7 @@ function stateLine(s: LobbyState): { title: string; detail?: string } | null {
 }
 
 export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions }) {
-  const link = `tail://join/${m.matchId}`;
+  const link = joinLink(m.matchId);
   const open = m.state.kind === "waiting" || m.state.kind === "ready" || m.state.kind === "failed";
   const line = stateLine(m.state);
   const short = m.stake !== null && m.balance !== null && !m.joined && m.balance < m.stake;
@@ -136,11 +149,26 @@ export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions
         <Qr value={link} size={232} />
       </View>
       <View style={styles.codeRow}>
-        <View style={styles.grow}>
-          <Eyebrow muted>Code</Eyebrow>
-          <Figure>{groupCode(m.matchId)}</Figure>
-        </View>
-        <Button kind="secondary" title="Share" onPress={() => void Share.share({ message: link })} />
+        {m.code ? (
+          <View
+            style={styles.grow}
+            accessible
+            accessibilityLabel={`Code ${[...m.code.replace("-", "")].join(" ")}`}
+          >
+            <Eyebrow muted>Code</Eyebrow>
+            <Num>{m.code}</Num>
+          </View>
+        ) : (
+          <View style={styles.grow}>
+            <Eyebrow muted>Code</Eyebrow>
+            <Figure>{groupCode(m.matchId)}</Figure>
+          </View>
+        )}
+        <Button
+          kind="secondary"
+          title="Share"
+          onPress={() => void Share.share({ message: shareMessage(m) })}
+        />
       </View>
 
       <Row gap="xl" style={styles.figures}>
@@ -215,6 +243,7 @@ export function Lobby() {
     <LobbyView
       m={{
         matchId: app.matchId ?? "",
+        code: m?.code ?? null,
         stake: chain?.stake ?? null,
         minutes: chain ? Math.round(chain.durationMs / 60_000) : null,
         players,
