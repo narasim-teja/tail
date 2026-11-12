@@ -68,7 +68,7 @@ export function appIconSvg(variant: "warm" | "light" = "warm", size = 1024) {
   const inner = (size * 2) / 3;
   const offset = (size - inner) / 2;
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">` +
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img" aria-label="TAIL">` +
     `<rect width="${size}" height="${size}" fill="${field}"/>` +
     `<g transform="translate(${offset} ${offset}) scale(${inner / 64})">` +
     `<path d="${trail.tail}" fill="${mark}" fill-opacity="${trailOpacity}"/>` +
