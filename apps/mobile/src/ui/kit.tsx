@@ -1,235 +1,377 @@
-// The handful of building blocks every screen uses, all styled from theme.ts. Every control has
-// an accessibility label and a hit target of at least HIT points.
+// The app's building blocks, all styled from theme.ts. Every control has an accessible name and
+// a hit target of at least HIT points. A screen's tone (paper, ink, persimmon) flows down through
+// context so text always picks the colour that passes contrast on it.
 
 import type { IconName } from "@tail/brand";
-import type { ReactNode } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, type TextInputProps, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { createContext, type ReactNode, useContext } from "react";
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  type TextInputProps,
+  type TextStyle,
+  View,
+  type ViewStyle,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon } from "./brand";
-import { color, HIT, radius, STRIKE_HEIGHT, space, type } from "./theme";
+import { color, HIT, maxScale, radius, STRIKE_HEIGHT, space, text } from "./theme";
 
-export function Screen({ children, scroll = true }: { children: ReactNode; scroll?: boolean }) {
+export type Tone = "paper" | "ink" | "persimmon";
+
+const ToneContext = createContext<Tone>("paper");
+export const useTone = () => useContext(ToneContext);
+
+export function ToneProvider({ tone, children }: { tone: Tone; children: ReactNode }) {
+  return <ToneContext.Provider value={tone}>{children}</ToneContext.Provider>;
+}
+
+/** Text colour for a tone: ink on paper and persimmon (the Ink Rule), paper on ink. */
+export const inkOn = (t: Tone) => (t === "ink" ? color.paper : color.ink);
+export const muteOn = (t: Tone) => (t === "ink" ? color.sand : t === "persimmon" ? color.ink : color.mute);
+export const toneBg: Record<Tone, string> = {
+  paper: color.paper,
+  ink: color.ink,
+  persimmon: color.persimmon,
+};
+
+export function Screen({
+  children,
+  tone = "paper",
+  scroll = true,
+  footer,
+}: {
+  children: ReactNode;
+  tone?: Tone;
+  scroll?: boolean;
+  /** Pinned below the content, above the home indicator (primary actions, thumb reach). */
+  footer?: ReactNode;
+}) {
+  const inset = useSafeAreaInsets();
   return (
-    <SafeAreaView style={s.safe} edges={["top", "bottom"]}>
-      {scroll ? (
-        <ScrollView contentContainerStyle={s.pad} keyboardShouldPersistTaps="handled">
-          {children}
-        </ScrollView>
-      ) : (
-        <View style={[s.pad, s.fill]}>{children}</View>
-      )}
-    </SafeAreaView>
+    <ToneContext.Provider value={tone}>
+      <View style={[s.fill, { backgroundColor: toneBg[tone], paddingTop: inset.top }]}>
+        {scroll ? (
+          <ScrollView contentContainerStyle={s.pad} keyboardShouldPersistTaps="handled">
+            {children}
+          </ScrollView>
+        ) : (
+          <View style={[s.pad, s.fill]}>{children}</View>
+        )}
+        {footer ? (
+          <View style={[s.footer, { paddingBottom: Math.max(inset.bottom, space.l) }]}>{footer}</View>
+        ) : null}
+      </View>
+    </ToneContext.Provider>
   );
 }
 
-export function Title({ children }: { children: ReactNode }) {
+type TextProps = {
+  children: ReactNode;
+  style?: TextStyle;
+  center?: boolean;
+  muted?: boolean;
+  lines?: number;
+};
+
+type Variant = keyof typeof VARIANTS;
+const VARIANTS = {
+  eyebrow: [text.eyebrow, maxScale.text],
+  caption: [text.caption, maxScale.text],
+  label: [text.label, maxScale.text],
+  body: [text.body, maxScale.text],
+  strong: [text.bodyStrong, maxScale.text],
+  title: [text.title, maxScale.text],
+  display: [text.display, maxScale.number],
+  poster: [text.poster, maxScale.number],
+  num: [text.number, maxScale.number],
+  figure: [text.figure, maxScale.text],
+} as const satisfies Record<string, readonly [TextStyle, number]>;
+const HEADERS: readonly Variant[] = ["title", "display", "poster"];
+
+function T({ v, children, style, center, muted, lines }: TextProps & { v: Variant }) {
+  const tone = useTone();
+  const [base, scale] = VARIANTS[v];
   return (
-    <Text style={s.title} accessibilityRole="header">
+    <Text
+      {...(HEADERS.includes(v) ? { accessibilityRole: "header" as const } : {})}
+      maxFontSizeMultiplier={scale}
+      numberOfLines={lines}
+      style={[base, { color: muted ? muteOn(tone) : inkOn(tone) }, center && s.center, style]}
+    >
       {children}
     </Text>
   );
 }
 
-export function Body({
-  children,
-  muted,
-  center,
-}: {
-  children: ReactNode;
-  muted?: boolean;
-  center?: boolean;
-}) {
-  return <Text style={[s.body, muted && s.muted, center && s.center]}>{children}</Text>;
-}
+export const Eyebrow = (p: TextProps) => <T v="eyebrow" {...p} />;
+export const Caption = (p: TextProps) => <T v="caption" {...p} />;
+export const Label = (p: TextProps) => <T v="label" {...p} />;
+export const Body = (p: TextProps) => <T v="body" {...p} />;
+export const Strong = (p: TextProps) => <T v="strong" {...p} />;
+export const Title = (p: TextProps) => <T v="title" {...p} />;
+export const Display = (p: TextProps) => <T v="display" {...p} />;
+export const Poster = (p: TextProps) => <T v="poster" {...p} />;
+export const Num = (p: TextProps) => <T v="num" {...p} />;
+export const Figure = (p: TextProps) => <T v="figure" {...p} />;
 
-export function Label({ children }: { children: ReactNode }) {
-  return <Text style={s.label}>{children}</Text>;
-}
-
-/** A number as a hero: tabular figures, large. */
-export function Figure({ children, label, icon }: { children: ReactNode; label: string; icon?: IconName }) {
-  return (
-    <View accessible accessibilityLabel={`${label} ${String(children)}`}>
-      <View style={s.labelRow}>
-        {icon ? <Icon name={icon} size={16} tint={color.inkMuted} /> : null}
-        <Text style={s.label}>{label}</Text>
-      </View>
-      <Text style={s.figure}>{children}</Text>
-    </View>
-  );
-}
-
-type ButtonKind = "primary" | "plain" | "strike";
+export type ButtonKind = "primary" | "secondary" | "quiet" | "strike";
 
 export function Button({
   title,
   onPress,
   kind = "primary",
+  icon,
+  busy,
   disabled,
   hint,
-  icon,
+  style,
 }: {
   title: string;
   onPress: () => void;
   kind?: ButtonKind;
+  /** A brand game icon, only for game concepts. */
+  icon?: IconName | undefined;
+  /** Shows a spinner and blocks presses; the title says what is happening. */
+  busy?: boolean | undefined;
   disabled?: boolean | undefined;
   hint?: string | undefined;
-  icon?: IconName;
+  style?: ViewStyle;
 }) {
+  const tone = useTone();
+  // Outside the game, the primary action is ink; persimmon is spent only on STRIKE.
+  const bg =
+    kind === "strike"
+      ? tone === "persimmon"
+        ? color.ink
+        : color.persimmon
+      : kind === "primary"
+        ? tone === "ink"
+          ? color.paper
+          : color.ink
+        : kind === "secondary"
+          ? tone === "ink"
+            ? color.mute
+            : color.sand
+          : "transparent";
+  const fg =
+    kind === "strike"
+      ? tone === "persimmon"
+        ? color.persimmon
+        : color.ink
+      : kind === "primary"
+        ? tone === "ink"
+          ? color.ink
+          : color.paper
+        : kind === "secondary" && tone === "ink"
+          ? color.paper
+          : inkOn(tone);
+  const off = disabled || busy;
   return (
     <Pressable
       onPress={onPress}
-      disabled={disabled}
+      disabled={off}
       accessibilityRole="button"
       accessibilityLabel={title}
       {...(hint ? { accessibilityHint: hint } : {})}
-      accessibilityState={{ disabled: !!disabled }}
-      style={({ pressed }) => [s.button, s[kind], disabled && s.disabled, pressed && s.pressed]}
+      accessibilityState={{ disabled: !!disabled, busy: !!busy }}
+      style={({ pressed }) => [
+        s.button,
+        kind === "strike" && s.strike,
+        kind === "quiet" && s.quiet,
+        { backgroundColor: bg },
+        disabled && s.disabled,
+        pressed && s.pressed,
+        style,
+      ]}
     >
-      <View style={s.labelRow}>
-        {icon ? <Icon name={icon} size={kind === "strike" ? 34 : 20} tint={color.onSignature} /> : null}
-        <Text style={[s.buttonText, kind === "strike" && s.strikeText]}>{title}</Text>
-      </View>
+      {busy ? (
+        <ActivityIndicator color={fg} />
+      ) : icon ? (
+        <Icon name={icon} size={kind === "strike" ? 36 : 20} tint={fg} />
+      ) : null}
+      <Text
+        maxFontSizeMultiplier={kind === "strike" ? maxScale.number : maxScale.text}
+        style={[kind === "strike" ? s.strikeText : s.buttonText, { color: fg }]}
+      >
+        {title}
+      </Text>
     </Pressable>
   );
 }
 
-export function Field({ label, ...input }: { label: string } & TextInputProps) {
+export function Field({
+  label,
+  error,
+  ...input
+}: { label: string; error?: string | null | undefined } & TextInputProps) {
+  const tone = useTone();
   return (
     <View style={s.field}>
-      <Label>{label}</Label>
+      <Text maxFontSizeMultiplier={maxScale.text} style={[text.label, { color: inkOn(tone) }]}>
+        {label}
+      </Text>
       <TextInput
         accessibilityLabel={label}
         autoCapitalize="none"
         autoCorrect={false}
-        placeholderTextColor={color.inkMuted}
-        style={s.input}
+        placeholderTextColor={color.mute}
+        maxFontSizeMultiplier={maxScale.text}
+        style={[s.input, error ? s.inputError : null]}
         {...input}
+      />
+      {error ? (
+        <Text
+          accessibilityLiveRegion="polite"
+          maxFontSizeMultiplier={maxScale.text}
+          style={[text.caption, s.errorText]}
+        >
+          {error}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+export function ToggleRow({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <View style={s.toggle}>
+      <Label>{label}</Label>
+      <Switch
+        value={value}
+        onValueChange={onChange}
+        accessibilityLabel={label}
+        trackColor={{ true: color.ink, false: color.line }}
+        thumbColor={color.paper}
+        ios_backgroundColor={color.line}
       />
     </View>
   );
 }
 
-export function Row({ children }: { children: ReactNode }) {
-  return <View style={s.row}>{children}</View>;
+/** A player as initials in a soft circle, Find My style. */
+export function Avatar({ name, size = 40, mark }: { name: string; size?: number; mark?: boolean }) {
+  const handle = name.split(".")[0] ?? name;
+  const initials = handle
+    .split(/[-_]/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p.charAt(0).toUpperCase())
+    .join("");
+  return (
+    <View
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={[s.avatar, { width: size, height: size, borderRadius: size / 2 }, mark && s.avatarMark]}
+    >
+      <Text allowFontScaling={false} style={[text.label, { color: color.ink, fontSize: size * 0.38 }]}>
+        {initials || "?"}
+      </Text>
+    </View>
+  );
+}
+
+/** An inline notice: icon, one line, optional detail. Errors are sentences, never colour alone. */
+export function Notice({
+  icon,
+  title,
+  detail,
+}: {
+  icon?: IconName;
+  title: string;
+  detail?: string | null | undefined;
+}) {
+  const tone = useTone();
+  return (
+    <View
+      style={s.notice}
+      accessible
+      accessibilityLiveRegion="polite"
+      accessibilityLabel={detail ? `${title}. ${detail}` : title}
+    >
+      {icon ? <Icon name={icon} size={20} tint={inkOn(tone)} /> : null}
+      <View style={s.fillRow}>
+        <Strong>{title}</Strong>
+        {detail ? <Caption muted>{detail}</Caption> : null}
+      </View>
+    </View>
+  );
+}
+
+export function Row({
+  children,
+  gap = "s",
+  style,
+}: {
+  children: ReactNode;
+  gap?: keyof typeof space;
+  style?: ViewStyle;
+}) {
+  return <View style={[s.row, { gap: space[gap] }, style]}>{children}</View>;
 }
 
 export function Gap({ size = "l" }: { size?: keyof typeof space }) {
   return <View style={{ height: space[size] }} />;
 }
 
-/**
- * Lock or heat: segments plus the number, so the state never rests on colour alone
- * (DESIGN.md, the Never-Alone Rule).
- */
-export function SegmentBar({
-  label,
-  value,
-  max,
-  tone,
-}: {
-  label: string;
-  value: number;
-  max: number;
-  tone: "lock" | "heat";
-}) {
-  const fill = tone === "lock" ? color.signature : color.heat;
-  return (
-    <View
-      accessible
-      accessibilityRole="progressbar"
-      accessibilityLabel={`${label} ${value} of ${max}`}
-      style={s.bar}
-    >
-      <View style={s.barHead}>
-        <View style={s.labelRow}>
-          <Icon name={tone} size={18} tint={color.inkMuted} />
-          <Text style={s.label}>{label}</Text>
-        </View>
-        <Text style={s.barNumber}>
-          {value}/{max}
-        </Text>
-      </View>
-      <View style={s.segments}>
-        {Array.from({ length: max }, (_, i) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: segments are positional and never reorder
-          <View key={i} style={[s.segment, { backgroundColor: i < value ? fill : color.surfaceSunk }]} />
-        ))}
-      </View>
-    </View>
-  );
+export function Rule() {
+  return <View style={s.rule} />;
 }
 
-export function ErrorLine({ text }: { text: string | null }) {
-  if (!text) return null;
-  return (
-    <Text style={s.error} accessibilityLiveRegion="polite">
-      {text}
-    </Text>
-  );
-}
-
-export const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: color.surface },
-  pad: { padding: space.l, gap: space.m },
+const s = StyleSheet.create({
   fill: { flex: 1 },
-  title: {
-    fontFamily: type.family,
-    fontSize: type.size.title,
-    fontWeight: type.weight.bold,
-    color: color.ink,
-  },
-  body: { fontFamily: type.family, fontSize: type.size.body, color: color.ink },
-  muted: { color: color.inkMuted },
+  fillRow: { flex: 1, gap: 2 },
+  pad: { paddingHorizontal: space.xl, paddingTop: space.l, paddingBottom: space.xxl, gap: space.m },
+  footer: { paddingHorizontal: space.xl, paddingTop: space.m, gap: space.s },
   center: { textAlign: "center" },
-  label: {
-    fontFamily: type.family,
-    fontSize: type.size.label,
-    fontWeight: type.weight.medium,
-    color: color.inkMuted,
-  },
-  figure: { ...type.number, fontSize: type.size.display, color: color.ink },
   button: {
-    minHeight: HIT,
+    minHeight: 52,
     minWidth: HIT,
-    paddingHorizontal: space.l,
+    paddingHorizontal: space.xl,
     borderRadius: radius.m,
+    flexDirection: "row",
+    gap: space.s,
     alignItems: "center",
     justifyContent: "center",
   },
-  primary: { backgroundColor: color.signature },
-  plain: { backgroundColor: color.surfaceSunk },
-  strike: { backgroundColor: color.signature, minHeight: STRIKE_HEIGHT, borderRadius: radius.l },
-  disabled: { opacity: 0.4 },
-  pressed: { opacity: 0.75 },
-  buttonText: {
-    fontFamily: type.family,
-    fontSize: type.size.body,
-    fontWeight: type.weight.bold,
-    color: color.onSignature,
+  quiet: { minHeight: HIT, paddingHorizontal: space.m },
+  strike: { minHeight: STRIKE_HEIGHT, borderRadius: radius.l, gap: space.m },
+  disabled: { opacity: 0.38 },
+  pressed: { opacity: 0.8, transform: [{ scale: 0.985 }] },
+  buttonText: { ...text.label, fontSize: 17 },
+  strikeText: {
+    fontFamily: text.hero.fontFamily,
+    fontSize: 40,
+    letterSpacing: 4,
+    textTransform: "uppercase",
   },
-  strikeText: { fontSize: type.size.display, letterSpacing: 2 },
   field: { gap: space.xs },
   input: {
-    minHeight: HIT,
-    paddingHorizontal: space.m,
+    minHeight: 52,
+    paddingHorizontal: space.l,
     borderRadius: radius.s,
-    backgroundColor: color.surfaceSunk,
-    fontFamily: type.family,
-    fontSize: type.size.body,
+    backgroundColor: color.sand,
+    ...text.body,
     color: color.ink,
   },
-  labelRow: { flexDirection: "row", alignItems: "center", gap: space.xs },
-  row: { flexDirection: "row", gap: space.s, alignItems: "center", flexWrap: "wrap" },
-  bar: { gap: space.xs },
-  barHead: { flexDirection: "row", justifyContent: "space-between" },
-  barNumber: { ...type.number, fontSize: type.size.title, color: color.ink },
-  segments: { flexDirection: "row", gap: space.xs },
-  segment: { flex: 1, height: 18, borderRadius: radius.s },
-  error: {
-    fontFamily: type.family,
-    fontSize: type.size.label,
-    fontWeight: type.weight.bold,
-    color: color.danger,
-  },
+  inputError: { borderWidth: 2, borderColor: color.ink },
+  errorText: { color: color.ink },
+  toggle: { minHeight: HIT, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  avatar: { backgroundColor: color.sand, alignItems: "center", justifyContent: "center" },
+  avatarMark: { borderWidth: 2, borderColor: color.ink },
+  notice: { flexDirection: "row", gap: space.m, alignItems: "flex-start", paddingVertical: space.s },
+  row: { flexDirection: "row", alignItems: "center", flexWrap: "wrap" },
+  rule: { height: StyleSheet.hairlineWidth, backgroundColor: color.line },
 });

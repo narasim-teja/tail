@@ -11,7 +11,7 @@ import { color } from "./theme";
 export function TrailMarker({ heading, size = 40 }: { heading: number | null; size?: number }) {
   return (
     <View style={{ transform: [{ rotate: `${markRotation(heading)}deg` }] }} accessibilityLabel="You">
-      <SvgXml xml={markSvg({ size, color: color.signature })} width={size} height={size} />
+      <SvgXml xml={markSvg({ size, color: color.persimmon })} width={size} height={size} />
     </View>
   );
 }
@@ -35,5 +35,5 @@ export function Icon({
 
 /** The Trail mark on its own, for the first screen. */
 export function Mark({ size = 56 }: { size?: number }) {
-  return <SvgXml xml={markSvg({ size, color: color.signature, label: "TAIL" })} width={size} height={size} />;
+  return <SvgXml xml={markSvg({ size, color: color.persimmon, label: "TAIL" })} width={size} height={size} />;
 }
