@@ -1,0 +1,11 @@
+{
+  "display": { "name": "TAIL referee" },
+  "operations": ["pubkeys", "enroll", "start", "tick", "voice", "end", "declassify", "bench_state"],
+  "capabilities": {
+    "network": [{ "host": "cloud-api.near.ai", "timeout_secs": 10 }]
+  },
+  "author_secrets": { "profile": "referee" },
+  "callers": { "direct": "deny", "contract": "deny" },
+  "signing_keys": [{ "path": "verdicts", "type": "ed25519", "bind": "project", "caller": "none" }],
+  "encryption_keys": [{ "path": "state", "bind": "project", "caller": "signer" }]
+}

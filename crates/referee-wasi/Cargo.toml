@@ -1,0 +1,57 @@
+[package]
+name = "referee-wasi"
+version = "0.1.0"
+description = "TAIL referee as an OutLayer WASI P2 component: keys, enrolment, match start, sealed tick state, Handler voice."
+edition = "2021"
+# Shared crates declare 1.94 so clippy refuses newer std APIs; see rust-toolchain.toml for why.
+rust-version = "1.94"
+license = "AGPL-3.0-only"
+publish = false
+
+[[bin]]
+name = "tail-referee"
+path = "src/main.rs"
+
+[dependencies]
+tail-protocol = { path = "../tail-protocol", features = ["seal"] }
+# The rules engine: deterministic, no I/O; this crate unseals, calls it, signs and seals.
+referee-core = { path = "../referee-core" }
+# The same P-256 key check the engine applies, run at enrolment so a bad key fails there.
+appattest = { path = "../appattest" }
+outlayer = { version = "=0.2.1", features = ["signing-keys", "encryption-keys"] }
+# Raw wasi:http, wasi:clocks and wasi:random: the Handler call needs a real deadline (poll on the
+# response and a timer), which wasi-http-client does not offer.
+wasi = "=0.13.3"
+borsh = { version = "=1.8.1", features = ["derive"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+base64 = "=0.22.1"
+hex = "=0.4.3"
+
+# Mirror of the root workspace lint table (this crate is its own workspace, so it cannot inherit).
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+doc_markdown = "allow"
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
+strip = true
+
+# Its own workspace: built for wasm32-wasip2 only, excluded from the root one.
+[workspace]

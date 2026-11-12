@@ -1,0 +1,8 @@
+# OutLayer's worker runs wasmtime 36, which serves WASI up to 0.2.6. Rust's wasm32-wasip2 std
+# from 1.95 on imports newer WASI (1.100 imports 0.2.12) and the module then fails with
+# "Failed to instantiate component". 1.94.1 imports 0.2.6. Move this pin only after checking
+# `wasm-tools component wit <wasm> | grep import` against the worker's wasmtime version.
+[toolchain]
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-wasip2"]
