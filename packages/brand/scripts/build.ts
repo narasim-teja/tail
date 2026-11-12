@@ -19,6 +19,8 @@ const files: Record<string, string | Uint8Array> = {
   "app-icon-1024.png": png(appIconSvg("warm"), 1024),
   "app-icon-light-1024.png": png(appIconSvg("light"), 1024),
   // Favicons: the mark alone on transparent reads at 16 px; the touch icon needs a field.
+  // Launch screen: the mark alone on transparent; the app centres it on paper.
+  "splash-mark-512.png": png(markSvg(), 512),
   "favicon.svg": markSvg(),
   "favicon-32.png": png(markSvg({ size: 32 }), 32),
   "apple-touch-icon.png": png(appIconSvg("warm", 180), 180),
