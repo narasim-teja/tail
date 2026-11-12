@@ -105,8 +105,9 @@ script. They were never used on NEAR, the bundle names no transactions, and the 
 
 ## Known limits
 
-- The relay serves `batches: []` until the referee gains a declassify command, so real matches
-  play without trails: events, heads and locks still play, and the map shows the zone.
+- Trails appear only after End: the server then asks the referee to open the match's stored
+  batches and keeps those whose hash is in the log. A replay opened before that (or of a match
+  whose batches were not released) plays events, heads and locks without trails.
 - Event times come from the log's order (batch times, contact epochs and checkpoint minutes);
   without trails they are good to about a tick (10 s).
 - Transactions are linked to the explorer, not fetched. NEAR's agreement is established from

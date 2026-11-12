@@ -97,7 +97,7 @@ bun install
 
 ```sh
 cd apps/mobile
-bun test                                   # 103 tests
+bun test                                   # 113 tests
 bunx tsc -p . && bunx tsc -p tsconfig.test.json
 bunx expo export --platform ios --output-dir /tmp/tail-export
 CI=1 bunx expo prebuild --platform ios --clean
@@ -163,8 +163,11 @@ Use xcodebuild directly (the route that worked in the device spike on 2026-11-12
 2. Enter a handle, **Join**. The phone generates its keys, App Attest attests them over the
    relay's challenge, and the relay creates `<handle>.<relay account>` with only this phone's
    function-call key.
-3. Host: fill **New match** and **Create** (the zone is centred on you). **Share link** sends
-   `tail://join/<code>`; others open it or paste the code into **Match code**.
+3. Host: fill **New match** and **Create** (the zone is centred on you). The lobby shows a short
+   code (`K7M-4QX`) and a QR of `tail://join/<match id>`. **Share** sends the code and
+   `tail://join/<code>`; others scan the QR, open the link, or type the code into **Or enter a
+   code** (the relay's `GET /join/:code` resolves it while the lobby is open). A full match id
+   works there too.
 4. Everyone: **Top up 10** (testnet: the relay credits test USDC), then **Join** (a NEAR
    `join_match` signed on the phone). Host: **Start** once enough players joined.
 5. Briefing shows your target. **Hunt** starts beacon, scan, location and pocket mode. Keep the
@@ -175,40 +178,28 @@ Use xcodebuild directly (the route that worked in the device spike on 2026-11-12
 7. When you are out or the match ends: your head and **Replay data** (the relay's
    `GET /replay/:id`).
 
-## What the relay must provide (assumed here)
+## What the app uses from the server
 
-| Need                  | Shape the app uses                                                                                                                                                                                                                                                                                                                                                                                                                   | State                                                                                              |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| The referee's box key | `GET /referee` → `{referee_pk, referee_box_pk, box_pk_sig}` (base64, the referee's `pubkeys` output). The app checks `box_pk_sig` = ed25519 over `SHA256("tail/referee-box/v1" ‖ box_pk)` under the `referee_pk` the match pinned on chain (`get_match`), and refuses to seal otherwise.                                                                                                                                             | **Not served yet.** Without it the briefing stops with the relay's 404 and no batch can be sealed. |
-| Lobby and keys        | `GET /matches/:id` with `chain.players[].{account_id, head, out}`, `chain.referee_pk` (hex), `chain.stake`, `chain.token`, `keys[]`                                                                                                                                                                                                                                                                                                  | Served                                                                                             |
-| Everything else       | `POST /enroll/challenge`, `POST /enroll`, `POST /matches`, `POST /matches/:id/start`, `POST /batch`, `GET /hud` (WebSocket), `POST /dev/topup`, `GET /replay/:id` as in `apps/server/src/routes`                                                                                                                                                                                                                                     | Served                                                                                             |
-| Mesh node             | An Offline Protocol node whose `off1…` address goes in Settings. It receives `{v: 1, type: "tail/batch", path, account, time_ms, sig, body}`: the exact signed `POST /batch` request, to replay into the relay. Two relay changes needed: accept a carried batch's signature older than the 60 s request window (the batch digest dedupe already stops replays), and enqueue before the SDK's delivery receipt matters for ordering. | **No node yet**                                                                                    |
+All served by `apps/server` (shapes in its README):
 
-Two more gaps the design pass needs filled:
+- `GET /referee`: the referee's keys. The app checks `box_pk_sig` (ed25519 over
+  `SHA256("tail/referee-box/v1" ‖ box_pk)`) under the `referee_pk` the match pinned on chain, and
+  refuses to seal otherwise.
+- `GET /matches/:id`: lobby, sealed keys, the join `code`, the chain view, and the zone and
+  safehouses. The zone is drawn only if it hashes to the chain's `zone_hash`.
+- `GET /join/:code`: a short lobby code (`K7M-4QX`) to a match id.
+- `POST /enroll/challenge`, `POST /enroll`, `POST /matches`, `POST /matches/:id/start`,
+  `POST /batch`, `GET /hud` (WebSocket), `POST /dev/topup` (testnet), `GET /replay/:id`.
 
-- **Zone in `GET /matches/:id`.** The relay stores the zone and safehouses but does not return
-  them. The app accepts `zone: {zone: {latE7, lonE7, radiusM}, safehouses: [...]}` (the shape
-  `GET /replay/:id` already returns), draws it only if it hashes to the chain's `zone_hash`, and
-  uses it for the out-of-zone banner. Until then: no zone edge, no safehouses, no zone banner.
-- **Who tagged you.** The HUD has no field for it (a `@tail/protocol` change), so the tagged
-  screen says your head went to your hunter and the replay shows who.
-
-One relay behaviour to look at: the relay keeps the first copy of each sealed batch by digest
-and answers a repeat with `queued: false`. If the referee ever rejects a batch for a seq gap, the
-phone's resend of that same batch is then dropped as a duplicate, and that player's chain is stuck.
-The phone avoids gaps (one upload at a time, in order), but the relay should allow re-queueing a
-batch the referee rejected for `Seq`.
+The tagged screen names who got you from the HUD's `tagged_by` (the hunter for a tag, the
+receiver for a forfeit). A HUD without it falls back to "your hunter".
 
 ## Behind settings or not done
 
-- **Mesh carry is off.** The relay has no mesh node, so Settings > Relay mesh node is empty and
-  the hunt screen says "No signal" without claiming delivery. With an address set, after 20 s
-  without the relay the phone starts the Offline Protocol SDK (`profile` = match id), sends the
-  oldest sealed batch to that node, waits for the SDK's delivery receipt, then the next. Not
-  exercised against a real node. Carrying for others while you have signal is not built: in Hunt
-  mode the mesh runs only while you are dark (TECHNICAL.md 7).
-- **Withdraw** is not in the app (the contract allows it from the player key); heads settle into
-  the contract balance.
-- **Replay** links to the relay's JSON (`GET /replay/:id`), not to the web replay app.
-- **Splash mark**: the launch screen is the paper colour; the Trail mark appears on it once
-  `packages/brand` writes `assets/splash-mark-512.png` (`app.config.ts` picks it up when present).
+- **Mesh carry is off.** The server has no Offline Protocol node yet, so Settings > Relay mesh
+  node is empty and the hunt screen says "No signal" without claiming delivery. With an address
+  set, after 20 s without the server the phone starts the Offline Protocol SDK (`profile` = match
+  id), sends the oldest sealed batch to that node, waits for the SDK's delivery receipt, then the
+  next. Not exercised against a real node. Carrying for others while you have signal is not
+  built: in Hunt mode the mesh runs only while you are dark (TECHNICAL.md 7).
+- **Not yet run on physical iPhones.** Everything here is tested in code and in the simulator.
