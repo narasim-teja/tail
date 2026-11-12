@@ -29,6 +29,7 @@ import {
   utf8,
   Writer,
 } from "@tail/protocol";
+import { mintCode } from "./codes.ts";
 import type { Store, Zone } from "./db.ts";
 import { HttpError } from "./errors.ts";
 import type { HudHub } from "./hub.ts";
@@ -101,7 +102,10 @@ export class Matches {
 
   // ── Lobby ────────────────────────────────────────────────────────────────────────
 
-  async create(host: string, i: CreateMatchInput): Promise<{ matchId: string; zoneHash: string }> {
+  async create(
+    host: string,
+    i: CreateMatchInput,
+  ): Promise<{ matchId: string; zoneHash: string; code: string }> {
     const zone: Zone = { zone: i.zone, safehouses: i.safehouses };
     const zh = hexId(zoneHash(zone));
     const matchId = await this.d.chain.createMatch({
@@ -115,9 +119,13 @@ export class Matches {
       start_by_ms: i.startByMs,
       invites: i.invites,
     });
-    this.d.store.putMatch(matchId, host, zone, this.now());
-    this.d.log.info({ matchId, host }, "match created");
-    return { matchId, zoneHash: zh };
+    // Minted after the chain answers, with no await between the check and the insert, so two
+    // creates cannot take the same code. A clash is one in hundreds of millions; redraw it.
+    let code = mintCode();
+    while (this.d.store.codeTaken(code)) code = mintCode();
+    this.d.store.putMatch(matchId, host, zone, code, this.now());
+    this.d.log.info({ matchId, host, code }, "match created");
+    return { matchId, zoneHash: zh, code };
   }
 
   /**

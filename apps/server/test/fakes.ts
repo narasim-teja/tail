@@ -108,6 +108,12 @@ export class FakeChain implements Chain {
     const order = sortAccounts(m.players.map((p) => p.account_id));
     m.players.sort((a, b) => order.indexOf(a.account_id) - order.indexOf(b.account_id));
   }
+  /** The lobby is called off on chain (start_by passed or the host aborted); stakes go back. */
+  abort(matchId: string) {
+    const m = this.matches.get(matchId);
+    if (m?.phase !== "lobby") throw new Error("only a lobby can be called off");
+    m.phase = "aborted";
+  }
   async lockLobby(matchId: string) {
     const m = this.matches.get(matchId);
     if (m?.phase !== "lobby" || m.locked_until_ms !== null) throw new Error("lobby is not open");

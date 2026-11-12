@@ -1,4 +1,5 @@
 import type { Hono } from "hono";
+import { parseCode, showCode } from "../codes.ts";
 import type { Store } from "../db.ts";
 import { HttpError } from "../errors.ts";
 import type { Matches } from "../matches.ts";
@@ -18,7 +19,7 @@ function circle(o: Obj, what: string): Circle {
 
 export function matchRoutes(app: Hono, d: { store: Store; chain: Chain; matches: Matches }) {
   // Signed by the host. {stake, duration_ms, zone, safehouses?, public_replay, min_players,
-  // max_players, start_by_ms} → {match_id, zone_hash}
+  // max_players, start_by_ms} → {match_id, zone_hash, code}
   app.post("/matches", async (c) => {
     const { account, body: b } = await signedBody(c, d.store);
     const now = Date.now();
@@ -42,7 +43,7 @@ export function matchRoutes(app: Hono, d: { store: Store; chain: Chain; matches:
         return x;
       }),
     });
-    return c.json({ match_id: r.matchId, zone_hash: r.zoneHash });
+    return c.json({ match_id: r.matchId, zone_hash: r.zoneHash, code: showCode(r.code) });
   });
 
   // Public: lobby and progress, and each player's PlayerKeys sealed to their own box key.
@@ -53,6 +54,7 @@ export function matchRoutes(app: Hono, d: { store: Store; chain: Chain; matches:
     const chain = await d.chain.getMatch(id);
     return c.json({
       match_id: id,
+      code: m.code === null ? null : showCode(m.code),
       host: m.host,
       phase: m.phase,
       error: m.error,
@@ -67,6 +69,18 @@ export function matchRoutes(app: Hono, d: { store: Store; chain: Chain; matches:
       zone: m.zone,
       chain,
     });
+  });
+
+  // Public: a lobby code (any case, dash optional) → {match_id}. Only an open lobby resolves:
+  // once the match has started here or been called off on chain, the code is spent, so a code
+  // read off an old screenshot cannot send anyone into a match they can no longer join.
+  app.get("/join/:code", async (c) => {
+    const code = parseCode(c.req.param("code"));
+    if (!code) throw new HttpError(400, "code: six characters, like K7M-4QX");
+    const id = d.store.lobbyByCode(code);
+    const chain = id ? await d.chain.getMatch(id) : null;
+    if (!id || chain?.phase !== "lobby") throw new HttpError(404, "no open match with that code");
+    return c.json({ match_id: id });
   });
 
   // Signed by the host. → {players, keys: [{player, account_id, sealed}], start_ms, end_ms}

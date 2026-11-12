@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS matches (
   match_id TEXT PRIMARY KEY,
   host TEXT NOT NULL,
   zone TEXT NOT NULL,
+  code TEXT,
   phase TEXT NOT NULL,
   created_ms INTEGER NOT NULL,
   start_ms INTEGER,
@@ -143,6 +144,8 @@ export interface PlayerKeysRow {
 export interface MatchRow {
   match_id: string;
   host: string;
+  /** The short lobby code in stored form (codes.ts); null for matches made before codes. */
+  code: string | null;
   zone: Zone;
   phase: Phase;
   created_ms: number;
@@ -219,6 +222,12 @@ export class Store {
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run("PRAGMA foreign_keys = ON");
     this.db.run(SCHEMA);
+    // Relays created before lobby codes have a matches table without the column. A code is
+    // unique across every match the relay ever made, not only open lobbies: a start that fails
+    // before the referee answers returns the match to its lobby, and its code must still be its own.
+    const cols = this.db.query<{ name: string }, []>("PRAGMA table_info(matches)").all();
+    if (!cols.some((c) => c.name === "code")) this.db.run("ALTER TABLE matches ADD COLUMN code TEXT");
+    this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS matches_code ON matches (code)");
   }
 
   close() {
@@ -285,10 +294,27 @@ export class Store {
 
   // ── Matches ──────────────────────────────────────────────────────────────────────
 
-  putMatch(matchId: string, host: string, zone: Zone, createdMs: number) {
+  putMatch(matchId: string, host: string, zone: Zone, code: string, createdMs: number) {
     this.db
-      .query("INSERT INTO matches (match_id, host, zone, phase, created_ms) VALUES (?, ?, ?, 'lobby', ?)")
-      .run(matchId, host, JSON.stringify(zone), createdMs);
+      .query(
+        "INSERT INTO matches (match_id, host, zone, code, phase, created_ms) VALUES (?, ?, ?, ?, 'lobby', ?)",
+      )
+      .run(matchId, host, JSON.stringify(zone), code, createdMs);
+  }
+
+  codeTaken(code: string): boolean {
+    return this.db.query("SELECT 1 FROM matches WHERE code = ?").get(code) !== null;
+  }
+
+  /** The match whose lobby this code opens, while the relay still holds that lobby open. */
+  lobbyByCode(code: string): string | undefined {
+    return (
+      this.db
+        .query<{ match_id: string }, [string]>(
+          "SELECT match_id FROM matches WHERE code = ? AND phase = 'lobby'",
+        )
+        .get(code)?.match_id ?? undefined
+    );
   }
 
   match(matchId: string): MatchRow | undefined {

@@ -264,6 +264,61 @@ describe("the match view", () => {
   });
 });
 
+describe("lobby codes", () => {
+  const CODE = /^[23456789ABCDEFGHJKMNPQRSTVWXYZ]{3}-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{3}$/;
+
+  async function create(env: Env, host: Player) {
+    const r = await req(env, "POST", "/matches", { ...MATCH, start_by_ms: Date.now() + 600_000 }, host);
+    expect(r.status).toBe(200);
+    return { id: String(r.json["match_id"]), code: String(r.json["code"]) };
+  }
+
+  test("creating a match returns a short code, and the match view shows the same code", async () => {
+    const env = setup();
+    const a = player(env, "ana");
+    const one = await create(env, a);
+    const two = await create(env, a);
+    expect(one.code).toMatch(CODE);
+    expect(two.code).not.toBe(one.code);
+    expect((await req(env, "GET", `/matches/${one.id}`)).json["code"]).toBe(one.code);
+  });
+
+  test("an unknown code is not found; the lobby's own code resolves to its match", async () => {
+    const env = setup();
+    const { id, code } = await create(env, player(env, "ana"));
+    const unknown = code === "ZZZ-ZZZ" ? "YYY-YYY" : "ZZZ-ZZZ";
+    expect((await req(env, "GET", `/join/${unknown}`)).status).toBe(404);
+    const known = await req(env, "GET", `/join/${code}`);
+    expect(known.status).toBe(200);
+    expect(known.json).toEqual({ match_id: id });
+  });
+
+  test("a code resolves in any case and without its dash; something that cannot be a code is refused", async () => {
+    const env = setup();
+    const { id, code } = await create(env, player(env, "ana"));
+    const loose = code.replace("-", "").toLowerCase();
+    expect((await req(env, "GET", `/join/${loose}`)).json).toEqual({ match_id: id });
+    expect((await req(env, "GET", `/join/${loose.slice(0, 5)}0`)).status).toBe(400);
+  });
+
+  test("a code stops resolving once its match has started", async () => {
+    const env = setup();
+    const l = await lobby(env);
+    const code = String((await req(env, "GET", `/matches/${l.id}`)).json["code"]);
+    expect((await req(env, "GET", `/join/${code}`)).status).toBe(200);
+    expect((await req(env, "POST", `/matches/${l.id}/start`, {}, l.a)).status).toBe(200);
+    expect((await req(env, "GET", `/join/${code}`)).status).toBe(404);
+  });
+
+  test("a code stops resolving once its lobby is called off", async () => {
+    const env = setup();
+    const { id, code } = await create(env, player(env, "ana"));
+    expect((await req(env, "GET", `/join/${code}`)).status).toBe(200);
+    env.chain.abort(id);
+    expect((await req(env, "GET", `/join/${code}`)).status).toBe(404);
+  });
+});
+
 describe("starting a match", () => {
   test("only the host can start the match", async () => {
     const env = setup();
