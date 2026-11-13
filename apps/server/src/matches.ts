@@ -293,8 +293,14 @@ export class Matches {
       // host can simply press Start again.
       await this.ready(chain.players.map((p) => p.account_id));
       await this.d.chain.lockLobby(matchId);
-      chain = await this.d.chain.getMatch(matchId);
-      if (!chain) throw new HttpError(404, "match is not on chain");
+      // The read right after the lock can come from an RPC node a block behind and still show the
+      // lobby unlocked, which would read as a lock that ran out; ask until the lock shows.
+      for (let i = 0; i < 10; i++) {
+        chain = await this.d.chain.getMatch(matchId);
+        if (!chain) throw new HttpError(404, "match is not on chain");
+        if (chain.locked_until_ms !== null) break;
+        await Bun.sleep(500);
+      }
     }
     if (chain.locked_until_ms === null || chain.locked_until_ms < this.now()) {
       throw new HttpError(409, "the lobby lock ran out; players may leave or abort");

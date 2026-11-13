@@ -213,10 +213,19 @@ export class FakeChain implements Chain {
   async lockLobby(matchId: string) {
     const m = this.matches.get(matchId);
     if (m?.phase !== "lobby" || m.locked_until_ms !== null) throw new Error("lobby is not open");
+    // What a node a block behind still answers for the next `staleReadsAfterLock` reads.
+    if (this.staleReadsAfterLock > 0) this.stale = { id: matchId, match: structuredClone(m) };
     m.locked_until_ms = Date.now() + 600_000;
     this.locked.push(matchId);
   }
+  /** Reads of a lobby right after its lock that still show it unlocked (an RPC node behind). */
+  staleReadsAfterLock = 0;
+  private stale: { id: string; match: ChainMatch } | undefined;
   async getMatch(id: string, finality: Finality = "optimistic") {
+    if (this.stale?.id === id && this.staleReadsAfterLock > 0) {
+      this.staleReadsAfterLock--;
+      return structuredClone(this.stale.match);
+    }
     if (finality === "final" && this.unfinal?.id === id) return structuredClone(this.unfinal.match);
     const m = this.matches.get(id);
     return m ? structuredClone(m) : null;
