@@ -24,8 +24,11 @@ export interface RouteFacts {
   page: Page | null;
   /** The player asked for results (See results on the tagged screen). */
   resultsNow: boolean;
-  /** The running hunt session, if any. */
-  session: { over: boolean } | null;
+  /**
+   * The running hunt session, if any. It starts as soon as the orders open, so the phone reports
+   * while the player reads them; `shown` once they tapped Hunt to leave the briefing.
+   */
+  session: { over: boolean; shown: boolean } | null;
   /** The relay's phase for the match. */
   phase: string | undefined;
   /** The chain says this player is out. */
@@ -38,7 +41,7 @@ export function routeFor(f: RouteFacts): Route {
   if (!f.primerSeen) return "primer";
   if (!f.matchId) return f.page ?? "home";
   if (f.resultsNow) return "results";
-  if (f.session) return f.session.over ? "results" : "hunt";
+  if (f.session) return f.session.over ? "results" : f.session.shown ? "hunt" : "briefing";
   // Out is final: a reopened app must not offer the hunt again while the others play on.
   if (f.out || f.phase === "ended") return "results";
   if (f.phase === "running" || f.phase === "ending") return "briefing";

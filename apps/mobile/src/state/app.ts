@@ -169,6 +169,8 @@ class AppModel {
   relayInfo: RelayInfo | null = null;
   /** The player chose to see results while the match still runs (after being tagged). */
   resultsNow = false;
+  /** The player tapped Hunt on the briefing; the session reports from before that (beginHunt). */
+  private huntShown = false;
   /** Tags won in the open match as its file had them when opened (a relaunch has no session). */
   private savedTags = 0;
   /** The log fork the open match's file holds, if the monitor found one (a relaunch has no session). */
@@ -226,7 +228,7 @@ class AppModel {
       matchId: this.matchId,
       page: this.page,
       resultsNow: this.resultsNow,
-      session: this.session ? { over: this.session.snapshot().over } : null,
+      session: this.session ? { over: this.session.snapshot().over, shown: this.huntShown } : null,
       phase: this.match?.phase,
       out: !!this.match?.chain?.players.find((p) => p.accountId === this.me)?.out,
     });
@@ -654,6 +656,7 @@ class AppModel {
     this.matchId = id;
     this.page = null;
     this.resultsNow = false;
+    this.huntShown = false;
     this.recent = [{ matchId: id, atMs: Date.now() }, ...this.recent.filter((r) => r.matchId !== id)].slice(
       0,
       5,
@@ -692,6 +695,7 @@ class AppModel {
     this.match = null;
     this.matchZone = null;
     this.resultsNow = false;
+    this.huntShown = false;
     files.remove(CURRENT_FILE);
     void this.refreshWallet();
     this.emit();
@@ -765,7 +769,9 @@ class AppModel {
   /**
    * Opens this player's sealed keys and checks them, and the referee's box key, against the
    * referee key the match pinned on NEAR, read here through the phone's own RPC: the relay
-   * relays both and could swap either. Also fetches the relay's carry keys while online.
+   * relays both and could swap either. Also fetches the relay's carry keys while online. Then
+   * reporting starts at once: the match clock started at Start, and a phone that waited for
+   * the Hunt tap would be dark meanwhile.
    */
   brief() {
     return this.act("Reading your orders", async () => {
@@ -790,7 +796,14 @@ class AppModel {
       const refereeBoxPk = checkedRefereeBox(await this.relay.refereeKeys(), facts.refereePk);
       const carryKey = this.settings.meshCarry ? await this.relay.carryKey().catch(() => null) : null;
       this.briefing = { keys, refereeBoxPk, refereePk: facts.refereePk, carryKey };
+      this.beginHunt();
     });
+  }
+
+  /** Hunt on the briefing: reporting already runs (brief), so this only opens the hunt screen. */
+  showHunt(): void {
+    this.huntShown = true;
+    this.emit();
   }
 
   private carryPlan(b: Briefing, matchId: string): CarryPlan {
@@ -805,7 +818,7 @@ class AppModel {
     };
   }
 
-  beginHunt(): void {
+  private beginHunt(): void {
     const id = this.need();
     const b = this.briefing;
     const m = this.match;

@@ -83,7 +83,7 @@ export function BriefingView({
         <Button
           title={m.startsInMs > 0 ? "Get ready" : "Hunt"}
           onPress={onHunt}
-          hint="Starts your beacon, scan and location"
+          hint="Opens the hunt screen. Your phone is already reporting."
         />
       }
     >
@@ -153,7 +153,7 @@ export function Briefing() {
         busy: app.busy,
         error: app.error,
       }}
-      onHunt={() => app.beginHunt()}
+      onHunt={() => app.showHunt()}
       onRetry={() => void app.brief()}
     />
   );
