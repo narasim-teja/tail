@@ -3,7 +3,9 @@
 //! negative test breaks one of Apple's checks on that real assertion; each has a twin showing
 //! the unbroken input passes.
 
-use appattest::{credential_key, public_key, public_key_bytes, sign_assertion, verify_assertion, Step};
+use appattest::{
+    public_key, public_key_bytes, sign_assertion, verify_assertion, verify_attestation, Environment, Step,
+};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ciborium::Value;
 use p256::ecdsa::{SigningKey, VerifyingKey};
@@ -24,8 +26,9 @@ struct Assertion {
 #[serde(rename_all = "camelCase")]
 struct Vector {
     app_id: String,
-    key_id: String,
+    captured_at_unix_s: u64,
     attestation: String,
+    attestation_client_data_hash: String,
     assertions: Vec<Assertion>,
 }
 
@@ -42,7 +45,16 @@ struct Real {
 
 fn real() -> Real {
     let v: Vector = serde_json::from_str(VECTOR).unwrap();
-    let key = credential_key(&b64(&v.attestation), &b64(&v.key_id)).unwrap();
+    // The key the assertions are checked against is the one the attestation proves.
+    let attested_over: [u8; 32] = b64(&v.attestation_client_data_hash).try_into().unwrap();
+    let key = verify_attestation(
+        &b64(&v.attestation),
+        &attested_over,
+        &v.app_id,
+        Environment::Development,
+        v.captured_at_unix_s,
+    )
+    .unwrap();
     let assertions = v
         .assertions
         .iter()
@@ -175,18 +187,6 @@ fn another_devices_key_fails_the_signature() {
             .step,
         Step::Signature
     );
-}
-
-#[test]
-fn a_key_not_matching_the_key_id_is_rejected() {
-    let v: Vector = serde_json::from_str(VECTOR).unwrap();
-    let mut kid = b64(&v.key_id);
-    kid[0] ^= 1;
-    assert_eq!(
-        credential_key(&b64(&v.attestation), &kid).unwrap_err().step,
-        Step::Key
-    );
-    assert!(credential_key(&b64(&v.attestation), &b64(&v.key_id)).is_ok());
 }
 
 #[test]

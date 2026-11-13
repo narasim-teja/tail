@@ -101,6 +101,7 @@ pub fn declassify(input: Value) -> Result<Value, String> {
         "players": r.players.iter().map(|d| json!({
             "account_id": d.account_id,
             "app_attest_pk": b64(&d.app_attest_pk),
+            "attested": d.attested,
             "player_box_pk": b64(&d.player_box_pk),
             "near_pk": b64(&d.near_pk),
             "enroll_call_id": uuid_string(&d.call_id),

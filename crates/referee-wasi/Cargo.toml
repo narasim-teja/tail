@@ -16,8 +16,11 @@ path = "src/main.rs"
 tail-protocol = { path = "../tail-protocol", features = ["seal"] }
 # The rules engine: deterministic, no I/O; this crate unseals, calls it, signs and seals.
 referee-core = { path = "../referee-core" }
-# The same P-256 key check the engine applies, run at enrolment so a bad key fails there.
+# Verifies the App Attest attestation at enrolment, and the same P-256 key check the engine
+# applies at `start`.
 appattest = { path = "../appattest" }
+# Refuses a low-order player_box_pk at enrolment (the version tail-protocol's sealing uses).
+x25519-dalek = "=2.0.1"
 borsh = { version = "=1.8.1", features = ["derive"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"

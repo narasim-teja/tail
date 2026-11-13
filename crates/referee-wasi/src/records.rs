@@ -28,9 +28,13 @@ pub mod domain {
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Device {
     pub account_id: String,
-    /// App Attest public key, SEC1 uncompressed P-256 (0x04 ‖ x ‖ y). The relay verified the
-    /// attestation object (v1); the referee checks every later assertion against this key.
+    /// App Attest public key, SEC1 uncompressed P-256 (0x04 ‖ x ‖ y). The referee checks every
+    /// later assertion against this key.
     pub app_attest_pk: [u8; 65],
+    /// True when `enroll` verified Apple's attestation of `app_attest_pk` here, bound to this
+    /// account and these keys. False only for a ghost (simulated phone) enrolled while the
+    /// referee ran with `ALLOW_UNATTESTED=1`: its key could be any software key.
+    pub attested: bool,
     pub player_box_pk: [u8; 32],
     pub near_pk: [u8; 32],
     /// The OutLayer call that enrolled it.
@@ -101,6 +105,7 @@ mod tests {
         let d = Device {
             account_id: "alice.testnet".into(),
             app_attest_pk: [4; 65],
+            attested: true,
             player_box_pk: [1; 32],
             near_pk: [2; 32],
             call_id: [3; 16],
@@ -108,6 +113,9 @@ mod tests {
         let base = enroll_receipt_digest(&d);
         let mut e = d.clone();
         e.near_pk[0] ^= 1;
+        assert_ne!(base, enroll_receipt_digest(&e));
+        let mut e = d.clone();
+        e.attested = false;
         assert_ne!(base, enroll_receipt_digest(&e));
         let mut e = d;
         e.call_id[15] ^= 1;

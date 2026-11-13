@@ -42,6 +42,8 @@ fn spawn(dir: Option<&Path>, input: &Value) -> std::process::Child {
     let mut cmd = Command::new(BIN);
     cmd.env_remove("TAIL_LOCAL_REFEREE_DIR")
         .env("TAIL_LOCAL_REFEREE_OWNER", OWNER)
+        // The test enrols software P-256 keys, which only a referee taking ghosts accepts.
+        .env("ALLOW_UNATTESTED", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
@@ -139,6 +141,10 @@ fn enroll_all(dir: &Path, referee_pk: &VerifyingKey, accounts: &[&str]) {
                 "player_box_pk": b64(&[n as u8 + 1; 32]),
                 "near_pk": b64(&[n as u8 + 10; 32]),
             }),
+        );
+        assert_eq!(
+            r["attested"], false,
+            "{account}: a software key is never attested"
         );
         let receipt = unb64(&r["receipt"]);
         let digest = sha256(&[b"tail/enroll-receipt/v1", &receipt]);

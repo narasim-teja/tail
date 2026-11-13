@@ -1,7 +1,7 @@
 [package]
 name = "appattest"
 version = "0.1.0"
-description = "Apple App Attest assertion verification (P-256), shared by the TAIL referee and servers."
+description = "Apple App Attest attestation (P-384 chain to Apple's root) and assertion (P-256) verification for the TAIL referee."
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -16,12 +16,15 @@ signer = []
 [dependencies]
 ciborium = "=0.2.2"
 p256 = { version = "=0.14.0", features = ["ecdsa"] }
+# Apple's App Attestation root and intermediate CAs are P-384.
+p384 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
 sha2 = "=0.11.1"
 x509-cert = "=0.3.0"
 
 [dev-dependencies]
 appattest = { path = ".", features = ["signer"] }
 base64 = "=0.23.1"
+hex = "=0.4.3"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 

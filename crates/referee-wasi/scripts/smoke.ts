@@ -91,11 +91,13 @@ for (const name of ["ana", "bo", "cy"]) {
   const expected = new Writer()
     .string(account)
     .fixed(appAttestPk, 65)
+    .bool(false) // a software key: the referee must run with ALLOW_UNATTESTED=1
     .fixed(boxPublicKey(boxSk), 32)
     .fixed(nearPk, 32)
     .fixed(uuidBytes(c.id), 16)
     .bytes();
   const receipt = unb64(r.receipt);
+  check(r.attested === false, `${account}: an unattested key is marked so`);
   check(equal(receipt, expected), `${account}: receipt is borsh(Device) with this call's id`);
   check(
     ed25519Verify(refereePk, sha256(concat(utf8("tail/enroll-receipt/v1"), receipt)), unb64(r.sig)),
