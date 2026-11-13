@@ -125,6 +125,8 @@ export class Matches {
   private readonly tickMs: number;
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly running = new Set<string>();
+  /** Per match, the tick in flight: settles once its result is stored (or the call failed). */
+  private readonly ticking = new Map<string, Promise<void>>();
   /** Steps and Starts in flight, for `drain`. */
   private readonly busy = new Set<Promise<unknown>>();
   /** The next look at interrupted Starts another process held the lease of (`reopenStarts`). */
@@ -366,8 +368,21 @@ export class Matches {
 
   // ── Batches ──────────────────────────────────────────────────────────────────────
 
-  /** Queues one sealed batch from `account`. Refuses uploads for matches not running. */
-  enqueue(matchId: string, account: string, sealed: Uint8Array): { queued: boolean; player: number } {
+  /**
+   * Queues one sealed batch from `account`. Refuses uploads for matches not running.
+   *
+   * A batch is acknowledged only when a later tick will take it to the referee. A batch that
+   * arrives while a tick is in flight would miss that tick, and if that tick ends the match,
+   * `end` takes no batches: acknowledged, it would be missing from the log for good. So the
+   * answer waits for the tick in flight, and is 409 if that tick ended the match, which tells
+   * the phone the match takes nothing more.
+   */
+  async enqueue(
+    matchId: string,
+    account: string,
+    sealed: Uint8Array,
+  ): Promise<{ queued: boolean; player: number }> {
+    for (let t = this.ticking.get(matchId); t; t = this.ticking.get(matchId)) await t;
     const m = this.d.store.match(matchId);
     if (!m) throw new HttpError(404, "no such match");
     if (m.phase !== "running" || !m.players) throw new HttpError(409, `match is ${m.phase}`);
@@ -506,13 +521,24 @@ export class Matches {
   private async tick(matchId: string) {
     const m = this.d.store.match(matchId);
     if (!m?.state || !m.players) throw new Error("running match has no state");
+    const settled = Promise.withResolvers<void>();
+    this.ticking.set(matchId, settled.promise);
+    try {
+      await this.tickNow(matchId, m.state, m.last_seq);
+    } finally {
+      this.ticking.delete(matchId);
+      settled.resolve();
+    }
+  }
+
+  private async tickNow(matchId: string, state: Uint8Array, lastSeq: number) {
     const batches = this.d.store.queuedBatches(matchId, MAX_BATCHES_PER_TICK);
     const voiced = this.d.store.voiceHints(matchId, "voiced");
     const t0 = performance.now();
     const r = await this.d.referee.tick({
       matchId: idBytes(matchId),
-      state: m.state,
-      lastSeq: m.last_seq,
+      state,
+      lastSeq,
       batches: batches.map((b) => b.sealed),
       receipts: voiced.flatMap((h) => (h.receipt ? [h.receipt] : [])),
     });

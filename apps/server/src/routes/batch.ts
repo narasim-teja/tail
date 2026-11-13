@@ -45,6 +45,6 @@ export function batchRoutes(app: Hono, d: { store: Store; auth: RequestAuth; mat
     const matchId = field.matchId(typeof body["match_id"] === "string" ? body["match_id"] : undefined);
     const sealed = field.bytes(body, "sealed");
     if (sealed.length > MAX_SEALED_BATCH) return c.json({ error: "batch too large" }, 413);
-    return c.json(d.matches.enqueue(matchId, account, sealed));
+    return c.json(await d.matches.enqueue(matchId, account, sealed));
   });
 }

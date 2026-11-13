@@ -237,6 +237,11 @@ the referee knows whether it accepted them: a phone whose batch was rejected for
 resends the missing ones, and the referee refuses any seq it already took. Every sealed batch
 is kept for the post-End trail release.
 
+A batch is acknowledged only when a later tick will carry it. One that arrives while a tick is
+in flight is answered once that tick is stored (a few seconds on OutLayer): 200 when the match
+goes on, 409 `match is ending` when that tick ended it, since `end` takes no batches. The phone
+then stops sending and does not count the batch as delivered.
+
 ## The tick loop (`src/matches.ts`)
 
 One loop per running match; the next step is scheduled `TICK_MS` (10 s) after the previous one

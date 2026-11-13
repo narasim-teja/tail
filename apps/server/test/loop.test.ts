@@ -180,3 +180,42 @@ describe("end", () => {
     expect(appliedSeqs(env)).toEqual([1, 2, 3]);
   });
 });
+
+describe("intake", () => {
+  const sealed = (n: number) => Buffer.alloc(64, n).toString("base64");
+
+  test("a batch sent while the tick that ends the match runs is refused, not acknowledged", async () => {
+    const env = setup({ tickMs: 60_000 });
+    env.matches.stop();
+    env.referee.overAt = 1;
+    env.referee.tickDelayMs = 50;
+    const m = await started(env);
+    const step = env.matches.step(m.id);
+    await until(() => env.referee.inFlight, "the last tick to be under way");
+    // `end` takes no batches, so this one could never reach the referee: the phone hears so.
+    const r = await req(env, "POST", "/batch", { match_id: m.id, sealed: sealed(1) }, m.b);
+    expect(r.status).toBe(409);
+    expect(r.json["error"]).toBe("match is ending");
+    expect(await step).toBe(false);
+    expect(env.store.allBatches(m.id)).toEqual([]);
+  });
+
+  test("a batch sent while a tick runs is acknowledged once that tick is stored, and goes in the next", async () => {
+    const env = setup({ tickMs: 60_000 });
+    env.matches.stop();
+    env.referee.overAt = 3;
+    env.referee.tickDelayMs = 50;
+    const m = await started(env);
+    const step = env.matches.step(m.id);
+    await until(() => env.referee.inFlight, "tick 1 to be under way");
+    const r = await req(env, "POST", "/batch", { match_id: m.id, sealed: sealed(2) }, m.b);
+    expect(r.status).toBe(200);
+    expect(r.json["queued"]).toBe(true);
+    // Answered after tick 1 was stored, which did not carry it.
+    expect(env.store.match(m.id)?.tick_no).toBe(1);
+    expect(env.referee.ticksSeen[0]?.batches).toBe(0);
+    await step;
+    await env.matches.step(m.id);
+    expect(env.referee.ticksSeen[1]?.batches).toBe(1);
+  });
+});
