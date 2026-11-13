@@ -64,6 +64,7 @@ game icons) from source, never copies.
 | Lobby    | Big QR first, code and Share, stake, length, players as initials (each slides in with a tick as they join), open seats as dashed pulsing rings; waiting, ready, starting (rings run round each player), failed (retry), called off; Join, Start (host), Leave; on a test relay the host can Add a test player (it forfeits after 3 min dark)                                                                                                                                                                                                                                                |
 | Briefing | The Chase with the target's initials on the ink dot; the handle rises out of a mask with a haptic tick; your head and the start countdown, ticking by feel in the last 5 s. Reporting starts as soon as the orders open here; Hunt only moves to the hunt screen. Until the orders open it offers Settings (a wrong relay or RPC can be fixed while the match stays open) and says the phone can't report yet, which counts as dark time                                                                                                                                                    |
 | Hunt     | Target and time left; LOCK arc with its numeral, HEAD, HEAT bar with its numeral; live map (you as the Trail mark, zone edge dotted, safehouses, leaked cell); Handler at thumb reach. Lock full floods persimmon and STRIKE replaces the map; strike sent; landed (flash, new target slides in); a refused strike's reason as a banner for 10 s; dark and out-of-zone banners with countdowns; vehicle freeze; Handler dispatch and pull-down log; hint sheet; tagged (ink); Bluetooth or location off; a screen that stays when iOS has lost the device key (the match will be forfeited) |
+| Settings | Whether the relay answers and which referee it says it runs, and a contract mismatch if there is one; Advanced (collapsed, open when no relay is set): relay address, NEAR RPC, the build's contract (read only), Mesh carry (experimental); the app version. Settings from an older build keep the relay address and the mesh switch; a stored contract or replay site is ignored                                                                                                                                                                                                          |
 | Results  | Outcome emblem; survived, out or last one standing; final head and tags roll up; the Handler's sign-off; Watch the replay (Safari); How it's verified; your reports ("N of M reports are in the log anchored on NEAR", refusals with their reason, any missing report as a problem); after the end, Prove I met (name) for each player you met. It reads the match every 5 s until End is in and checked. A match the contract paid before the upgrade says it was paid on the old rules, without a replay                                                                                  |
 
 ## Design system
@@ -180,8 +181,10 @@ What the tests prove:
 to the wildcard team profile, which cannot carry the App Attest entitlement, and the build fails.
 Use xcodebuild directly (the route that worked in the device spike on 2026-11-12).
 
-1. Repo-root `.env.local` holds `APPLE_TEAM_ID`, `IOS_BUNDLE_ID` (and `TAIL_CONTRACT`, read as
-   the default contract). `app.config.ts` reads only these public names.
+1. Repo-root `.env.local` holds `APPLE_TEAM_ID`, `IOS_BUNDLE_ID`, `TAIL_CONTRACT` (the only
+   contract the build plays on; the app has no setting for it) and optionally `TAIL_RELAY_URL`
+   (the relay a fresh install uses; a player can type another under Settings > Advanced).
+   `app.config.ts` reads only these public names, plus `NEAR_NETWORK` and `NEAR_RELAY_ACCOUNT`.
 2. Build and install, once per phone (each build registers that phone in the profile):
 
    ```sh
@@ -207,10 +210,11 @@ Use xcodebuild directly (the route that worked in the device spike on 2026-11-12
 
 ## Playing a test match
 
-1. Run the relay (`apps/server`). On the first screen tap **Settings** and enter the relay
-   address (`http://<Mac LAN IP>:8787` works: local networking is allowed for development) and
-   check the contract and the NEAR RPC (the phone reads the referee key and the log roots from
-   it). **Save**.
+1. Run the relay (`apps/server`). A build made with `TAIL_RELAY_URL` already knows it. Otherwise,
+   on the first screen tap **Settings**, which opens on **Advanced**, and enter the relay address
+   (`http://<Mac LAN IP>:8787` works: local networking is allowed for development). The NEAR RPC
+   is there too (the phone reads the referee key and the log roots from it). **Save**. Settings
+   then says whether the relay answers and which referee it says it runs.
 2. Enter a handle, **Join**. The phone generates its keys, App Attest attests them over the
    relay's challenge, and the relay creates `<handle>.<relay account>` with only this phone's
    function-call key. The phone attests only for `<handle>.<NEAR_RELAY_ACCOUNT>` as the build
@@ -238,7 +242,7 @@ All served by `apps/server` (shapes in its README):
 
 - `GET /health`: the contract the relay serves. Every signed request names it (request auth v2:
   `requestDigest({contractId, accountId, method, path, timeMs, body})`); the app also compares it
-  with its own contract setting and says so when they differ. `replay_url` is the web replay that
+  with the contract its build names and says so when they differ (it never switches). `replay_url` is the web replay that
   Watch the replay and the Dossier card open; the app keeps it only if it is a plain http(s)
   address and uses it for nothing but that link.
 - `GET /referee`: the referee's keys. The app checks `box_pk_sig` (ed25519 over
@@ -342,7 +346,7 @@ receiver for a forfeit). A HUD without it falls back to "your hunter".
 
 ## Behind settings or not done
 
-- **Mesh carry is off by default** (Settings > Carry reports over the mesh). With it on, every
+- **Mesh carry is off by default** (Settings > Advanced > Mesh carry (experimental)). With it on, every
   phone runs the Offline Protocol mesh for the whole hunt (Bluetooth only, a fresh SDK profile
   per match, wiped when the hunt stops). A phone with no relay contact for 20 s seals each signed
   report request with `sealCarry` to the relay's carry key and hands it to its mesh neighbours; a

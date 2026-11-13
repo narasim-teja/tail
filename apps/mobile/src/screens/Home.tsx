@@ -64,7 +64,6 @@ export function HomeView({
   onProfile,
   onSettings,
   onOpen,
-  onUseRelayContract,
   onRefresh,
 }: {
   m: HomeModel;
@@ -75,7 +74,6 @@ export function HomeView({
   onProfile: () => void;
   onSettings: () => void;
   onOpen: (matchId: string) => void;
-  onUseRelayContract: () => void;
   onRefresh?: () => Promise<unknown>;
 }) {
   const [code, setCode] = useState("");
@@ -111,7 +109,7 @@ export function HomeView({
         <Eyebrow muted>{NEAR_NETWORK === "testnet" ? "Test balance" : "Balance"}</Eyebrow>
         {m.balance === null ? <Num>-</Num> : <RollingMoney units={m.balance} reduceMotion={reduceMotion} />}
       </Pressable>
-      {m.contractMismatch ? <ContractMismatch relay={m.contractMismatch} onUse={onUseRelayContract} /> : null}
+      {m.contractMismatch ? <ContractMismatch relay={m.contractMismatch} /> : null}
       {m.error ? <Notice title="Something didn't go through" detail={m.error} /> : null}
       {m.notice ? <Notice icon="verified" title={m.notice} /> : null}
 
@@ -204,7 +202,6 @@ export function Home() {
       onProfile={() => app.openPage("profile")}
       onSettings={() => app.toggleSettings(true)}
       onOpen={(id) => void app.openMatch(id)}
-      onUseRelayContract={() => app.switchToRelayContract()}
       onRefresh={() => app.refreshAccount()}
     />
   );

@@ -157,7 +157,7 @@ export class RelayTransport {
   /**
    * The contract this relay serves, from GET /health, asked once. Every signed request names
    * it, so the relay refuses a signature made for another deployment. The app still compares it
-   * with its own setting (app.ts `contractMismatch`) and never adopts it silently.
+   * with the contract its build names (app.ts `contractMismatch`) and never adopts it.
    */
   contractId(): Promise<string> {
     this.contract ??= this.json("GET", "/health").then((r) => {

@@ -8,7 +8,7 @@
 // player owns and says plainly that the choice is permanent.
 import { type ReactNode, useEffect, useState } from "react";
 import { Alert, Linking, Share, StyleSheet, Text, View } from "react-native";
-import { NEAR_NETWORK, TOP_UP, useApp } from "../state/app";
+import { CONTRACT_ID, NEAR_NETWORK, TOP_UP, useApp } from "../state/app";
 import { handleOf } from "../tail/huntModel";
 import { Icon } from "../ui/brand";
 import { ContractMismatch } from "../ui/contract";
@@ -54,7 +54,6 @@ export interface ProfileActions {
   onWithdraw: (to?: string) => void;
   /** Why a typed wallet cannot be the payout, or null when it can. */
   checkPayout: (to: string) => string | null;
-  onUseRelayContract: () => void;
   onStartOver: () => void;
   onRefresh?: () => Promise<unknown>;
   onBack: () => void;
@@ -169,9 +168,7 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
           </Body>
         </View>
       ) : null}
-      {m.contractMismatch ? (
-        <ContractMismatch relay={m.contractMismatch} onUse={actions.onUseRelayContract} />
-      ) : null}
+      {m.contractMismatch ? <ContractMismatch relay={m.contractMismatch} /> : null}
       {m.error ? <Notice title="That didn't go through" detail={m.error} /> : null}
 
       <Rule />
@@ -238,7 +235,7 @@ export function Profile() {
         accountId: app.me ?? "",
         balance: app.wallet?.balance ?? null,
         network: NEAR_NETWORK,
-        contractId: app.settings.contractId,
+        contractId: CONTRACT_ID,
         busy: app.busy,
         error: app.error,
         contractMismatch: app.contractMismatch,
@@ -250,7 +247,6 @@ export function Profile() {
         onTopUp: () => void app.topUp(TOP_UP),
         onWithdraw: (to) => void app.withdraw(to),
         checkPayout: (to) => app.payoutProblem(to),
-        onUseRelayContract: () => app.switchToRelayContract(),
         onStartOver: () => void app.startOver(),
         onRefresh: () => app.refreshAccount(),
         onBack: () => app.openPage(null),

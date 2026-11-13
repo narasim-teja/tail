@@ -19,12 +19,24 @@ import { PrimerView } from "../screens/Primer";
 import { ProfileView } from "../screens/Profile";
 import { ResultsView } from "../screens/Results";
 import { ScanView } from "../screens/Scan";
+import { type SettingsModel, SettingsView } from "../screens/Settings";
 import type { HuntModel } from "../tail/huntModel";
 import { hintOptions } from "../tail/huntModel";
 import type { Receipts } from "../tail/results";
 import { color, space, text } from "../ui/theme";
 
 const NOW = 1_800_000_000_000;
+const SETTINGS: SettingsModel = {
+  settings: {
+    relayUrl: "http://192.168.1.20:8787",
+    rpcUrl: "https://test.rpc.fastnear.com",
+    meshCarry: false,
+  },
+  status: { kind: "up", referee: "local" },
+  contractId: "tail.tail-dev-a38d13.testnet",
+  contractMismatch: null,
+  version: "0.1.0",
+};
 const noop = () => {};
 const ID = "7f3a9c21e4b85d60a1c2e3f405162738";
 /** A finished receipt check: most reports logged, one refused for the clock. */
@@ -174,7 +186,6 @@ export const STATES: Record<string, () => ReactNode> = {
       onScan={noop}
       onCode={noop}
       onProfile={noop}
-      onUseRelayContract={noop}
       onSettings={noop}
       onOpen={noop}
     />
@@ -187,7 +198,6 @@ export const STATES: Record<string, () => ReactNode> = {
       onScan={noop}
       onCode={noop}
       onProfile={noop}
-      onUseRelayContract={noop}
       onSettings={noop}
       onOpen={noop}
     />
@@ -209,7 +219,6 @@ export const STATES: Record<string, () => ReactNode> = {
         onTopUp: noop,
         onWithdraw: noop,
         checkPayout: () => null,
-        onUseRelayContract: noop,
         onStartOver: noop,
         onBack: noop,
       }}
@@ -232,10 +241,24 @@ export const STATES: Record<string, () => ReactNode> = {
         onTopUp: noop,
         onWithdraw: noop,
         checkPayout: () => null,
-        onUseRelayContract: noop,
         onStartOver: noop,
         onBack: noop,
       }}
+    />
+  ),
+  settings: () => <SettingsView m={SETTINGS} onSave={noop} onCancel={noop} />,
+  "settings-down": () => (
+    <SettingsView
+      m={{ ...SETTINGS, status: { kind: "down", why: "Can't reach the relay (Network request failed)." } }}
+      onSave={noop}
+      onCancel={noop}
+    />
+  ),
+  "settings-first": () => (
+    <SettingsView
+      m={{ ...SETTINGS, settings: { ...SETTINGS.settings, relayUrl: "" }, status: { kind: "unset" } }}
+      onSave={noop}
+      onCancel={noop}
     />
   ),
   create: () => (

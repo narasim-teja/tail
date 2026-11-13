@@ -1,22 +1,15 @@
-// When the relay plays on another contract than this app is set to, balances read zero and joins
-// go to the wrong place. Say so plainly and let the person switch with one tap: the app never
-// adopts the relay's contract on its own, because the contract is what vouches for the referee.
-import { StyleSheet, View } from "react-native";
-import { Button, Notice } from "./kit";
-import { space } from "./theme";
+// When the relay plays on another contract than this build, balances read zero and joins go to
+// the wrong place. Say so plainly and point at the fix. The app never adopts the relay's contract:
+// the phone attests and holds its keys for the build's contract, which is what vouches for the
+// referee.
+import { Notice } from "./kit";
 
-export function ContractMismatch({ relay, onUse }: { relay: string; onUse: () => void }) {
+export function ContractMismatch({ relay }: { relay: string }) {
   return (
-    <View style={styles.wrap}>
-      <Notice icon="zone" title="The relay plays on another contract" detail={`Relay: ${relay}`} />
-      <Button
-        kind="secondary"
-        symbol="arrow.triangle.2.circlepath"
-        title="Use the relay's contract"
-        onPress={onUse}
-      />
-    </View>
+    <Notice
+      icon="zone"
+      title="This relay plays on another contract"
+      detail={`It uses ${relay}. Change the relay in Settings, under Advanced.`}
+    />
   );
 }
-
-const styles = StyleSheet.create({ wrap: { gap: space.s } });

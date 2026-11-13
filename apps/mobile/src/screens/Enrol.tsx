@@ -74,7 +74,7 @@ export function EnrolView({
           />
           <Caption muted>Letters, digits, and - or _ between them. Friends see it.</Caption>
           {!m.relaySet ? (
-            <Notice title="No relay set" detail="Add the relay address in Settings first." />
+            <Notice title="No relay yet" detail="Add its address in Settings, then join." />
           ) : null}
           {m.error ? <Notice title="Couldn't join" detail={m.error} /> : null}
         </>

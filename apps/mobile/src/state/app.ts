@@ -57,20 +57,19 @@ import { assertWith, attestor, radioPort } from "./device";
 import { files } from "./files";
 import { decodeMatchRecord, emptyRecord, encodeMatchRecord, type MatchRecord } from "./persist";
 import { joinRefusal, type Page, type Route, routeFor } from "./route";
+import {
+  type BuildDefaults,
+  cleanUrl,
+  DEFAULT_RPC,
+  readSettings,
+  type Settings,
+  storedSettings,
+} from "./settings";
+
+export type { Settings } from "./settings";
 
 /** The busy label while a typed lobby code is looked up; Home shows it on its button. */
 export const FINDING_LOBBY = "Finding the lobby";
-
-export interface Settings {
-  relayUrl: string;
-  rpcUrl: string;
-  contractId: string;
-  /**
-   * Run the Offline Protocol mesh during a hunt (proximity/carry/mesh.ts). Off by default: whether the
-   * mesh's Bluetooth advertising leaves room for TAIL's beacon token is not measured yet.
-   */
-  meshCarry: boolean;
-}
 
 export interface RecentMatch {
   matchId: string;
@@ -79,9 +78,18 @@ export interface RecentMatch {
 
 const extra = (Constants.expoConfig?.extra ?? {}) as {
   contractId?: string | null;
+  relayUrl?: string | null;
   nearNetwork?: string;
   accountParent?: string | null;
 };
+/**
+ * The contract this build plays on (app.config.ts TAIL_CONTRACT); empty when the build names none.
+ * Not a setting: the phone attests and holds its keys for this contract, so nothing at run time
+ * (a text box, the relay) may repoint it.
+ */
+export const CONTRACT_ID = extra.contractId ?? "";
+/** The app's version (app.config.ts), shown at the foot of Settings. */
+export const APP_VERSION = Constants.expoConfig?.version ?? null;
 /** The NEAR network this build plays on (app.config.ts); testnet unlocks free top-ups. */
 export const NEAR_NETWORK = extra.nearNetwork ?? "testnet";
 /** Player accounts are `<handle>.<this>` (app.config.ts); enrolment refuses any other name. */
@@ -89,28 +97,8 @@ export const ACCOUNT_PARENT = extra.accountParent ?? null;
 /** A testnet top-up: 10 test USDC from the relay, in 6-decimal units. */
 export const TOP_UP = 10_000_000n;
 
-const DEFAULTS: Settings = {
-  relayUrl: "",
-  rpcUrl: "https://test.rpc.fastnear.com",
-  contractId: extra.contractId ?? "",
-  meshCarry: false,
-};
-
-/**
- * Settings from the file; anything it does not hold is the default. A `replayUrl` an older build
- * kept is ignored: the relay names the replay site now (relayInfo).
- */
-function readSettings(text: string): Settings {
-  const o = JSON.parse(text) as Partial<Record<keyof Settings, unknown>>;
-  const str = (k: "relayUrl" | "rpcUrl" | "contractId") =>
-    typeof o[k] === "string" ? (o[k] as string) : DEFAULTS[k];
-  return {
-    relayUrl: str("relayUrl"),
-    rpcUrl: str("rpcUrl"),
-    contractId: str("contractId"),
-    meshCarry: o.meshCarry === true,
-  };
-}
+/** The addresses this build names (app.config.ts); the settings file overrides them (settings.ts). */
+const BUILD: BuildDefaults = { relayUrl: cleanUrl(extra.relayUrl ?? ""), rpcUrl: DEFAULT_RPC };
 
 const SETTINGS_FILE = "settings.json";
 const CURRENT_FILE = "current.json";
@@ -131,7 +119,7 @@ export interface Briefing {
 }
 
 class AppModel {
-  settings: Settings = DEFAULTS;
+  settings: Settings = readSettings(null, BUILD);
   identity: Identity | null = null;
   matchId: string | null = null;
   match: MatchView | null = null;
@@ -155,8 +143,13 @@ class AppModel {
    * the contract wants for a withdraw, and where withdrawals go (null: not registered yet).
    */
   wallet: { token: string; balance: bigint; withdrawGas: bigint; payout: string | null } | null = null;
-  /** What the relay says about itself (relay/client.ts `info`); null until read. */
+  /**
+   * What the relay at the current address said about itself (relay/client.ts `info`); null until
+   * it has answered. Kept through a failed read, since a passing outage changes none of it.
+   */
   relayInfo: RelayInfo | null = null;
+  /** Why the last read of the relay failed; null once it answers. Settings shows it. */
+  relayDown: string | null = null;
   /** The player chose to see results while the match still runs (after being tagged). */
   resultsNow = false;
   /** The player tapped Hunt on the briefing; the session reports from before that (beginHunt). */
@@ -251,8 +244,7 @@ class AppModel {
 
   async init(): Promise<void> {
     try {
-      const s = files.read(SETTINGS_FILE);
-      if (s) this.settings = readSettings(s);
+      this.settings = readSettings(files.read(SETTINGS_FILE), BUILD);
       this.identity = await loadIdentity(keychain);
       const flags = files.read(FLAGS_FILE);
       this.primerSeen = flags ? (JSON.parse(flags) as { primerSeen?: boolean }).primerSeen === true : false;
@@ -270,8 +262,14 @@ class AppModel {
   }
 
   saveSettings(s: Settings): void {
-    this.settings = { ...s, relayUrl: s.relayUrl.trim().replace(/\/+$/, "") };
-    files.write(SETTINGS_FILE, JSON.stringify(this.settings));
+    const next = readSettings(storedSettings(s, BUILD), BUILD);
+    // What another relay said is no answer for this one.
+    if (next.relayUrl !== this.settings.relayUrl) {
+      this.relayInfo = null;
+      this.relayDown = null;
+    }
+    this.settings = next;
+    files.write(SETTINGS_FILE, storedSettings(next, BUILD));
     this.showSettings = false;
     this.emit();
     void this.checkRelay();
@@ -308,10 +306,10 @@ class AppModel {
   /** Home: reads this account's balance in the contract's first allowed token. */
   refreshWallet(): Promise<void> {
     const me = this.me;
-    if (!me || !this.settings.contractId) return Promise.resolve();
+    if (!me || !CONTRACT_ID) return Promise.resolve();
     return (async () => {
       try {
-        const contract = this.settings.contractId;
+        const contract = CONTRACT_ID;
         const cfg = await this.rpc.view<{ allowed_tokens: string[] } & Record<string, unknown>>(
           contract,
           "get_config",
@@ -342,7 +340,7 @@ class AppModel {
 
   /** Why `to` cannot be the payout wallet, or null when it can (Profile checks as you type). */
   payoutProblem(to: string): string | null {
-    return payoutProblem(to, this.me ?? "", this.settings.contractId);
+    return payoutProblem(to, this.me ?? "", CONTRACT_ID);
   }
 
   /**
@@ -362,7 +360,7 @@ class AppModel {
       }
       const { value } = await this.rpc.functionCall(
         { accountId: id.accountId as string, publicKey: id.nearPk, secretKey: id.nearSk },
-        this.settings.contractId,
+        CONTRACT_ID,
         withdrawCall({
           token: w.token,
           amount: w.balance,
@@ -584,26 +582,36 @@ class AppModel {
     return this.relayInfo?.testPlayers ?? false;
   }
 
-  /** The relay plays on another contract than this app is set to: balances and joins would miss. */
+  /** The relay plays on another contract than this build: balances and joins would miss. */
   get contractMismatch(): string | null {
     const theirs = this.relayInfo?.contract;
-    return theirs && theirs !== this.settings.contractId ? theirs : null;
+    return theirs && theirs !== CONTRACT_ID ? theirs : null;
+  }
+
+  /** Reads what the relay says about itself; false when it did not answer (relayDown says why). */
+  async readRelay(): Promise<boolean> {
+    const url = this.settings.relayUrl;
+    if (!url) return false;
+    try {
+      const info = await this.relay.info();
+      if (this.settings.relayUrl !== url) return false;
+      this.relayInfo = info;
+      this.relayDown = null;
+      return true;
+    } catch (e) {
+      if (this.settings.relayUrl === url) this.relayDown = message(e);
+      return false;
+    } finally {
+      this.emit();
+    }
   }
 
   /**
    * Reads what the relay says about itself, and whether its referee knows this phone (re-enrolling
-   * if not). No answer leaves the safe defaults.
+   * if not). An unreachable relay is left for the next call to report.
    */
   async checkRelay(): Promise<void> {
-    if (!this.settings.relayUrl) return;
-    try {
-      this.relayInfo = await this.relay.info();
-      this.emit();
-    } catch {
-      // Unreachable relay: no test players and no mismatch to report; the next call says why.
-      return;
-    }
-    await this.ensureEnrolled();
+    if (await this.readRelay()) await this.ensureEnrolled();
   }
 
   /** Test relays only: play as a new handle on this phone (keys kept; see forgetAccount). */
@@ -619,14 +627,6 @@ class AppModel {
   /** Pull to refresh on Home and Profile: the balance and what the relay says about itself. */
   async refreshAccount(): Promise<void> {
     await Promise.all([this.refreshWallet(), this.checkRelay()]);
-  }
-
-  /** The user chose the relay's contract after seeing the mismatch. */
-  switchToRelayContract(): void {
-    const theirs = this.contractMismatch;
-    if (!theirs) return;
-    this.saveSettings({ ...this.settings, contractId: theirs });
-    void this.refreshWallet();
   }
 
   addTestPlayer() {
@@ -649,10 +649,10 @@ class AppModel {
 
   private async callContract(method: string, args: object): Promise<void> {
     const id = this.need();
-    if (!this.settings.contractId) throw new Error("Set the contract in Settings.");
+    if (!CONTRACT_ID) throw new Error("This build of TAIL names no contract to play on.");
     await this.rpc.functionCall(
       { accountId: id.accountId as string, publicKey: id.nearPk, secretKey: id.nearSk },
-      this.settings.contractId,
+      CONTRACT_ID,
       { methodName: method, args, gas: PLAYER_GAS },
     );
     await this.refresh();
@@ -745,8 +745,8 @@ class AppModel {
           void this.ensureEnrolled();
         }
       }
-      if (m.chain && this.me && this.settings.contractId) {
-        const bal = await this.rpc.view<string>(this.settings.contractId, "get_balance", {
+      if (m.chain && this.me && CONTRACT_ID) {
+        const bal = await this.rpc.view<string>(CONTRACT_ID, "get_balance", {
           account_id: this.me,
           token: m.chain.token,
         });
@@ -807,7 +807,7 @@ class AppModel {
     const id = this.need();
     const m = this.match;
     if (!m?.chain) throw new Error("The match is not on chain yet.");
-    const facts = await matchFacts(this.rpc, this.settings.contractId, m.matchId);
+    const facts = await matchFacts(this.rpc, CONTRACT_ID, m.matchId);
     if (!facts) throw new Error("The match is not on chain yet.");
     // The poll may not have read the keys yet (they arrive with Start); ask for them now.
     if (!this.matchZone?.keys.length) this.matchZone = await this.loadZone(m.matchId);
@@ -856,7 +856,7 @@ class AppModel {
     const signer = nearSigner(id);
     const relay = this.relay;
     const rpc = this.rpc;
-    const contract = this.settings.contractId;
+    const contract = CONTRACT_ID;
     this.session = new TailHunt({
       keys: b.keys,
       stake: m.chain.stake,
@@ -946,7 +946,7 @@ class AppModel {
     this.receipts = { kind: "checking" };
     this.emit();
     try {
-      const contract = this.settings.contractId;
+      const contract = CONTRACT_ID;
       const [facts, roots] = await Promise.all([
         matchFacts(this.rpc, contract, id),
         anchoredRoots(this.rpc, contract, id),
@@ -1023,7 +1023,7 @@ class AppModel {
     const me = this.me;
     if (!id || !me || this.meetings !== null) return;
     try {
-      const contract = this.settings.contractId;
+      const contract = CONTRACT_ID;
       const [facts, roots] = await Promise.all([
         matchFacts(this.rpc, contract, id),
         anchoredRoots(this.rpc, contract, id),
