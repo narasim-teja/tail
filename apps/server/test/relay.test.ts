@@ -1068,6 +1068,12 @@ describe("health", () => {
     expect(after.json["contract"]).toBe("tail.relay.testnet");
   });
 
+  test("names the web replay when one is set, and null when not", async () => {
+    expect((await req(setup(), "GET", "/health")).json["replay_url"]).toBeNull();
+    const env = setup({ replayUrl: "https://replay.example" });
+    expect((await req(env, "GET", "/health")).json["replay_url"]).toBe("https://replay.example");
+  });
+
   test("says test players are on offer only when the ghost door is open", async () => {
     expect((await req(setup(), "GET", "/health")).json["test_players"]).toBe(false);
     expect((await req(setup({ allowGhosts: true }), "GET", "/health")).json["test_players"]).toBe(true);

@@ -57,6 +57,11 @@ export interface Config {
   clientIpHeader: string | undefined;
   /** Caps on new phone enrolments per rolling day, in all and per client address (enroll.ts). */
   enrolCaps: EnrolCaps;
+  /**
+   * The web replay (apps/web) that GET /health names, so phones link to it without a setting of
+   * their own. An http(s) origin and path, no trailing slash: the phone appends `/?match=<id>`.
+   */
+  replayUrl: string | undefined;
 }
 
 export class ConfigError extends Error {
@@ -64,6 +69,11 @@ export class ConfigError extends Error {
 }
 
 const PLACEHOLDER = /PLACEHOLDER|^your-|your-account|your-payment-key|your-key/;
+
+// The phone appends `/?match=<id>` (or `/dossier/<account>`), so a query, a fragment or a
+// trailing slash would make a broken link. The phone checks the same shape again (it trusts no
+// relay).
+const REPLAY_URL = /^https?:\/\/[A-Za-z0-9.-]+(:[0-9]{1,5})?(\/[A-Za-z0-9._~%-]+)*$/;
 
 /**
  * Reads the variables the relay needs from `env`. Throws ConfigError on the first missing,
@@ -128,6 +138,11 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   const ipHeader = env["RELAY_CLIENT_IP_HEADER"]?.trim().toLowerCase();
   if (ipHeader && !/^[a-z0-9-]+$/.test(ipHeader))
     throw new ConfigError("RELAY_CLIENT_IP_HEADER must be a header name, like cf-connecting-ip");
+  const replayUrl = env["RELAY_REPLAY_URL"]?.trim();
+  if (replayUrl && !REPLAY_URL.test(replayUrl))
+    throw new ConfigError(
+      "RELAY_REPLAY_URL must be an http(s) address without a trailing slash, query or fragment, like https://replay.example",
+    );
   const version = env["REFEREE_VERSION"]?.trim();
   if (version && !/^[0-9a-f]{64}$/.test(version))
     throw new ConfigError("REFEREE_VERSION must be a wasm sha256");
@@ -169,6 +184,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     keysDir: opt("RELAY_KEYS_DIR", new URL("../../../.keys/relay", import.meta.url).pathname),
     clientIpHeader: ipHeader || undefined,
     enrolCaps,
+    replayUrl: replayUrl || undefined,
   };
 }
 
@@ -192,6 +208,7 @@ export function describeConfig(c: Config) {
     keysDir: c.keysDir,
     clientIp: c.clientIpHeader ? `header ${c.clientIpHeader}` : "TCP peer",
     enrolCaps: c.enrolCaps,
+    replayUrl: c.replayUrl ?? null,
   };
 }
 

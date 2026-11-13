@@ -50,6 +50,7 @@ export function startRelay(config: Config) {
     retentionMs: config.retentionMs,
     clientIpHeader: config.clientIpHeader,
     enrolCaps: config.enrolCaps,
+    replayUrl: config.replayUrl,
   });
   relay.matches.resume();
   relay.retention.start();

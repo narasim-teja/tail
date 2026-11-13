@@ -61,6 +61,26 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...good, REFEREE_MODE: "enclave" })).toThrow("REFEREE_MODE");
   });
 
+  test("RELAY_REPLAY_URL is optional and must be an http(s) address the phone can append to", () => {
+    expect(loadConfig(good).replayUrl).toBeUndefined();
+    expect(loadConfig({ ...good, RELAY_REPLAY_URL: "" }).replayUrl).toBeUndefined();
+    for (const ok of [
+      "https://replay.example",
+      "http://192.168.1.20:5173",
+      "https://example.com/tail/replay",
+    ])
+      expect(loadConfig({ ...good, RELAY_REPLAY_URL: ok }).replayUrl).toBe(ok);
+    for (const bad of [
+      "https://replay.example/",
+      "replay.example",
+      "javascript:alert(1)",
+      "ftp://replay.example",
+      "https://replay.example/?match=1",
+      "https://replay.example#x",
+    ])
+      expect(() => loadConfig({ ...good, RELAY_REPLAY_URL: bad })).toThrow("RELAY_REPLAY_URL");
+  });
+
   test("the printable description holds no key", () => {
     const text = JSON.stringify(describeConfig(loadConfig(good)));
     expect(text).not.toContain("secret");

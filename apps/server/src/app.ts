@@ -67,6 +67,8 @@ export interface RelayDeps {
   clientIpHeader?: string | undefined;
   /** Caps on new phone enrolments (RELAY_ENROLS_PER_DAY, RELAY_ENROLS_PER_IP_PER_DAY). */
   enrolCaps?: EnrolCaps;
+  /** The web replay GET /health names for the phones' replay links (RELAY_REPLAY_URL). */
+  replayUrl?: string | undefined;
   now?: () => number;
   tickMs?: number;
 }
@@ -150,15 +152,17 @@ export function createRelay(d: RelayDeps) {
   app.notFound((c) => c.json({ error: "not found" }, 404));
   // The relay is up; `referee` says whether the referee behind it is answering, and which one.
   // `test_players` tells the app whether to offer "Add a test player" (POST /dev/ghosts/fill).
+  // `replay_url` is the web replay the app links to after a match; null when none is set.
   app.get("/health", (c) => {
     const r = d.refereeHealth?.();
     return c.json({
       ok: true,
-      // The contract this relay plays on, which every signed request names. Phones keep their own
-      // setting as the trust anchor and only use this to notice a mismatch (and offer to
-      // switch), never to adopt it silently.
+      // The contract this relay plays on, which every signed request names. Phones keep the one
+      // their build names as the trust anchor and only use this to say they differ, never to
+      // adopt it.
       contract: d.replay.contract,
       test_players: d.allowGhosts,
+      replay_url: d.replayUrl ?? null,
       ...(r
         ? { referee: { kind: r.kind, status: r.status, last_ok_ms: r.lastOkMs, last_error: r.lastError } }
         : {}),
