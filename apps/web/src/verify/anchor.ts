@@ -41,10 +41,11 @@ export interface ChainMatch {
   public_replay: boolean;
   /**
    * How the contract settled the match: "payout" after End's replay passed, a refund of every
-   * stake after it found a broken rule or after an abort, null while lobby or running. Absent
-   * from contracts deployed before protocol v2.
+   * stake after it found a broken rule or after an abort, null while lobby or running.
+   * "payout_unreplayed": paid out by the contract before protocol v2, which did not replay End.
+   * Absent from contracts deployed before protocol v2.
    */
-  settled_as?: "payout" | "refunded_rule_violation" | "refunded_abort" | null;
+  settled_as?: "payout" | "payout_unreplayed" | "refunded_rule_violation" | "refunded_abort" | null;
   /** On "refunded_rule_violation": the contract's words for the rule End's replay found broken. */
   violation?: string | null;
   /** Hint money held for the match and not yet credited (decimal string); 0 once settled. */

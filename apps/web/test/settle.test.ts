@@ -131,4 +131,16 @@ describe("when the replay doesn't run", () => {
     expect(snapshotAt(m, hint?.t ?? 0).heads[hint?.b ?? -1]).toBe(d.stake + (hint?.amount as bigint));
     expect(verifyAll(d, chainFor(d), EXPECT).level?.payouts).toBe(true);
   });
+
+  test("an upgraded contract reports a v1 match as paid out unreplayed, and only that matches", () => {
+    const d = through(fx.v1);
+    const c = chainFor(d) as Extract<ChainState, { kind: "found" }>;
+    const as = (settled_as: "payout" | "payout_unreplayed") => withMatch(c, { settled_as });
+    expect(verifyAll(d, as("payout_unreplayed"), EXPECT).level?.payouts).toBe(true);
+    expect(verifyAll(d, as("payout"), EXPECT).level?.payouts).toBe(false);
+    expect(
+      verifyAll(good, withMatch(chainFor(good) as typeof c, { settled_as: "payout_unreplayed" }), EXPECT)
+        .level?.payouts,
+    ).toBe(false);
+  });
 });

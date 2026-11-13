@@ -128,8 +128,13 @@ function settle(d: DecodedBundle): Settlement {
     : { kind: "refunded", violation: r.violation, text: describeViolation(r.violation) };
 }
 
-/** `settled_as` as the contract's `get_match` reports this outcome, or null when it has none. */
-export function settledAs(s: Settlement): "payout" | "refunded_rule_violation" | null {
+/**
+ * `settled_as` as the contract's `get_match` reports this outcome, or null when it has none. A v1
+ * match ended before the contract replayed End, so an upgraded contract reports it as paid out
+ * unreplayed.
+ */
+export function settledAs(s: Settlement): "payout" | "payout_unreplayed" | "refunded_rule_violation" | null {
+  if (s.kind === "v1") return "payout_unreplayed";
   return s.kind === "payout" ? "payout" : s.kind === "refunded" ? "refunded_rule_violation" : null;
 }
 
