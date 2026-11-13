@@ -100,6 +100,61 @@ impl DeviceRecord {
     }
 }
 
+/// `Device` as the first referees stored it, before `attested` existed (the relay alone checked
+/// the attestation then). `start` cannot use such a record, but it still names the `near_pk`
+/// whose consent a move of the account needs.
+#[derive(BorshDeserialize)]
+struct LegacyDevice {
+    account_id: String,
+    app_attest_pk: [u8; 65],
+    player_box_pk: [u8; 32],
+    near_pk: [u8; 32],
+    call_id: CallId,
+}
+
+/// A stored device record as `enroll` reads it before deciding on a new device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredDevice {
+    pub record: DeviceRecord,
+    /// Read from the legacy layout: never kept as it is, since `start` cannot read it.
+    pub legacy: bool,
+}
+
+impl StoredDevice {
+    /// The current layouts first, then the legacy one. A legacy record reads as unattested and
+    /// with no certificate time: the referee that wrote it checked no attestation, and kept no
+    /// time to order a move against. Bytes in no layout are an error: they give no key to check
+    /// a move against, and reading them as "nothing stored" would let any device take the
+    /// account.
+    pub fn decode(bytes: &[u8]) -> Result<StoredDevice, String> {
+        let current = match DeviceRecord::decode(bytes) {
+            Ok(record) => {
+                return Ok(StoredDevice {
+                    record,
+                    legacy: false,
+                })
+            }
+            Err(e) => e,
+        };
+        let d: LegacyDevice = borsh::from_slice(bytes)
+            .map_err(|_| format!("{current}, and not a record in the legacy layout either"))?;
+        Ok(StoredDevice {
+            record: DeviceRecord {
+                device: Device {
+                    account_id: d.account_id,
+                    app_attest_pk: d.app_attest_pk,
+                    attested: false,
+                    player_box_pk: d.player_box_pk,
+                    near_pk: d.near_pk,
+                    call_id: d.call_id,
+                },
+                credential_not_before: 0,
+            },
+            legacy: true,
+        })
+    }
+}
+
 pub fn device_record_key(account_id: &str) -> String {
     format!("device:{account_id}")
 }
@@ -202,6 +257,54 @@ mod tests {
         let mut bad = v1.clone();
         bad.extend_from_slice(&[3; 9]);
         assert!(DeviceRecord::decode(&bad).is_err());
+    }
+
+    #[test]
+    fn a_legacy_record_reads_for_enroll_only_and_as_unattested() {
+        let d = alice();
+        let legacy = [
+            crate::codec::to_borsh(&d.account_id),
+            d.app_attest_pk.to_vec(),
+            d.player_box_pk.to_vec(),
+            d.near_pk.to_vec(),
+            d.call_id.to_vec(),
+        ]
+        .concat();
+        // `start` (and `devices`) cannot read it.
+        assert!(DeviceRecord::decode(&legacy).is_err());
+        let read = StoredDevice::decode(&legacy).unwrap();
+        assert!(read.legacy);
+        assert_eq!(
+            read.record,
+            DeviceRecord {
+                device: Device {
+                    attested: false,
+                    ..alice()
+                },
+                credential_not_before: 0
+            }
+        );
+        // A current record reads as itself, never as legacy.
+        let current = DeviceRecord {
+            device: alice(),
+            credential_not_before: 7,
+        };
+        assert_eq!(
+            StoredDevice::decode(&current.encode()),
+            Ok(StoredDevice {
+                record: current,
+                legacy: false
+            })
+        );
+        // Bytes in no layout stay an error. (One byte more than a legacy record is the length
+        // of a version 1 record, so it is not tried here: a legacy record is always one byte
+        // short of every current layout, which is why current is tried first.)
+        for bad in [
+            &legacy[..legacy.len() - 1],
+            &[legacy.as_slice(), &[9, 9]].concat(),
+        ] {
+            assert!(StoredDevice::decode(bad).is_err());
+        }
     }
 
     #[test]

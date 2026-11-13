@@ -230,7 +230,11 @@ Storage holds:
 - `referee:box_sk`, generated in the enclave on first use
 - `device:{account}`, one per enrolled device: borsh `Device` (the receipt body) ‖ `0x02` ‖
   u64le notBefore of its credential certificate (0 for a ghost). A record of the receipt body
-  alone (version 1) reads as notBefore 0.
+  alone (version 1) reads as notBefore 0. A record from before `attested` existed (borsh
+  `Device` without it) is not one `start` or `devices` reads; `enroll` reads it for its keys,
+  as unattested with notBefore 0, so a move still needs its `near_pk`'s `rebind_sig`, and
+  rewrites it in the current layout from the new call's own attestation. Bytes in no layout
+  are refused: they name no key to check a move against.
 - `match:{id}`, written once at `start` (`set_if_absent`) and once at `end` (compare-and-swap,
   then checked by every repeat of `end`), so a match never gets two Start or two End verdicts. It holds K_m, the VRF alpha and
   signature, the ring and the devices.

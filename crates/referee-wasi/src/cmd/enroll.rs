@@ -20,7 +20,7 @@
 
 use crate::cmd::APP_ID;
 use crate::codec::{b64, fixed_b64, from_b64, parse, to_borsh, uuid_string};
-use crate::records::{device_record_key, enroll_receipt_digest, Device, DeviceRecord};
+use crate::records::{device_record_key, enroll_receipt_digest, Device, DeviceRecord, StoredDevice};
 use crate::{account, host};
 use appattest::Environment;
 use serde::Deserialize;
@@ -204,25 +204,29 @@ pub fn run(input: Value) -> Result<Value, String> {
     let new = device(i, allow_unattested, host::wall_ms() / 1000, host::call_id()?)?;
     let account_id = new.device.account_id.clone();
     let key = device_record_key(&account_id);
+    // A record in the legacy layout is read for its keys only: `admit` checks a move against
+    // its `near_pk` like any other, and whatever is admitted is written in the current layout,
+    // from this call's own attestation (a legacy record never makes a device attested).
     let stored = host::storage_get(&key)?
-        .map(|bytes| DeviceRecord::decode(&bytes).map(|r| (r, bytes)))
+        .map(|bytes| StoredDevice::decode(&bytes).map(|r| (r, bytes)))
         .transpose()
         .map_err(|e| format!("device record of {account_id}: {e}"))?;
     let raced = || format!("{account_id} was enrolled by another call meanwhile; retry");
     // The writes are conditional on what was read, so of two enrolments racing for one account
     // only one lands. A match already started keeps the copy of the device it took at `start`.
     let record = match (
-        admit(stored.as_ref().map(|(r, _)| r), &new, rebind_sig.as_ref())?,
+        admit(stored.as_ref().map(|(r, _)| &r.record), &new, rebind_sig.as_ref())?,
         stored,
     ) {
-        (Admit::Keep, Some((old, _))) => old,
+        (Admit::Keep, Some((old, _))) if !old.legacy => old.record,
         (_, None) => {
             if !host::storage_set_if_absent(&key, &new.encode())? {
                 return Err(raced());
             }
             new
         }
-        (Admit::Store, Some((_, old_bytes))) => {
+        // Store, or the same keys in a legacy record: rewritten in the current layout.
+        (_, Some((_, old_bytes))) => {
             if !host::storage_replace(&key, &old_bytes, &new.encode())? {
                 return Err(raced());
             }

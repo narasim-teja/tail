@@ -774,6 +774,82 @@ fn devices_names_the_receipt_start_would_read() {
 }
 
 #[test]
+fn a_legacy_device_record_moves_only_with_its_near_keys_consent_and_is_rewritten() {
+    let tmp = TempDir::new("legacy");
+    let dir = tmp.0.as_path();
+    pubkeys(dir);
+    let near = |n: u8| ed25519_dalek::SigningKey::from_bytes(&[n; 32]);
+    let attest = |account: &str, n: u8| {
+        appattest::public_key_bytes(device_key(&format!("{account}/{n}")).verifying_key())
+    };
+    let input = |account: &str, n: u8| {
+        json!({
+            "cmd": "enroll",
+            "account_id": account,
+            "app_attest_pk": b64(&attest(account, n)),
+            "player_box_pk": b64(&seal::public_key(&[n; 32])),
+            "near_pk": b64(&near(1).verifying_key().to_bytes()),
+        })
+    };
+    // As the first referees stored a device: borsh `Device` without `attested`.
+    let plant = |account: &str| {
+        let legacy = borsh::to_vec(&(
+            account.to_owned(),
+            attest(account, 1),
+            seal::public_key(&[1; 32]),
+            near(1).verifying_key().to_bytes(),
+            [3u8; 16],
+        ))
+        .unwrap();
+        std::fs::write(record_file(dir, &format!("device:{account}")), legacy).unwrap();
+    };
+    let held = |account: &str| {
+        call(dir, &json!({ "cmd": "devices", "accounts": [account] }))["devices"][0]["receipt"].clone()
+    };
+
+    let erin = "erin.test.near";
+    plant(erin);
+    assert!(held(erin).is_null(), "start cannot read a legacy record");
+    // Other keys still take the consent of the near_pk the legacy record names.
+    assert!(refused(Some(dir), &input(erin, 2)).contains("rebind_sig"));
+    let signed = |signer: u8| {
+        let mut i = input(erin, 2);
+        let digest = tail_protocol::digest::rebind_digest(
+            erin,
+            &fixed(&i["app_attest_pk"]),
+            &fixed(&i["player_box_pk"]),
+            &fixed(&i["near_pk"]),
+        );
+        i["rebind_sig"] = json!(b64(
+            &ed25519_dalek::Signer::sign(&near(signer), &digest).to_bytes()
+        ));
+        i
+    };
+    assert!(refused(Some(dir), &signed(2)).contains("not the enrolled device"));
+    let moved = call(dir, &signed(1));
+    assert_eq!(
+        moved["attested"], false,
+        "attested only by an attestation checked here"
+    );
+    assert_eq!(
+        held(erin),
+        moved["receipt"],
+        "rewritten in the layout start reads"
+    );
+
+    // The same keys again are not kept as they are: the record is rewritten.
+    let finn = "finn.test.near";
+    plant(finn);
+    let again = call(dir, &input(finn, 1));
+    assert_eq!(held(finn), again["receipt"]);
+    assert_eq!(
+        call(dir, &input(finn, 1))["call_id"],
+        again["call_id"],
+        "and kept from then on"
+    );
+}
+
+#[test]
 fn plays_a_match_with_keys_on_disk() {
     let tmp = TempDir::new("match");
     let dir = tmp.0.as_path();
