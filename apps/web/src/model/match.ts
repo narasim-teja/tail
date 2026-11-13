@@ -87,6 +87,8 @@ export interface Match {
 
 export function displayName(account: string): string {
   const head = account.split(".")[0] ?? account;
+  // Ghost accounts are the relay's test players (its testing door); their random handle means nothing.
+  if (head.startsWith("ghost-")) return "Test player";
   const clean = head.replace(/[-_]+/g, " ").trim() || account;
   return clean.charAt(0).toUpperCase() + clean.slice(1);
 }

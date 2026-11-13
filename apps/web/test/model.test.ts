@@ -3,7 +3,15 @@ import { LOCK_EPOCHS } from "@tail/protocol";
 import { makeFixtures } from "../scripts/fixture.ts";
 import { money } from "../src/lib/format.ts";
 import { FILM_SPEED, filmSpeed, focusAt } from "../src/model/film.ts";
-import { buildMatch, initialsFor, lockAt, logClock, positionAt, snapshotAt } from "../src/model/match.ts";
+import {
+  buildMatch,
+  displayName,
+  initialsFor,
+  lockAt,
+  logClock,
+  positionAt,
+  snapshotAt,
+} from "../src/model/match.ts";
 import { decodeBundle } from "../src/verify/bundle.ts";
 import { checkBatches, checkHandler } from "../src/verify/checks.ts";
 
@@ -86,6 +94,11 @@ describe("helpers", () => {
     const twelve = ["Ana", "Alex", "Ali", "Bo", "Ben", "Cy", "Cara", "Dee", "Dan", "Eli", "Emma", "Fay"];
     const got = initialsFor(twelve);
     expect(new Set(got).size).toBe(12);
+  });
+
+  test("names come from the handle; a ghost is a test player", () => {
+    expect(displayName("sam-k.tail-dev.testnet")).toBe("Sam k");
+    expect(displayName("ghost-rt0oxf64.tail-dev.testnet")).toBe("Test player");
   });
 
   test("the log clock is monotone and interpolates between anchors", () => {
