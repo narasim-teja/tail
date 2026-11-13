@@ -197,13 +197,40 @@ function sameKey(a: string, b: string): boolean {
 }
 
 /**
+ * tail-attest's code for DCError.invalidKey: iOS no longer has this key. Deleting the app throws
+ * its App Attest keys away, while the Keychain keeps the account and the keyId.
+ */
+export const ATTEST_KEY_GONE = "ERR_APP_ATTEST_INVALID_KEY";
+
+export const attestKeyGone = (e: unknown): boolean =>
+  typeof e === "object" && e !== null && (e as { code?: unknown }).code === ATTEST_KEY_GONE;
+
+/**
+ * One trial assertion with `keyId`: false when iOS no longer has the key, null when App Attest
+ * failed for another reason and said nothing about the key. Its clientDataHash is all zeros: the
+ * assertion is never sent, only made.
+ */
+export async function keyWorks(
+  generateAssertion: (keyId: string, clientDataHashB64: string) => Promise<string>,
+  keyId: string,
+): Promise<boolean | null> {
+  try {
+    await generateAssertion(keyId, toB64(new Uint8Array(32)));
+    return true;
+  } catch (e) {
+    return attestKeyGone(e) ? false : null;
+  }
+}
+
+/**
  * Asks the relay whether its referee holds this phone's device, and re-enrols if not, unless a
  * hunt may be running (asked before and after the relay answers, which takes time). The relay's
  * keyId settles a key sent earlier whose answer was lost: the pending key becomes the phone's
  * when the relay holds it, is dropped when it holds the current one, and a key the phone does
  * not have at all means a refresh. A relay that does not name its key leaves a pending one
- * unresolved, so that also refreshes. "unknown": the relay could not be reached; the next Start
- * says so if it matters.
+ * unresolved, so that also refreshes. Then the key is tried once (`works`): a key iOS no longer
+ * has would fail every report of the next hunt, so it is replaced now. "unknown": the relay
+ * could not be reached; the next Start says so if it matters.
  */
 export async function ensureEnrolled(deps: {
   hunt: () => HuntFacts;
@@ -212,6 +239,8 @@ export async function ensureEnrolled(deps: {
   status: () => Promise<DeviceStatus>;
   /** The relay holds this key: make it the phone's key and clear the pending one. */
   settle: (keyId: string) => Promise<void>;
+  /** One trial assertion (keyWorks): false when iOS no longer has the key. */
+  works: (keyId: string) => Promise<boolean | null>;
   reenrol: () => Promise<void>;
 }): Promise<"enrolled" | "refreshed" | "not now" | "unknown"> {
   if (!mayReenrol(deps.hunt())) return "not now";
@@ -223,15 +252,19 @@ export async function ensureEnrolled(deps: {
   }
   const { current, pending } = await deps.keys();
   let stale = !status.withReferee;
+  let key = current;
   if (status.keyId === null) {
     if (pending !== null) stale = true;
   } else if (pending !== null && sameKey(status.keyId, pending)) {
     await deps.settle(pending);
+    key = pending;
   } else if (current !== null && sameKey(status.keyId, current)) {
     if (pending !== null) await deps.settle(current);
   } else {
     stale = true;
   }
+  if (!mayReenrol(deps.hunt())) return "not now";
+  if (!stale && (key === null || (await deps.works(key)) === false)) stale = true;
   if (!stale) return "enrolled";
   if (!mayReenrol(deps.hunt())) return "not now";
   try {

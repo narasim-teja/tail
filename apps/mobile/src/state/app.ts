@@ -10,6 +10,7 @@ import {
   enrol,
   ensureEnrolled,
   type HuntFacts,
+  keyWorks,
   mayReenrol,
   REFRESHED,
   refreshEnrolment,
@@ -424,6 +425,7 @@ class AppModel {
         await settleAttestKeyId(keychain, keyId);
         if (this.identity) this.identity = { ...this.identity, attestKeyId: keyId };
       },
+      works: (keyId) => keyWorks((k, h) => attestor.generateAssertion(k, h), keyId),
       reenrol: () => this.reenrol(),
     }).catch((e: unknown) => this.fail(e));
   }

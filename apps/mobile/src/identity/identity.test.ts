@@ -21,6 +21,7 @@ import {
   enrol,
   ensureEnrolled,
   type HuntFacts,
+  keyWorks,
   mayReenrol,
   refreshEnrolment,
   withRefresh,
@@ -388,6 +389,7 @@ describe("re-enrolling only when no hunt may be running", () => {
       keys: async () => ({ current: "a2V5", pending: null }),
       status: async () => ({ withReferee: opts.withReferee ?? false, keyId: null }),
       settle: async () => undefined,
+      works: async () => true,
       reenrol: async () => {
         reenrols++;
         await opts.reenrol?.();
@@ -436,6 +438,7 @@ describe("re-enrolling only when no hunt may be running", () => {
       keys: async () => ({ current: "a2V5", pending: null }),
       status: () => Promise.reject(new Error("offline")),
       settle: async () => undefined,
+      works: async () => true,
       reenrol: async () => undefined,
     });
     expect(down).toBe("unknown");
@@ -453,6 +456,7 @@ describe("the App Attest key the relay holds", () => {
       keys: () => attestKeyIds(s),
       status: async () => ({ withReferee, keyId: relayKey }),
       settle: (k) => settleAttestKeyId(s, k),
+      works: async () => true,
       reenrol: async () => {
         reenrols++;
       },
@@ -524,5 +528,46 @@ describe("the App Attest key the relay holds", () => {
     const { s } = await enrolled();
     await settleAttestKeyId(s, "b2xk");
     expect((await check(s, null)).out).toBe("enrolled");
+  });
+});
+
+describe("a device key iOS threw away", () => {
+  test("a trial assertion that finds the key gone replaces it outside a hunt, and is never made during one", async () => {
+    const run = async (facts: HuntFacts, works: boolean | null) => {
+      const tried: string[] = [];
+      let reenrols = 0;
+      const out = await ensureEnrolled({
+        hunt: () => facts,
+        keys: async () => ({ current: "a2V5", pending: null }),
+        status: async () => ({ withReferee: true, keyId: "a2V5" }),
+        settle: async () => undefined,
+        works: async (k) => {
+          tried.push(k);
+          return works;
+        },
+        reenrol: async () => {
+          reenrols++;
+        },
+      });
+      return { out, reenrols, tried };
+    };
+    const lobby: HuntFacts = { session: false, matchId: "m", phase: "lobby" };
+    // Deleted and installed again: the Keychain still names the key, iOS no longer has it.
+    expect(await run(lobby, false)).toEqual({ out: "refreshed", reenrols: 1, tried: ["a2V5"] });
+    // App Attest failed for some other reason: nothing known about the key, nothing replaced.
+    expect(await run(lobby, null)).toEqual({ out: "enrolled", reenrols: 0, tried: ["a2V5"] });
+    const hunting: HuntFacts = { session: true, matchId: "m", phase: "running" };
+    expect(await run(hunting, false)).toEqual({ out: "not now", reenrols: 0, tried: [] });
+  });
+
+  test("only App Attest's invalid-key error says the key is gone", async () => {
+    const failing = (e: unknown) => async () => {
+      throw e;
+    };
+    const gone = Object.assign(new Error("App Attest failed"), { code: "ERR_APP_ATTEST_INVALID_KEY" });
+    const busy = Object.assign(new Error("App Attest failed"), { code: "ERR_APP_ATTEST_SYSTEM_FAILURE" });
+    expect(await keyWorks(failing(gone), "a2V5")).toBe(false);
+    expect(await keyWorks(failing(busy), "a2V5")).toBeNull();
+    expect(await keyWorks(async () => "YXNzZXJ0", "a2V5")).toBe(true);
   });
 });
