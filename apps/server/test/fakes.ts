@@ -3,6 +3,7 @@
 // applies verdicts only in seq order; the referee refuses a state whose seq is not last_seq, and
 // reports the log size and root so the relay's copy can be checked.
 
+import { ed25519 } from "@noble/curves/ed25519.js";
 import { createLogger } from "@tail/log";
 import {
   encodeLogEntry,
@@ -51,6 +52,9 @@ export class FakeChain implements Chain {
   /** Next apply lands on chain but the caller sees an error (a lost RPC answer). */
   loseNextApplyAnswer = false;
   locked: string[] = [];
+  /** Internal contract balances of the one test token, by account. */
+  balances = new Map<string, bigint>();
+  topUps: { accountId: string; amount: bigint }[] = [];
   private n = 0;
 
   async config(): Promise<ContractConfig> {
@@ -104,6 +108,7 @@ export class FakeChain implements Chain {
   join(matchId: string, account: string) {
     const m = this.matches.get(matchId);
     if (m?.phase !== "lobby" || m.locked_until_ms !== null) throw new Error("not joinable");
+    if (m.players.length >= m.max_players) throw new Error("match is full");
     m.players.push({ account_id: account, head: m.stake, out: false, paid: "0" });
     const order = sortAccounts(m.players.map((p) => p.account_id));
     m.players.sort((a, b) => order.indexOf(a.account_id) - order.indexOf(b.account_id));
@@ -130,8 +135,8 @@ export class FakeChain implements Chain {
   async getHeads(id: string) {
     return this.matches.get(id)?.players.map((p) => p.head) ?? null;
   }
-  async getBalance() {
-    return 0n;
+  async getBalance(accountId: string) {
+    return this.balances.get(accountId) ?? 0n;
   }
   async apply(verdicts: Uint8Array[]) {
     this.applyCalls++;
@@ -158,7 +163,22 @@ export class FakeChain implements Chain {
     }
     return `tx${this.applyCalls}`;
   }
-  async topUp() {}
+  async topUp(accountId: string, amount: bigint) {
+    this.topUps.push({ accountId, amount });
+    this.balances.set(accountId, (this.balances.get(accountId) ?? 0n) + amount);
+  }
+  /** As the contract's join_match: the account's own key, invites, a free seat, the stake debited. */
+  async joinAsGhost(accountId: string, nearSeed: Uint8Array, matchId: string) {
+    const key = this.accounts.get(accountId);
+    if (!key || Buffer.compare(key, ed25519.getPublicKey(nearSeed)) !== 0) throw new Error("wrong key");
+    const m = this.matches.get(matchId);
+    if (!m) throw new Error("no such match");
+    if (m.invites.length > 0 && !m.invites.includes(accountId)) throw new Error("not invited");
+    const balance = this.balances.get(accountId) ?? 0n;
+    if (balance < BigInt(m.stake)) throw new Error("balance too low");
+    this.join(matchId, accountId);
+    this.balances.set(accountId, balance - BigInt(m.stake));
+  }
 }
 
 /** Referee whose rules are a script: `onTick` decides what each tick returns. */

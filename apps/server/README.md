@@ -31,7 +31,7 @@ strings in the token's smallest unit. Errors are `{error: "<short message>"}` wi
 
 | Method, path                     | Auth                                        | Request                                                                                                                                                       | Response                                                                                                                                           |
 | -------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /health`                    | –                                           | –                                                                                                                                                             | `{ok: true, referee: {kind: "outlayer"\|"local", status: "unknown"\|"up"\|"down", last_ok_ms, last_error}}`                                        |
+| `GET /health`                    | –                                           | –                                                                                                                                                             | `{ok: true, test_players, referee: {kind: "outlayer"\|"local", status: "unknown"\|"up"\|"down", last_ok_ms, last_error}}`                          |
 | `GET /referee`                   | –                                           | –                                                                                                                                                             | `{referee_pk, referee_box_pk, box_pk_sig, vrf_pk}` (base64, from the referee's `pubkeys`, cached)                                                  |
 | `POST /enroll/challenge`         | –                                           | `{handle}`                                                                                                                                                    | `{challenge (32 B), account_id, expires_ms}`                                                                                                       |
 | `POST /enroll`                   | attestation                                 | `{challenge, key_id (32 B), attestation (CBOR), player_box_pk (32 B), near_pk (32 B ed25519)}`                                                                | `{account_id}`; the referee gets the device in the background (below)                                                                              |
@@ -45,6 +45,7 @@ strings in the token's smallest unit. Errors are `{error: "<short message>"}` wi
 | `POST /replay/:id/challenge`     | –                                           | `{account_id}`                                                                                                                                                | `{nonce}` (32 B, single use, 2 min)                                                                                                                |
 | `POST /dev/topup`                | signed; testnet only                        | `{account_id, amount}` (≤ 100 USDC.e)                                                                                                                         | `{account_id, credited}`: mints `usdc.fakes.testnet` to the relay and `ft_transfer_call`s it with `{"credit": account_id}`                         |
 | `POST /dev/ghosts/enroll`        | testing door, see below                     | `{handle: "ghost-…", app_attest_pk (65 B), player_box_pk, near_pk}`                                                                                           | as `POST /enroll`                                                                                                                                  |
+| `POST /dev/ghosts/fill`          | signed (host); testing door                 | `{match_id}`                                                                                                                                                  | `{account_id}` of the test player now in the lobby (below)                                                                                         |
 
 `sealed` in `keys` is `seal(player_box_pk, borsh PlayerKeys, "tail/keys")`: safe to serve publicly.
 
@@ -179,9 +180,36 @@ What a ghost cannot do is produce Apple's attestation. Ghost enrolment
 - Ghost handles must start with `ghost-` and phone handles cannot, so every ghost is visible as
   `ghost-….<relay account>` on chain, in the referee's device record and in `/replay`
   (`kind: "ghost"`).
+- `GET /health` says `test_players: true` only while the door is open, so the app offers
+  "Add a test player" only on such a relay.
 - A relay with the door open can enrol fake devices. That is exactly what the v1 limitation
   (attestation checked by the relay, not the enclave) already allows a dishonest relay; the
   door only makes it explicit for testing.
+
+### Test players
+
+A match needs three players, so two phones alone cannot start one. `POST /dev/ghosts/fill
+{match_id}`, signed by the lobby's host, seats a ghost the relay makes on the spot
+(`src/ghosts/fill.ts`): `ghost-<8 random characters>`, its three keys generated in-process and
+held only for that call, enrolled through the door, topped up with the stake if its balance is
+short (at most 100 USDC.e), and joined with its own key. One fill per match runs at a time; a
+second tap meanwhile gets 409. Refusals: 404 `no such match` / `match is not on chain`, 403
+`only the host can add a test player`, 409 `match is <phase>`, `match is <phase> on chain`,
+`the lobby is locked`, `the lobby's start time has passed`, `the match is full`,
+`a test player cannot join an invite-only match`, `a test player covers stakes up to 100 USDC.e`,
+`a test player is already joining`.
+
+A test player never sends a batch, so the referee counts it dark (`crates/referee-core`
+`dark_rules`): every player starts present at `start_ms`, a gap longer than `DARK_GRACE_MS`
+(20 s) counts in full from its start, and once dark time reaches `DARK_FORFEIT_MS` (180 s) the
+ghost forfeits its head to its hunter, who takes over its target. Ticks run every 10 s, so the
+Forfeit lands 180–190 s after Start, and the phones play on. Until then the phone hunting the
+ghost has nothing to find (no beacon, and no fix to leak). In a match shorter than 3 minutes the
+ghost never reaches 180 s of dark time: it survives to End and is paid its head, into a balance
+nobody can withdraw (its key is gone).
+
+Start checks the players again after `lock_lobby`, so a player who joined between the first
+check and the lock still reaches the referee before `start`.
 
 ## When the referee is slow or down
 

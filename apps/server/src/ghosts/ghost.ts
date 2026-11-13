@@ -5,15 +5,12 @@
 // Apple's attestation at enrolment (the testing door, routes/dev.ts).
 
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { p256 } from "@noble/curves/nist.js";
 import {
   type Action,
   type Batch,
   batchClientDataHash,
   batchHash,
   beaconToken,
-  boxPublicKey,
-  concat,
   decodeHud,
   decodePlayerKeys,
   encodeBatchEnvelope,
@@ -27,18 +24,20 @@ import {
   tagMatches,
   toHex,
 } from "@tail/protocol";
-import { Account, baseEncode, type JsonRpcProvider, type KeyPairString, teraToGas } from "near-api-js";
+import type { JsonRpcProvider } from "near-api-js";
 import { hudDigest, signRequestHeaders } from "../auth.ts";
+import { joinMatchWithKey } from "../near.ts";
 import { signAssertion } from "./assertion.ts";
+import { newGhostKeys } from "./keys.ts";
 
 const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
 const unb64 = (s: string) => new Uint8Array(Buffer.from(s, "base64"));
 
 export class Ghost {
-  readonly nearSeed = ed25519.utils.randomSecretKey();
-  readonly nearPk = ed25519.getPublicKey(this.nearSeed);
-  readonly boxSk = crypto.getRandomValues(new Uint8Array(32));
-  readonly attestSk = p256.utils.randomSecretKey();
+  private readonly k = newGhostKeys();
+  readonly nearSeed = this.k.nearSeed;
+  readonly boxSk = this.k.boxSk;
+  readonly attestSk = this.k.attestSk;
   accountId = "";
   keys: PlayerKeys | undefined;
   huds: Hud[] = [];
@@ -59,11 +58,6 @@ export class Ghost {
     private readonly relayUrl: string,
   ) {}
 
-  /** The key in near-api-js form (seed ‖ public key, base58), for the ghost's own transactions. */
-  nearKeyString(): KeyPairString {
-    return `ed25519:${baseEncode(concat(this.nearSeed, this.nearPk))}` as KeyPairString;
-  }
-
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const bytes = new TextEncoder().encode(body === undefined ? "" : JSON.stringify(body));
     const headers: Record<string, string> = { "content-type": "application/json" };
@@ -82,23 +76,17 @@ export class Ghost {
   async enroll() {
     const r = await this.request<{ account_id: string }>("POST", "/dev/ghosts/enroll", {
       handle: this.handle,
-      app_attest_pk: b64(p256.getPublicKey(this.attestSk, false)),
-      player_box_pk: b64(boxPublicKey(this.boxSk)),
-      near_pk: b64(this.nearPk),
+      app_attest_pk: b64(this.k.attestPk),
+      player_box_pk: b64(this.k.boxPk),
+      near_pk: b64(this.k.nearPk),
     });
     this.accountId = r.account_id;
     return r;
   }
 
   /** Joins the lobby on chain with the ghost's own function-call key, as a phone does. */
-  async join(provider: JsonRpcProvider, contract: string, matchId: string) {
-    const acct = new Account(this.accountId, provider, this.nearKeyString());
-    await acct.callFunction({
-      contractId: contract,
-      methodName: "join_match",
-      args: { match_id: matchId },
-      gas: teraToGas("30"),
-    });
+  join(provider: JsonRpcProvider, contract: string, matchId: string) {
+    return joinMatchWithKey(provider, contract, this.accountId, this.nearSeed, matchId);
   }
 
   /** Opens the HUD socket and authenticates with the NEAR key. Resolves once the relay says ready. */

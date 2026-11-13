@@ -1,10 +1,12 @@
 // Testnet-only conveniences. app.ts mounts these only when the config says NEAR_NETWORK=testnet
-// (top-up) and additionally ALLOW_GHOSTS=1 (ghost enrolment, the testing door in the README).
+// (top-up) and additionally ALLOW_GHOSTS=1 (ghost enrolment and test players, the testing door in
+// the README).
 
 import type { Hono } from "hono";
 import type { Store } from "../db.ts";
 import type { Enrolment } from "../enroll.ts";
 import { HttpError } from "../errors.ts";
+import type { GhostFiller } from "../ghosts/fill.ts";
 import type { Chain } from "../near.ts";
 import { field, jsonBody, signedBody } from "./util.ts";
 
@@ -24,7 +26,7 @@ export function topupRoutes(app: Hono, d: { store: Store; chain: Chain }) {
   });
 }
 
-export function ghostRoutes(app: Hono, d: { enrolment: Enrolment }) {
+export function ghostRoutes(app: Hono, d: { store: Store; enrolment: Enrolment; filler: GhostFiller }) {
   // {handle: "ghost-…", app_attest_pk (65 B), player_box_pk, near_pk} → Enrolled. No attestation.
   app.post("/dev/ghosts/enroll", async (c) => {
     const b = await jsonBody(c);
@@ -36,5 +38,11 @@ export function ghostRoutes(app: Hono, d: { enrolment: Enrolment }) {
         nearPk: field.bytes(b, "near_pk", 32),
       }),
     );
+  });
+
+  // Signed by the lobby's host. {match_id} → {account_id} of the test player now in the lobby.
+  app.post("/dev/ghosts/fill", async (c) => {
+    const { account, body } = await signedBody(c, d.store);
+    return c.json(await d.filler.fill(field.matchId(field.str(body, "match_id", 32)), account));
   });
 }

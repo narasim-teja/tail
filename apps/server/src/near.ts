@@ -1,9 +1,13 @@
 // The relay's NEAR side, and the only file that knows the contract's method names and JSON
 // shapes. The relay pays for player accounts and their registration, hosts matches (create,
-// lock), and submits the referee's signed verdicts. It never signs what a player key signs
-// (join_match, leave_lobby, withdraw): those keys live on the phones.
+// lock), and submits the referee's signed verdicts. It never signs what a phone's key signs
+// (join_match, leave_lobby, withdraw): those keys live on the phones. The one exception is a test
+// player (ghosts/fill.ts, testnet with ALLOW_GHOSTS=1 only): the relay made that ghost's key
+// itself, so it joins with it, through the same `join_match` a phone sends.
 
+import { ed25519 } from "@noble/curves/ed25519.js";
 import type { Logger } from "@tail/log";
+import { concat } from "@tail/protocol";
 import {
   Account,
   actions,
@@ -116,6 +120,11 @@ export interface Chain {
   apply(verdicts: Uint8Array[]): Promise<string>;
   /** Testnet only: mints the test token to the relay and credits it to `accountId` in the contract. */
   topUp(accountId: string, amount: bigint): Promise<void>;
+  /**
+   * Testnet ghosts only: `join_match` signed by the ghost's own function-call key (`nearSeed`,
+   * the 32-byte ed25519 seed), which the relay generated for a test player.
+   */
+  joinAsGhost(accountId: string, nearSeed: Uint8Array, matchId: string): Promise<void>;
 }
 
 /** The account exists and is not one this relay created for this key. */
@@ -126,6 +135,27 @@ export class AccountTakenError extends Error {
 export function nearPublicKey(raw: Uint8Array): PublicKey {
   if (raw.length !== 32) throw new Error("near_pk must be a 32-byte ed25519 public key");
   return PublicKey.fromString(`ed25519:${baseEncode(raw)}`);
+}
+
+/** An ed25519 seed in near-api-js form (seed ‖ public key, base58). */
+export function nearKeyPair(seed: Uint8Array): KeyPairString {
+  return `ed25519:${baseEncode(concat(seed, ed25519.getPublicKey(seed)))}` as KeyPairString;
+}
+
+/** `join_match` as the player itself signs it: the player's key, 30 Tgas, no deposit. */
+export async function joinMatchWithKey(
+  provider: JsonRpcProvider,
+  contract: string,
+  accountId: string,
+  seed: Uint8Array,
+  matchId: string,
+): Promise<void> {
+  await new Account(accountId, provider, nearKeyPair(seed)).callFunction({
+    contractId: contract,
+    methodName: "join_match",
+    args: { match_id: matchId },
+    gas: teraToGas("30"),
+  });
 }
 
 export class NearChain implements Chain {
@@ -329,5 +359,9 @@ export class NearChain implements Chain {
     if ((await this.getBalance(accountId, this.o.token)) < before + amount) {
       throw new Error(`the contract refused the credit for ${accountId} (is it registered?)`);
     }
+  }
+
+  joinAsGhost(accountId: string, nearSeed: Uint8Array, matchId: string) {
+    return joinMatchWithKey(this.provider, this.o.contract, accountId, nearSeed, matchId);
   }
 }

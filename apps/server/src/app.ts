@@ -8,6 +8,7 @@ import { createBunWebSocket } from "hono/bun";
 import type { Store } from "./db.ts";
 import { Enrolment, type VerifyAttestation } from "./enroll.ts";
 import { HttpError } from "./errors.ts";
+import { GhostFiller } from "./ghosts/fill.ts";
 import { HudHub } from "./hub.ts";
 import { Matches } from "./matches.ts";
 import type { Chain } from "./near.ts";
@@ -32,7 +33,10 @@ export interface RelayDeps {
   replay: ReplayMeta;
   /** NEAR_NETWORK=testnet: mounts POST /dev/topup. */
   testnet: boolean;
-  /** NEAR_NETWORK=testnet and ALLOW_GHOSTS=1 (config.ts): mounts POST /dev/ghosts/enroll. */
+  /**
+   * NEAR_NETWORK=testnet and ALLOW_GHOSTS=1 (config.ts): mounts POST /dev/ghosts/enroll and
+   * POST /dev/ghosts/fill, and /health says `test_players: true`.
+   */
   allowGhosts: boolean;
   verifyAttestation?: VerifyAttestation;
   /** Whether the referee is answering (referee.ts GuardedReferee); /health reports it. */
@@ -105,10 +109,12 @@ export function createRelay(d: RelayDeps) {
   });
   app.notFound((c) => c.json({ error: "not found" }, 404));
   // The relay is up; `referee` says whether the referee behind it is answering, and which one.
+  // `test_players` tells the app whether to offer "Add a test player" (POST /dev/ghosts/fill).
   app.get("/health", (c) => {
     const r = d.refereeHealth?.();
     return c.json({
       ok: true,
+      test_players: d.allowGhosts,
       ...(r
         ? { referee: { kind: r.kind, status: r.status, last_ok_ms: r.lastOkMs, last_error: r.lastError } }
         : {}),
@@ -138,7 +144,17 @@ export function createRelay(d: RelayDeps) {
   hudRoutes(app, { store: d.store, hub, upgradeWebSocket });
   replayRoutes(app, { store: d.store, chain: d.chain, meta: d.replay });
   if (d.testnet) topupRoutes(app, { store: d.store, chain: d.chain });
-  if (d.allowGhosts) ghostRoutes(app, { enrolment });
+  if (d.allowGhosts) {
+    const filler = new GhostFiller({
+      store: d.store,
+      chain: d.chain,
+      enrolment,
+      log: d.log,
+      token: d.token,
+      ...(d.now ? { now: d.now } : {}),
+    });
+    ghostRoutes(app, { store: d.store, enrolment, filler });
+  }
 
   return { app, websocket, matches, enrolment, hub };
 }

@@ -228,6 +228,119 @@ describe("the ghost door", () => {
   });
 });
 
+describe("test players", () => {
+  /** A lobby of `seats` hosted by ana, with ana and bo in it. */
+  async function twoPhones(env: Env, seats = 3, extra: Record<string, unknown> = {}) {
+    const [a, b] = [player(env, "ana"), player(env, "bo")];
+    const r = await req(
+      env,
+      "POST",
+      "/matches",
+      { ...MATCH, max_players: seats, start_by_ms: Date.now() + 600_000, ...extra },
+      a,
+    );
+    expect(r.status).toBe(200);
+    const id = String(r.json["match_id"]);
+    for (const p of [a, b]) env.chain.join(id, p.account);
+    return { id, a, b };
+  }
+  const fill = (env: Env, id: string, as: Player) =>
+    req(env, "POST", "/dev/ghosts/fill", { match_id: id }, as);
+
+  test("the fill route does not exist unless ghosts are allowed", async () => {
+    const env = setup({ allowGhosts: false });
+    const l = await twoPhones(env);
+    expect((await fill(env, l.id, l.a)).status).toBe(404);
+    expect(env.chain.accounts.size).toBe(0);
+  });
+
+  test("only the host can add a test player", async () => {
+    const env = setup({ allowGhosts: true });
+    const l = await twoPhones(env);
+    const r = await fill(env, l.id, l.b);
+    expect(r.status).toBe(403);
+    expect(r.json["error"]).toBe("only the host can add a test player");
+    expect((await fill(env, l.id, l.a)).status).toBe(200);
+  });
+
+  test("a full, started or invite-only lobby gets no test player", async () => {
+    const refusal = async (env: Env, l: { id: string; a: Player }) => {
+      const r = await fill(env, l.id, l.a);
+      expect(r.status).toBe(409);
+      expect(env.chain.accounts.size).toBe(0);
+      return r.json["error"];
+    };
+    const full = setup({ allowGhosts: true });
+    expect(await refusal(full, await lobby(full))).toBe("the match is full");
+    const run = setup({ allowGhosts: true });
+    expect(await refusal(run, await started(run))).toBe("match is running");
+    const inv = setup({ allowGhosts: true });
+    expect(await refusal(inv, await twoPhones(inv, 3, { invites: [`ana.${PARENT}`, `bo.${PARENT}`] }))).toBe(
+      "a test player cannot join an invite-only match",
+    );
+  });
+
+  test("a fill enrols one ghost, tops it up by the stake, joins it, and the match can start", async () => {
+    const env = setup({ allowGhosts: true });
+    const l = await twoPhones(env);
+    const r = await fill(env, l.id, l.a);
+    expect(r.status).toBe(200);
+    const ghost = String(r.json["account_id"]);
+    expect(ghost).toMatch(new RegExp(`^ghost-[a-z0-9]{8}\\.${PARENT.replace(".", "\\.")}$`));
+    expect(env.store.device(ghost)?.kind).toBe("ghost");
+    expect(env.chain.topUps).toEqual([{ accountId: ghost, amount: BigInt(MATCH.stake) }]);
+    const chain = await env.chain.getMatch(l.id);
+    expect(chain?.players.map((p) => p.account_id)).toContain(ghost);
+    expect(await env.chain.getBalance(ghost)).toBe(0n);
+    const s = await req(env, "POST", `/matches/${l.id}/start`, {}, l.a);
+    expect(s.status).toBe(200);
+    expect(s.json["players"]).toContain(ghost);
+  });
+
+  test("a double tap seats one test player; a later call seats another", async () => {
+    const env = setup({ allowGhosts: true });
+    const l = await twoPhones(env, 4);
+    let entered = false;
+    let release = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const create = env.chain.createPlayerAccount.bind(env.chain);
+    env.chain.createPlayerAccount = async (id, pk) => {
+      entered = true;
+      await gate;
+      return create(id, pk);
+    };
+    const first = fill(env, l.id, l.a);
+    await until(() => entered, "the first fill to be under way");
+    const second = await fill(env, l.id, l.a);
+    expect(second.status).toBe(409);
+    expect(second.json["error"]).toBe("a test player is already joining");
+    release();
+    expect((await first).status).toBe(200);
+    expect((await fill(env, l.id, l.a)).status).toBe(200);
+    expect((await env.chain.getMatch(l.id))?.players.length).toBe(4);
+    expect((await fill(env, l.id, l.a)).json["error"]).toBe("the match is full");
+  });
+
+  test("a player who joins just before the lock still reaches the referee before Start", async () => {
+    const env = setup({ allowGhosts: true, refereeRetryMs: [] });
+    const l = await twoPhones(env, 4);
+    env.chain.join(l.id, player(env, "cy").account);
+    const late = `ghost-late.${PARENT}`;
+    seedDevice(env.store, late, ed25519.getPublicKey(ed25519.utils.randomSecretKey()), "ghost", false);
+    const lock = env.chain.lockLobby.bind(env.chain);
+    env.chain.lockLobby = async (id) => {
+      env.chain.join(id, late);
+      return lock(id);
+    };
+    const s = await req(env, "POST", `/matches/${l.id}/start`, {}, l.a);
+    expect(s.status).toBe(200);
+    expect(s.json["players"]).toContain(late);
+    expect(env.store.device(late)?.receipt).not.toBeNull();
+  });
+});
+
 // ── Signed requests ────────────────────────────────────────────────────────────────
 
 describe("signed requests", () => {
@@ -416,6 +529,11 @@ describe("health", () => {
     await referee.pubkeys();
     const after = await req(env, "GET", "/health");
     expect((after.json["referee"] as Record<string, unknown>)["status"]).toBe("up");
+  });
+
+  test("says test players are on offer only when the ghost door is open", async () => {
+    expect((await req(setup(), "GET", "/health")).json["test_players"]).toBe(false);
+    expect((await req(setup({ allowGhosts: true }), "GET", "/health")).json["test_players"]).toBe(true);
   });
 });
 

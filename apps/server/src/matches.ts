@@ -166,12 +166,9 @@ export class Matches {
       if (chain.players.length < chain.min_players) {
         throw new HttpError(409, `need ${chain.min_players} players, have ${chain.players.length}`);
       }
-      const missing = chain.players.filter((p) => !this.d.store.device(p.account_id));
-      if (missing.length)
-        throw new HttpError(409, `not enrolled here: ${missing.map((p) => p.account_id).join(", ")}`);
       // Before the lock: if the referee cannot take a device now, the lobby stays open and the
       // host can simply press Start again.
-      await this.d.ensureWithReferee(chain.players.map((p) => p.account_id));
+      await this.ready(chain.players.map((p) => p.account_id));
       await this.d.chain.lockLobby(matchId);
       chain = await this.d.chain.getMatch(matchId);
       if (!chain) throw new HttpError(404, "match is not on chain");
@@ -180,6 +177,10 @@ export class Matches {
       throw new HttpError(409, "the lobby lock ran out; players may leave or abort");
     }
     const players = chain.players.map((p) => p.account_id);
+    // Again on the list the lock froze: a player (or a test player, ghosts/fill.ts) can join
+    // between the check above and the lock, and a reused lock skipped that check. For players
+    // already registered this reads only the store.
+    await this.ready(players);
 
     const started = await this.d.referee.start({
       matchId: idBytes(matchId),
@@ -227,6 +228,13 @@ export class Matches {
     this.d.log.info({ matchId, players: players.length }, "match started");
     const row = this.d.store.match(matchId);
     return { players, keys, startMs: row?.start_ms ?? 0, endMs: row?.end_ms ?? 0 };
+  }
+
+  /** Every player is enrolled here and its device is with the referee, or this throws. */
+  private async ready(accounts: string[]) {
+    const missing = accounts.filter((a) => !this.d.store.device(a));
+    if (missing.length) throw new HttpError(409, `not enrolled here: ${missing.join(", ")}`);
+    await this.d.ensureWithReferee(accounts);
   }
 
   // ── Batches ──────────────────────────────────────────────────────────────────────
