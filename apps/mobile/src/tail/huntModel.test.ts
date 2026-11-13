@@ -85,6 +85,26 @@ describe("hunt model", () => {
     ]);
   });
 
+  test("hint prices come from the signed HUD's board, with the Handler's reason", () => {
+    const hud = hudView(
+      hudOf({ head: 5_400_000n, hintPrices: [200_000n, 500_000n, 200_000n], hintRecent: 4 }),
+    );
+    const m = huntModel(snap({ hud }), ctx, NOW);
+    expect(m.hints.map((h) => [h.name, h.price])).toEqual([
+      ["Near", "$0.20"],
+      ["Bearing", "$0.50"],
+      ["Warmer", "$0.20"],
+    ]);
+    expect(m.hints[1]?.reason).toBe("Intel's dear: 4 hints bought in the last 5 minutes put Bearing at 2x.");
+    // Before the first HUD: the base price, and no reason the phone cannot know.
+    const first = huntModel(snap({ hud: null }), ctx, NOW).hints;
+    expect(first.map((h) => [h.price, h.reason])).toEqual([
+      ["$0.10", null],
+      ["$0.25", null],
+      ["$0.10", null],
+    ]);
+  });
+
   test("before the first HUD it shows the stake as head and says it is waiting", () => {
     const m = huntModel(snap({ hud: null }), ctx, NOW);
     expect([m.head, m.waiting, m.target]).toEqual(["$5.00", true, "maya.tail.testnet"]);

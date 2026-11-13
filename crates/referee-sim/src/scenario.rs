@@ -283,6 +283,10 @@ pub struct HudCheck {
     pub tags: Option<u8>,
     /// `reject_code` of the player's latest refused authentic batch, 0 for none.
     pub rejected: Option<u8>,
+    /// Hints bought in the last `PRICE_WINDOW_MS`, and the price of each kind (NEAR, BEARING,
+    /// TREND) at that demand.
+    pub hint_recent: Option<u32>,
+    pub hint_prices: Option<[u64; 3]>,
 }
 
 #[derive(Deserialize, Clone, Debug)]

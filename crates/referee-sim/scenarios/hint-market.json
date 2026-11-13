@@ -1,0 +1,45 @@
+{
+  "name": "hint-market",
+  "about": "The Handler prices intel by demand. Five hunters each buy a hint within a minute, and each pays a quarter more than the one before: every hint bought in the last five minutes adds 25 % to the base price. Ana's second hint, at 90 s, costs 2.25x. Then nobody asks; as the burst ages out of the window the board falls back step by step, and Ben's bearing at 400 s costs the base price again.",
+  "duration_s": 600,
+  "ring": ["ana", "ben", "cal", "dee", "eli"],
+  "players": [
+    { "name": "ana", "path": [[0, 0, 0]] },
+    { "name": "ben", "path": [[0, 60, 0]] },
+    { "name": "cal", "path": [[0, 120, 0]] },
+    { "name": "dee", "path": [[0, 60, 60]] },
+    { "name": "eli", "path": [[0, 0, 60]] }
+  ],
+  "events": [
+    { "do": "hint", "t": 20, "player": "ana", "kind": "near" },
+    { "do": "hint", "t": 30, "player": "ben", "kind": "near" },
+    { "do": "hint", "t": 40, "player": "cal", "kind": "bearing" },
+    { "do": "hint", "t": 50, "player": "dee", "kind": "near" },
+    { "do": "hint", "t": 60, "player": "eli", "kind": "near" },
+    { "do": "hint", "t": 90, "player": "ana", "kind": "bearing" },
+    { "do": "hint", "t": 400, "player": "ben", "kind": "bearing" }
+  ],
+  "expect": {
+    "verdicts": [
+      "Start",
+      "Hint ana 20000",
+      "Hint ben 25000",
+      "Hint cal 75000",
+      "Hint dee 35000",
+      "Hint eli 40000",
+      "Hint ana 112500",
+      "Hint ben 50000",
+      "End ben cal dee eli ana ben cal"
+    ],
+    "huds": [
+      { "t": 10, "player": "eli", "hint_recent": 0, "hint_prices": [20000, 50000, 20000] },
+      { "t": 60, "player": "ana", "hint_recent": 5, "hint_prices": [45000, 112500, 45000] },
+      { "t": 90, "player": "ben", "hint_recent": 6, "hint_prices": [50000, 125000, 50000] },
+      { "t": 320, "player": "cal", "hint_recent": 5, "hint_prices": [45000, 112500, 45000] },
+      { "t": 350, "player": "dee", "hint_recent": 2, "hint_prices": [30000, 75000, 30000] },
+      { "t": 390, "player": "eli", "hint_recent": 0, "hint_prices": [20000, 50000, 20000] },
+      { "t": 400, "player": "ana", "hint_recent": 1, "hint_prices": [25000, 62500, 25000] }
+    ],
+    "heads": { "ana": 907500, "ben": 1057500, "cal": 1000000, "dee": 1040000, "eli": 995000 }
+  }
+}

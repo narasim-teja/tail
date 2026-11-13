@@ -135,11 +135,12 @@ export function decodeBatchEnvelope(bytes: Bytes): BatchEnvelope {
 export type Verdict =
   | { kind: "Start"; playersHash: Bytes; ringCommit: Bytes; startMs: bigint; endMs: bigint }
   /**
-   * `amount` leaves the asker's head for the match's hint pool. `hint` is the HintKind, so the
-   * contract can check `amount == hintPrice(stake, hint)`. The verdict is public during play and
-   * does not name whom the hint was about; `End.hintTargets` reveals that.
+   * `amount` leaves the asker's head for the match's hint pool. `hint` is the HintKind and `tMs`
+   * the referee clock when it was charged (at most `endMs`), so the contract can check
+   * `amount == hintPrice(stake, hint, recentHints(earlier hints' tMs, tMs))`. The verdict is
+   * public during play and does not name whom the hint was about; `End.hintTargets` reveals that.
    */
-  | { kind: "Hint"; from: number; amount: bigint; hintId: number; hint: number }
+  | { kind: "Hint"; from: number; amount: bigint; hintId: number; hint: number; tMs: bigint }
   /** `credit`: hints paid onto `target` and not yet credited, moved from the pool onto its head first. */
   | { kind: "Tag"; hunter: number; target: number; credit: bigint }
   | { kind: "Forfeit"; player: number; to: number; credit: bigint }
@@ -152,7 +153,7 @@ export function writeVerdict(w: Writer, v: Verdict): Writer {
     case "Start":
       return w.u8(0).fixed(v.playersHash, 32).fixed(v.ringCommit, 32).u64(v.startMs).u64(v.endMs);
     case "Hint":
-      return w.u8(1).u16(v.from).u128(v.amount).u32(v.hintId).u8(v.hint);
+      return w.u8(1).u16(v.from).u128(v.amount).u32(v.hintId).u8(v.hint).u64(v.tMs);
     case "Tag":
       return w.u8(2).u16(v.hunter).u16(v.target).u128(v.credit);
     case "Forfeit":
@@ -181,7 +182,7 @@ export function readVerdict(r: Reader): Verdict {
         endMs: r.u64(),
       };
     case 1:
-      return { kind: "Hint", from: r.u16(), amount: r.u128(), hintId: r.u32(), hint: r.u8() };
+      return { kind: "Hint", from: r.u16(), amount: r.u128(), hintId: r.u32(), hint: r.u8(), tMs: r.u64() };
     case 2:
       return { kind: "Tag", hunter: r.u16(), target: r.u16(), credit: r.u128() };
     case 3:
@@ -488,6 +489,10 @@ export interface Hud {
   root: Bytes; // 32
   /** This player's latest refused batch; `code` is a RejectCode. */
   rejected?: { seq: number; code: number };
+  /** What each hint kind costs right now, indexed by HintKind: hintPrice(stake, kind, hintRecent). */
+  hintPrices: [bigint, bigint, bigint];
+  /** Hints anyone bought in the last PRICE_WINDOW_MS, as of this tick. */
+  hintRecent: number;
 }
 
 const writeHud = (w: Writer, h: Hud) =>
@@ -510,7 +515,11 @@ const writeHud = (w: Writer, h: Hud) =>
     .u8(h.tags)
     .u64(h.logSize)
     .fixed(h.root, 32)
-    .option(h.rejected, (w2, x) => w2.u32(x.seq).u8(x.code));
+    .option(h.rejected, (w2, x) => w2.u32(x.seq).u8(x.code))
+    .u128(h.hintPrices[0])
+    .u128(h.hintPrices[1])
+    .u128(h.hintPrices[2])
+    .u32(h.hintRecent);
 function readHud(r: Reader): Hud {
   const base = {
     matchId: r.fixed(16),
@@ -529,6 +538,10 @@ function readHud(r: Reader): Hud {
   const chain = { nextSeq: r.u32(), chainTip: r.fixed(32), darkMs: r.u32(), tags: r.u8() };
   const log = { logSize: r.u64(), root: r.fixed(32) };
   const rejected = r.option((r2) => ({ seq: r2.u32(), code: r2.u8() }));
+  const market = {
+    hintPrices: [r.u128(), r.u128(), r.u128()] as [bigint, bigint, bigint],
+    hintRecent: r.u32(),
+  };
   return {
     ...base,
     ...(leak ? { leak } : {}),
@@ -537,6 +550,7 @@ function readHud(r: Reader): Hud {
     ...chain,
     ...log,
     ...(rejected ? { rejected } : {}),
+    ...market,
   };
 }
 export const encodeHud = (h: Hud) => writeHud(new Writer(), h).bytes();

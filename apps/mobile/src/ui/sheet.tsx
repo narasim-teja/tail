@@ -1,6 +1,7 @@
 // The hint sheet: rises from the bottom over the hunt, never a dialog. Three hints (icon, name,
-// what it tells you, price), an optional question for the Handler, Send. The price leaves your
-// head and lands on your target's.
+// what it tells you, price), the Handler's line on why intel costs what it does right now, an
+// optional question, Send. Prices come from the referee's signed HUD and move with demand. The
+// price leaves your head for the match's hint pool.
 
 import { HINT_TEXT_MAX, HintKind } from "@tail/protocol";
 import { useEffect, useRef, useState } from "react";
@@ -89,7 +90,8 @@ export function HintSheet({
             <Icon name="handler" size={24} tint={color.ink} />
             <Title>Ask the Handler</Title>
           </View>
-          <Caption muted>Paid from your head to your target's.</Caption>
+          {chosen?.reason ? <Body>{chosen.reason}</Body> : null}
+          <Caption muted>Paid from your head into the hint pool. Prices rise as hunters buy.</Caption>
           <View accessibilityRole="radiogroup" style={styles.options}>
             {hints.map((h) => {
               const on = h.kind === kind;

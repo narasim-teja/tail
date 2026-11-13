@@ -1,7 +1,49 @@
 // What Results says about a receipt check (proximity/receipts.ts), in TAIL's words.
 
+import type { Settlement } from "../near/chain";
 import type { ReceiptResult } from "../proximity/receipts";
 import { rejectReason } from "./hud";
+
+/** The money line on Results: what to call it, the amount, and a plain refund note if any. */
+export interface FinalMoney {
+  label: string;
+  units: bigint | null;
+  refund: string | null;
+}
+
+/**
+ * Before the match settles, the head the contract holds (or the last HUD's). Once it has, heads
+ * are 0 and `paid` is what this player got: the head plus any hint credit on a payout, the stake
+ * on a refund. A refund says why, in plain words.
+ */
+export function finalMoney(f: {
+  settledAs: Settlement | null;
+  violation: string | null;
+  paid: bigint | null;
+  head: bigint | null;
+}): FinalMoney {
+  switch (f.settledAs) {
+    case null:
+      return { label: "Final head", units: f.head, refund: null };
+    case "payout":
+      return { label: "Final head", units: f.paid, refund: null };
+    case "refunded_rule_violation": {
+      // "event 3: a Tag did not follow the ring" → "a Tag did not follow the ring".
+      const rule = f.violation?.replace(/^event \d+: /, "");
+      return {
+        label: "Refunded",
+        units: f.paid,
+        refund: `Refunded: the referee broke a rule${rule ? ` (${rule})` : ""}, so every player got their stake back.`,
+      };
+    }
+    case "refunded_abort":
+      return {
+        label: "Refunded",
+        units: f.paid,
+        refund: "Refunded: the match was called off, so every player got their stake back.",
+      };
+  }
+}
 
 /** "3, 4 and 9" style lists for the results screen. */
 export function seqList(seqs: readonly number[]): string {

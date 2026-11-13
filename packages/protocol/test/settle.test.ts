@@ -9,7 +9,7 @@ import {
 
 // Ring 0 → 1 → 2 → 0. Mirrors the unit tests of crates/tail-protocol/src/settle.rs.
 const RING = [0, 1, 2];
-const hint = (from: number, amount: bigint): PlayEvent => ({ kind: "Hint", from, amount });
+const hint = (from: number, amount: bigint): PlayEvent => ({ kind: "Hint", from, amount, tMs: 0n });
 const tag = (hunter: number, target: number, credit: bigint): PlayEvent => ({
   kind: "Tag",
   hunter,

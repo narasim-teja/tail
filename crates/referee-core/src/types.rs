@@ -274,6 +274,9 @@ pub struct HintIssued {
     pub from: u16,
     pub to: u16,
     pub amount: u128,
+    /// Hints charged in the `PRICE_WINDOW_MS` before this one: the demand that set `amount`,
+    /// for the Handler's line.
+    pub recent: u32,
     pub fact: HintFact,
     pub nonce: u32,
     /// The asker's optional question (≤ `HINT_TEXT_MAX` chars), for the voice prompt only.

@@ -1,5 +1,7 @@
 {
   "name": "hint-limit",
+  "about": "Twelve players ask every 30 s until the match has charged MAX_HINTS. Demand pricing would empty every head long before 240 hints at a real stake, so the stake here is 49: every hint rounds down to 0 and only the limit can stop them.",
+  "stake": 49,
   "duration_s": 900,
   "players": [
     {

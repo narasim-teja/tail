@@ -106,11 +106,22 @@ fn hints_pay_into_the_pool_and_respect_cooldown_kind_text_and_head() {
         .collect();
     let issued: Vec<u32> = r.hints.iter().map(|(_, h)| h.hint_id).collect();
     assert_eq!(receipts, issued);
-    assert_eq!(issued.len(), 23);
+    assert_eq!(issued.len(), 11);
+}
+
+/// The Handler as a market maker: prices climb as hunters buy and cool as the hints age out of
+/// the five-minute window. The simulator also checks every HUD's price board against the price
+/// the contract would charge at that tick.
+#[test]
+fn hint_prices_climb_with_demand_and_cool_off() {
+    let r = passes("hint-market");
+    let recent: Vec<u32> = r.hints.iter().map(|(_, h)| h.recent).collect();
+    assert_eq!(recent, vec![0, 1, 2, 3, 4, 5, 0]);
 }
 
 /// Twelve players asking every 30 s reach `MAX_HINTS` in the 20th round; the 21st round is refused
-/// for the limit (not for funds or cooldown), and End reveals every one of the 240 targets.
+/// for the limit (not for funds or cooldown), and End reveals every one of the 240 targets. The
+/// stake is small enough that every hint costs 0, so demand pricing cannot empty a head first.
 #[test]
 fn hints_stop_at_the_limit_the_contract_paid_storage_for() {
     let r = passes("hint-limit");

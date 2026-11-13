@@ -1,5 +1,6 @@
 {
   "name": "hint-economics",
+  "about": "Alice asks three times (a cooldown, an unknown kind and an over-long question are refused and cost nothing), then Bob asks for a bearing every 30 s. Each hint bought in the last five minutes adds a quarter to every price, so Bob pays 1.75x at first and 3x at the peak, his head runs dry at 420 s, and the board cools back to the base price by 720 s as the hints age out.",
   "duration_s": 900,
   "ring": ["alice", "bob", "carol"],
   "players": [
@@ -68,29 +69,17 @@
     "verdicts": [
       "Start",
       "Hint alice 20000",
-      "Hint alice 50000",
-      "Hint alice 20000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "Hint bob 50000",
-      "End bob bob bob carol carol carol carol carol carol carol carol carol carol carol carol carol carol carol carol carol carol carol carol"
+      "Hint alice 62500",
+      "Hint alice 30000",
+      "Hint bob 87500",
+      "Hint bob 100000",
+      "Hint bob 112500",
+      "Hint bob 125000",
+      "Hint bob 137500",
+      "Hint bob 150000",
+      "Hint bob 150000",
+      "Hint bob 137500",
+      "End bob bob bob carol carol carol carol carol carol carol carol"
     ],
     "refusals": [
       {
@@ -114,16 +103,24 @@
       {
         "player": "bob",
         "reason": "InsufficientHead",
-        "from": 750,
+        "from": 360,
         "to": 780
       }
     ],
     "huds": [
       {
+        "t": 10,
+        "player": "alice",
+        "hint_recent": 0,
+        "hint_prices": [20000, 50000, 20000]
+      },
+      {
         "t": 20,
         "player": "alice",
         "hint": [0, 1],
-        "head": 980000
+        "head": 980000,
+        "hint_recent": 1,
+        "hint_prices": [25000, 62500, 25000]
       },
       {
         "t": 20,
@@ -139,24 +136,50 @@
         "t": 50,
         "player": "alice",
         "hint": [1, 1],
-        "head": 930000
+        "head": 917500
       },
       {
         "t": 120,
         "player": "alice",
         "hint": [2, 1],
-        "head": 910000
+        "head": 887500
       },
       {
         "t": 150,
         "player": "bob",
         "hint": [1, 3],
-        "head": 950000
+        "head": 912500,
+        "hint_recent": 4
       },
       {
         "t": 150,
         "player": "carol",
-        "head": 1000000
+        "head": 1000000,
+        "hint_recent": 4,
+        "hint_prices": [40000, 100000, 40000]
+      },
+      {
+        "t": 300,
+        "player": "bob",
+        "hint_recent": 9,
+        "hint_prices": [65000, 162500, 65000]
+      },
+      {
+        "t": 320,
+        "player": "bob",
+        "hint_recent": 8
+      },
+      {
+        "t": 540,
+        "player": "carol",
+        "hint_recent": 4,
+        "hint_prices": [40000, 100000, 40000]
+      },
+      {
+        "t": 720,
+        "player": "alice",
+        "hint_recent": 0,
+        "hint_prices": [20000, 50000, 20000]
       },
       {
         "t": 780,
@@ -165,8 +188,8 @@
       }
     ],
     "heads": {
-      "alice": 910000,
-      "bob": 90000,
+      "alice": 887500,
+      "bob": 112500,
       "carol": 2000000
     }
   }

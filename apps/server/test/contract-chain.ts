@@ -3,7 +3,8 @@
 // consistency proof for every Checkpoint/End checked with verifyConsistency against the root it
 // last anchored), each verdict must carry the pinned referee's signature, and it moves heads the
 // way the contract does: Start against the locked player list and block time, a Hint at exactly
-// its kind's price into the hint pool, a Tag or Forfeit crediting its loser from the pool before
+// its price at that moment's demand (dated inside the match, after the hints before it) into the
+// hint pool, a Tag or Forfeit crediting its loser from the pool before
 // the head moves, Checkpoints spaced in match time, and End only with the VRF reveal that opens
 // the Start's ring commit. End then replays the match (replaySettlement): if it holds, survivors
 // get their hint credit and the heads are paid; if not, every stake is refunded and the broken
@@ -17,12 +18,14 @@ import {
   describeViolation,
   equal,
   fromHex,
+  HINT_BPS,
   type HintKind,
   hintPrice,
   MAX_HINTS,
   type PlayEvent,
   playEvent,
   playersHash,
+  recentHints,
   replaySettlement,
   ringCommit,
   ringOrder,
@@ -237,8 +240,20 @@ function applyOne(m: ChainMatch, d: Draft, v: SignedVerdict, now: number, pins: 
       live(d, b.from);
       require(d.events.filter((e) => e.kind === "Hint").length <
         MAX_HINTS, "the match already charged MAX_HINTS hints");
+      // Priced by demand (pricing.ts): the hints this match charged in the window before t_ms.
+      require(b.hint in HINT_BPS, "unknown hint kind");
+      const earlier = d.events.flatMap((e) => (e.kind === "Hint" ? [e.tMs] : []));
+      require(d.startMs !== null &&
+        d.endMs !== null &&
+        b.tMs >= BigInt(d.startMs) &&
+        b.tMs <= BigInt(d.endMs), "hint t_ms is outside the match");
+      require(b.tMs >= (earlier.at(-1) ?? 0n), "hint t_ms is before an earlier hint");
       require(b.amount ===
-        hintPrice(BigInt(m.stake), b.hint as HintKind), "hint amount is not the price of its kind");
+        hintPrice(
+          BigInt(m.stake),
+          b.hint as HintKind,
+          recentHints(earlier, b.tMs),
+        ), "hint amount is not its price at that demand");
       require((d.heads[b.from] as bigint) >= b.amount, "hint costs more than the payer's head");
       d.heads[b.from] = (d.heads[b.from] as bigint) - b.amount;
       d.pool += b.amount;

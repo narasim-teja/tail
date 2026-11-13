@@ -941,6 +941,62 @@ fn the_hint_cooldown_runs_on_the_referee_clock_whatever_the_device_says() {
     assert_eq!(out.hints.len(), 1);
 }
 
+#[test]
+fn hint_prices_climb_with_demand_and_cool_off_after_the_window() {
+    let (mut st, mut ph) = three();
+    let near = |nonce| Action::Hint {
+        hint: tail_protocol::hint_kind::NEAR,
+        nonce,
+        text: None,
+    };
+    let hints_of = |out: &TickOutput| -> Vec<(u128, u64)> {
+        out.verdicts
+            .iter()
+            .filter_map(|v| match v.body {
+                Verdict::Hint { amount, t_ms, .. } => Some((amount, t_ms)),
+                _ => None,
+            })
+            .collect()
+    };
+    // Every phone reports each tick so nobody goes dark; `ask` adds a NEAR hint to each batch.
+    let step = |ph: &mut Vec<Phone>, device: u64, ask: bool| -> Vec<BatchEnvelope> {
+        ph.iter_mut()
+            .zip([0, 50, 100])
+            .map(|(p, north_m)| {
+                let actions = if ask { vec![near(1)] } else { Vec::new() };
+                p.next(device, vec![fix(device - 1_000, north_m)], actions)
+            })
+            .collect()
+    };
+    // Tick 1: all three ask at once. Each pays for the ones charged before it in the tick.
+    let now = START + 10_000;
+    let out = tick(st, input(1, now, step(&mut ph, now, true))).unwrap();
+    assert_eq!(hints_of(&out), vec![(20_000, now), (25_000, now), (30_000, now)]);
+    let hud = &out.huds[0].1;
+    assert_eq!((hud.hint_recent, hud.hint_prices), (3, [35_000, 87_500, 35_000]));
+    st = out.state;
+    for k in 2..=59u32 {
+        let now = START + u64::from(k) * 10_000;
+        let out = tick(st, input(k, now, step(&mut ph, now, false))).unwrap();
+        let hud = &out.huds[0].1;
+        // The hints at +10 s stay in the window up to +310 s exclusive.
+        let want = if now < START + 310_000 { 3 } else { 0 };
+        assert_eq!(hud.hint_recent, want, "at {} s", (now - START) / 1000);
+        if want == 0 {
+            assert_eq!(hud.hint_prices, [20_000, 50_000, 20_000]);
+        }
+        st = out.state;
+    }
+    // The last tick runs past end_ms: the hint is charged at end_ms, inside the match.
+    let device = START + 599_000;
+    let out = tick(st, input(60, START + 605_000, step(&mut ph, device, true))).unwrap();
+    let end_ms = START + 600_000;
+    assert_eq!(
+        hints_of(&out),
+        vec![(20_000, end_ms), (25_000, end_ms), (30_000, end_ms)]
+    );
+}
+
 // ── protocol v2: the log, the verdict chain, proofs, HUD v2 ──────────────────────
 
 #[test]

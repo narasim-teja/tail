@@ -119,6 +119,7 @@ pub fn run(input: Value) -> Result<Value, String> {
                 player: h.from,
                 hint: h.fact.hint,
                 value: h.fact.value,
+                recent: h.recent,
                 question: h.text,
             };
             let sealed = vault::seal(&st.box_sk, Purpose::Hint, &match_id, &[], &to_borsh(&blob));

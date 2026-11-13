@@ -22,6 +22,9 @@ export const hudOf = (o: Partial<Hud> = {}): Hud => ({
   tags: 0,
   logSize: 0n,
   root: new Uint8Array(32),
+  // A quiet market at a 5.00 stake: the base prices.
+  hintPrices: [100_000n, 250_000n, 100_000n],
+  hintRecent: 0,
   ...o,
 });
 

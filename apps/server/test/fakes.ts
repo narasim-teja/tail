@@ -263,6 +263,8 @@ export class FakeChain implements Chain {
 /** The fake referee's own seal contexts: what it seals to itself, opaque to the relay. */
 const FAKE_LOG = "fake-referee/log";
 const FAKE_HINT = "fake-referee/hint";
+/** What the fake referee charges for any hint, and shows on every HUD's price board. */
+const FAKE_HINT_PRICE = 100n;
 
 interface FakeMatch {
   matchId: Uint8Array;
@@ -516,7 +518,14 @@ export class FakeReferee implements Referee {
           verdicts.push(
             this.verdict(
               m,
-              { kind: "Hint", from: batch.player, amount: 100n, hintId: m.nextHintId, hint: a.hint },
+              {
+                kind: "Hint",
+                from: batch.player,
+                amount: FAKE_HINT_PRICE,
+                hintId: m.nextHintId,
+                hint: a.hint,
+                tMs: BigInt(nowMs),
+              },
               log,
             ),
           );
@@ -526,7 +535,18 @@ export class FakeReferee implements Referee {
       if (tickNo === this.hintAtTick) {
         m.hintTargets.push(1);
         verdicts.push(
-          this.verdict(m, { kind: "Hint", from: 0, amount: 100n, hintId: m.nextHintId, hint: 0 }, log),
+          this.verdict(
+            m,
+            {
+              kind: "Hint",
+              from: 0,
+              amount: FAKE_HINT_PRICE,
+              hintId: m.nextHintId,
+              hint: 0,
+              tMs: BigInt(nowMs),
+            },
+            log,
+          ),
         );
         hints.push({ player: 0, blob: this.hintBlob(m, 0) });
       }
@@ -595,6 +615,8 @@ export class FakeReferee implements Referee {
       tags: 0,
       logSize: BigInt(m.leaves.length),
       root,
+      hintPrices: [FAKE_HINT_PRICE, FAKE_HINT_PRICE, FAKE_HINT_PRICE],
+      hintRecent: 0,
     };
   }
   async voice(i: VoiceInput): Promise<VoiceResult> {

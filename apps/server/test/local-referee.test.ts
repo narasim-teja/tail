@@ -299,18 +299,23 @@ describe("a match judged by the real (local) referee", () => {
     expect(kinds.filter((x) => x === "Checkpoint").length).toBeGreaterThanOrEqual(1);
     const hintV = vs.find((v) => v.body.kind === "Hint")?.body;
     // The Hint names only its asker: whom it was about comes out at End.
-    expect(hintV).toEqual({
+    // The first hint of the match: nothing bought before it, so the base price. Dated by the
+    // referee clock inside the match, where the contract checks it.
+    const startV = vs[0]?.body;
+    expect(hintV).toMatchObject({
       kind: "Hint",
       from: index(hunter),
-      amount: hintPrice(STAKE, 0),
+      amount: hintPrice(STAKE, 0, 0),
       hintId: 0,
       hint: 0,
     });
+    if (hintV?.kind !== "Hint" || startV?.kind !== "Start") throw new Error("no Hint or Start");
+    expect(hintV.tMs >= startV.startMs && hintV.tMs <= startV.endMs).toBe(true);
     expect(vs.find((v) => v.body.kind === "Tag")?.body).toEqual({
       kind: "Tag",
       hunter: index(hunter),
       target: index(target),
-      credit: hintPrice(STAKE, 0),
+      credit: hintPrice(STAKE, 0, 0),
     });
     const endBody = vs.at(-1)?.body;
     expect(endBody?.kind === "End" && endBody.hintTargets).toEqual([index(target)]);

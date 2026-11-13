@@ -4,14 +4,17 @@
 //
 // During play the contract applies each Hint, Tag and Forfeit as it lands but cannot check it:
 // the ring is still secret, and a Hint does not say whom it was about. End reveals both (the VRF
-// signature and `hintTargets`), and this replays the match in verdict order against them.
+// signature and `hintTargets`), and this replays the match in verdict order against them. A
+// hint's price needs no replay: it depends only on public data (the stake and earlier hints'
+// times), so the contract checks it as each Hint lands (pricing.ts).
 
 import { buildRing, sortAccounts } from "./crypto.ts";
 import type { Verdict } from "./messages.ts";
 
 /** A Hint, Tag or Forfeit as the contract applied it, in verdict order. */
 export type PlayEvent =
-  | { kind: "Hint"; from: number; amount: bigint }
+  /** `tMs`: the verdict's, so later hints can be priced from it (pricing.ts). */
+  | { kind: "Hint"; from: number; amount: bigint; tMs: bigint }
   | { kind: "Tag"; hunter: number; target: number; credit: bigint }
   | { kind: "Forfeit"; player: number; to: number; credit: bigint };
 
@@ -49,7 +52,7 @@ export const describeViolation = (v: Violation) =>
 export function playEvent(v: Verdict): PlayEvent | null {
   switch (v.kind) {
     case "Hint":
-      return { kind: "Hint", from: v.from, amount: v.amount };
+      return { kind: "Hint", from: v.from, amount: v.amount, tMs: v.tMs };
     case "Tag":
       return { kind: "Tag", hunter: v.hunter, target: v.target, credit: v.credit };
     case "Forfeit":

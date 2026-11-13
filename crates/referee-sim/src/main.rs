@@ -41,7 +41,7 @@ fn bench(args: &[String]) -> Result<(), String> {
 fn print_trace(r: &referee_sim::Report) {
     for (t, p, h) in &r.huds {
         println!(
-            "{t:>5}s {:<8} lock {} heat {} head {:>9} status {} target {:<8} leak {} hint {:?}",
+            "{t:>5}s {:<8} lock {} heat {} head {:>9} status {} target {:<8} leak {} hint {:?} demand {} prices {:?}",
             r.name(*p),
             h.lock,
             h.heat,
@@ -49,7 +49,9 @@ fn print_trace(r: &referee_sim::Report) {
             h.status,
             h.target,
             h.leak.is_some(),
-            h.hint_fact.map(|f| (f.hint, f.value))
+            h.hint_fact.map(|f| (f.hint, f.value)),
+            h.hint_recent,
+            h.hint_prices
         );
     }
     for (t, tick, v) in &r.verdicts {

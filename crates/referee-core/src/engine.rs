@@ -25,11 +25,11 @@ use tail_protocol::beacon::{
 use tail_protocol::digest::{batch_client_data_hash, batch_hash, sha256, verdict_digest};
 use tail_protocol::{
     constants::{hint_kind, target_status},
-    hint_price, ring, Action, Batch, BatchEnvelope, CallId, Fix, GridCell, Hash, HintFact, Hud, LogEntry,
-    PlayerKeys, Salt, Token, Verdict, VerdictPayload, CHECKPOINT_MS, CLOCK_SKEW_MS, DARK_FORFEIT_MS,
-    DARK_LEAK_MS, EPOCH_MS, FIX_WINDOW_MS, GEO_SLACK_M, HINT_COOLDOWN_MS, HINT_NEAR_M, HINT_TEXT_MAX,
-    HINT_TREND_MS, LEAK_CELL_M, LOCK_EPOCHS, MAX_ACC_M, MAX_HINTS, MAX_SPEED_MPS, MIN_SAMPLES, RSSI_MIN_DBM,
-    TELEPORT_MPS, VEHICLE_FREEZE_MS, VEHICLE_HOLD_MS, WINDOW_EPOCHS,
+    hint_price, recent_hints, ring, Action, Batch, BatchEnvelope, CallId, Fix, GridCell, Hash, HintFact, Hud,
+    LogEntry, PlayerKeys, Salt, Token, Verdict, VerdictPayload, CHECKPOINT_MS, CLOCK_SKEW_MS,
+    DARK_FORFEIT_MS, DARK_LEAK_MS, EPOCH_MS, FIX_WINDOW_MS, GEO_SLACK_M, HINT_COOLDOWN_MS, HINT_NEAR_M,
+    HINT_TEXT_MAX, HINT_TREND_MS, LEAK_CELL_M, LOCK_EPOCHS, MAX_ACC_M, MAX_HINTS, MAX_SPEED_MPS, MIN_SAMPLES,
+    RSSI_MIN_DBM, TELEPORT_MPS, VEHICLE_FREEZE_MS, VEHICLE_HOLD_MS, WINDOW_EPOCHS,
 };
 
 /// What one call produces besides the state.
@@ -208,6 +208,7 @@ fn start_match(
         next_checkpoint_ms: start_ms + CHECKPOINT_MS,
         next_hint_id: 0,
         hint_targets: Vec::new(),
+        hint_times: Vec::new(),
         pending_receipts: Vec::new(),
         deferred: Vec::new(),
         last_tick: None,
@@ -1259,7 +1260,11 @@ impl State {
         out: &mut Out,
     ) -> Result<HintIssued, Refuse> {
         let t = self.live_target(p, t_ms)?;
-        let price = hint_price(self.cfg.stake, kind).ok_or(Refuse::UnknownHint)?;
+        // Charged on the referee clock, clamped like the epoch: the contract requires t_ms in
+        // [start_ms, end_ms], and the last tick may run a little past end_ms.
+        let charged_ms = now.min(self.end_ms);
+        let recent = recent_hints(&self.hint_times, charged_ms);
+        let price = hint_price(self.cfg.stake, kind, recent).ok_or(Refuse::UnknownHint)?;
         if self.hint_targets.len() >= MAX_HINTS {
             return Err(Refuse::HintLimit);
         }
@@ -1283,6 +1288,7 @@ impl State {
         self.players[p as usize].head -= price;
         self.players[t as usize].hint_credit += price;
         self.hint_targets.push(t);
+        self.hint_times.push(charged_ms);
         self.players[p as usize].last_hint_ms = Some(now);
         let hint_id = self.next_hint_id;
         self.next_hint_id += 1;
@@ -1294,6 +1300,7 @@ impl State {
                 amount: price,
                 hint_id,
                 hint: kind,
+                t_ms: charged_ms,
             },
         );
         Ok(HintIssued {
@@ -1301,6 +1308,7 @@ impl State {
             from: p,
             to: t,
             amount: price,
+            recent,
             fact: HintFact {
                 hint_id,
                 hint: kind,
@@ -1403,6 +1411,12 @@ impl State {
     fn huds(&self, tick_no: u32, now: u64, cur: u32, facts: &[Option<HintFact>]) -> Vec<(u16, Hud)> {
         let over = self.phase != Phase::Running;
         let (log_size, root) = (self.log.size(), self.log.root());
+        // The Handler's price board, the same for everyone: what the next hint costs if bought
+        // now. Public anyway, since the contract holds every hint's time.
+        let hint_recent = recent_hints(&self.hint_times, now.min(self.end_ms));
+        let hint_prices: [u128; 3] = std::array::from_fn(|k| {
+            hint_price(self.cfg.stake, k as u8, hint_recent).expect("kinds 0..3 are known")
+        });
         self.players
             .iter()
             .enumerate()
@@ -1444,6 +1458,8 @@ impl State {
                     log_size,
                     root,
                     rejected: p.last_rejected,
+                    hint_prices,
+                    hint_recent,
                 };
                 (me, hud)
             })

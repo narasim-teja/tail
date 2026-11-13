@@ -7,6 +7,7 @@ import {
   type HintFact,
   HintKind,
   type Hud,
+  hintPrice,
   LOCK_EPOCHS,
   openSignedVoiceLine,
   RefuseCode,
@@ -57,6 +58,10 @@ export interface HudView {
   /** 0..LOCK_EPOCHS, as the segmented bar shows it. */
   lock: number;
   heat: number;
+  /**
+   * Your head as the contract holds it. Hints about you are not in it: their price waits in the
+   * match's hint pool and joins your head when you go out (and goes on with it) or survive to End.
+   */
   head: bigint;
   status: "hunting" | "out" | "won";
   target: string;
@@ -65,6 +70,10 @@ export interface HudView {
   hint: { id: number; text: string } | null;
   /** Once out: the account that took your head. */
   taggedBy: string | null;
+  /** The Handler's price board, signed with the HUD: each kind's price now, by HintKind. */
+  hintPrices: readonly [bigint, bigint, bigint];
+  /** Hints anyone bought in the last five minutes: the demand behind those prices. */
+  hintRecent: number;
 }
 
 const cellCenter = (c: GridCell) => ({ lat: c.latE7 / 1e7, lon: c.lonE7 / 1e7 });
@@ -82,8 +91,21 @@ export function hudView(h: Hud): HudView {
     leak: h.leak ? cellCenter(h.leak) : null,
     hint: h.hintFact ? { id: h.hintFact.hintId, text: describeHintFact(h.hintFact) } : null,
     taggedBy: h.taggedBy ?? null,
+    hintPrices: h.hintPrices,
+    hintRecent: h.hintRecent,
   };
 }
+
+/** Price board from a HUD: what each kind costs now, and the demand behind it. */
+export type Board = Pick<HudView, "hintPrices" | "hintRecent">;
+
+/**
+ * What a hint of `kind` costs now: the last signed HUD's board, or the base price before one.
+ * The referee charges at its own clock, so another hunter's hint in the same tick can still
+ * raise it.
+ */
+export const priceNow = (stake: bigint, kind: HintKind, board: Board | null) =>
+  board ? board.hintPrices[kind] : hintPrice(stake, kind, 0);
 
 /** Token amounts (USDC, 6 decimals) as "1.50". Exact: no floating point. */
 export function formatAmount(units: bigint, decimals = 6): string {

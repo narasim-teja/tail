@@ -351,7 +351,7 @@ export const STATES: Record<string, () => ReactNode> = {
     <ResultsView
       m={{
         outcome: "survived",
-        head: 10_400_000n,
+        money: { label: "Final head", units: 10_400_000n, refund: null },
         tags: 1,
         replayUrl: "https://replay.example/?match=x",
         seed: 0,
@@ -370,7 +370,7 @@ export const STATES: Record<string, () => ReactNode> = {
     <ResultsView
       m={{
         outcome: "out",
-        head: 0n,
+        money: { label: "Final head", units: 0n, refund: null },
         tags: 0,
         replayUrl: "https://replay.example/?match=x",
         seed: 0,
@@ -385,11 +385,35 @@ export const STATES: Record<string, () => ReactNode> = {
       onExportFork={noop}
     />
   ),
+  "results-refunded": () => (
+    <ResultsView
+      m={{
+        outcome: "survived",
+        money: {
+          label: "Refunded",
+          units: 5_000_000n,
+          refund:
+            "Refunded: the referee broke a rule (a Tag did not follow the ring), so every player got their stake back.",
+        },
+        tags: 1,
+        replayUrl: "https://replay.example/?match=x",
+        seed: 0,
+        referee: "local",
+        receipts: RECEIPTS,
+        met: [],
+        forked: false,
+      }}
+      onReplay={noop}
+      onDone={noop}
+      onProve={noop}
+      onExportFork={noop}
+    />
+  ),
   "results-running": () => (
     <ResultsView
       m={{
         outcome: "running",
-        head: 0n,
+        money: { label: "Final head", units: 0n, refund: null },
         tags: 0,
         replayUrl: null,
         seed: 0,

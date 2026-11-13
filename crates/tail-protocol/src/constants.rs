@@ -36,20 +36,6 @@ pub mod hint_kind {
     pub const TREND: u8 = 2;
 }
 
-/// Hint price in basis points of the stake; `None` for an unknown kind.
-pub const fn hint_bps(kind: u8) -> Option<u128> {
-    match kind {
-        hint_kind::NEAR | hint_kind::TREND => Some(200),
-        hint_kind::BEARING => Some(500),
-        _ => None,
-    }
-}
-
-/// `HINT_BPS[kind] × stake / 10 000`, rounded down.
-pub fn hint_price(stake: u128, kind: u8) -> Option<u128> {
-    hint_bps(kind).map(|bps| stake * bps / 10_000)
-}
-
 pub mod fix_flag {
     pub const SIMULATED_BY_SOFTWARE: u8 = 1;
     pub const PRODUCED_BY_ACCESSORY: u8 = 2;

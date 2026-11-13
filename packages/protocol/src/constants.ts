@@ -57,13 +57,6 @@ export const MAX_HINTS = 240;
 export const HintKind = { Near: 0, Bearing: 1, Trend: 2 } as const;
 export type HintKind = (typeof HintKind)[keyof typeof HintKind];
 
-/** Hint price in basis points of the match stake, by kind. */
-export const HINT_BPS: Record<HintKind, number> = {
-  [HintKind.Near]: 200,
-  [HintKind.Bearing]: 500,
-  [HintKind.Trend]: 200,
-};
-
 /** Fix.flags bits (CLLocationSourceInformation). Any set bit makes the batch invalid. */
 export const FixFlag = { SimulatedBySoftware: 1, ProducedByAccessory: 2 } as const;
 

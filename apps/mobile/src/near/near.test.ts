@@ -4,6 +4,7 @@ import { sha256 } from "@tail/protocol";
 // The relay's pinned near-api-js, used here only as an independent encoder to compare with.
 import * as nearApi from "../../../server/node_modules/near-api-js/lib/index.js";
 import { fromBase58, toBase58 } from "../lib/base58";
+import { parseMatchFacts } from "./chain";
 import { encodeTransaction, nearPublicKeyString, PLAYER_GAS, signTransaction, type Transaction } from "./tx";
 import { payoutProblem, withdrawCall, withdrawGas } from "./withdraw";
 
@@ -93,5 +94,40 @@ describe("withdraw", () => {
     expect(ok("x".repeat(65))).toBe(false);
     expect(ok(me)).toBe(false);
     expect(ok(contract)).toBe(false);
+  });
+});
+
+describe("match facts", () => {
+  const view = {
+    referee_pk: "ab".repeat(32),
+    phase: "ended",
+    players: [
+      { account_id: "a.testnet", head: "0", out: true, paid: "0" },
+      { account_id: "b.testnet", head: "0", out: false, paid: "2000000" },
+    ],
+  };
+
+  test("read how the match settled and what each player was paid", () => {
+    const f = parseMatchFacts({ ...view, settled_as: "payout", violation: null });
+    expect(f?.players).toEqual(["a.testnet", "b.testnet"]);
+    expect(f?.paid).toEqual([0n, 2_000_000n]);
+    expect([f?.settledAs, f?.violation]).toEqual(["payout", null]);
+    const refunded = parseMatchFacts({
+      ...view,
+      settled_as: "refunded_rule_violation",
+      violation: "event 2: a Tag did not follow the ring",
+    });
+    expect([refunded?.settledAs, refunded?.violation]).toEqual([
+      "refunded_rule_violation",
+      "event 2: a Tag did not follow the ring",
+    ]);
+  });
+
+  test("a contract from before v2 reports no settlement; an unknown one is refused", () => {
+    expect(parseMatchFacts(view)?.settledAs).toBeNull();
+    expect(() => parseMatchFacts({ ...view, settled_as: "kept_by_relay" })).toThrow("not a settlement");
+    expect(() => parseMatchFacts({ ...view, players: [{ account_id: "a.testnet", paid: 5 }] })).toThrow(
+      "paid is not an amount",
+    );
   });
 });

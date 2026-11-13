@@ -221,6 +221,41 @@ describe("lobby codes", () => {
     expect((await relay({ ...view, code: null }).client.getMatch(ID)).code).toBeNull();
     await expect(relay({ ...view, code: "nope" }).client.getMatch(ID)).rejects.toThrow("not a lobby code");
   });
+
+  test("the chain view carries what each player was paid and how the match settled", async () => {
+    const chain = {
+      token: "usdc.fakes.testnet",
+      stake: "1000000",
+      duration_ms: 600_000,
+      min_players: 3,
+      max_players: 3,
+      start_by_ms: 1,
+      public_replay: true,
+      phase: "ended",
+      locked_until_ms: null,
+      players: [{ account_id: "a.testnet", head: "0", out: false, paid: "1000000" }],
+      referee_pk: "ab".repeat(32),
+      zone_hash: "00".repeat(32),
+    };
+    const view = { match_id: ID, code: null, host: "h", phase: "ended", start_ms: 1, end_ms: 2 };
+    const refunded = {
+      ...chain,
+      settled_as: "refunded_rule_violation",
+      violation: "event 0: a hint was not about its asker's target",
+    };
+    const got = (await relay({ ...view, chain: refunded }).client.getMatch(ID)).chain;
+    expect(got?.players[0]?.paid).toBe(1_000_000n);
+    expect([got?.settledAs, got?.violation]).toEqual([
+      "refunded_rule_violation",
+      "event 0: a hint was not about its asker's target",
+    ]);
+    // A contract from before v2 says nothing about settlement.
+    const old = (await relay({ ...view, chain }).client.getMatch(ID)).chain;
+    expect([old?.settledAs, old?.violation]).toEqual([null, null]);
+    await expect(
+      relay({ ...view, chain: { ...chain, settled_as: "kept" } }).client.getMatch(ID),
+    ).rejects.toThrow("not a settlement");
+  });
 });
 
 describe("signed match view and refusals", () => {

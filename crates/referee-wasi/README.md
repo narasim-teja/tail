@@ -229,8 +229,11 @@ cannot be reordered. It is computation inside the module: no extra host call per
 ## Handler voice
 
 The model is `deepseek-ai/DeepSeek-V4.1-Flash-1017` unless `NEARAI_MODEL` names another;
-`openai/*` and `anthropic/*` are refused. It gets the persona prompt and one fact from a fixed
-list, never coordinates. Thinking is off and `max_tokens` is 60.
+`openai/*` and `anthropic/*` are refused. It gets the persona prompt, one fact from a fixed
+list (never coordinates) and a MARKET line, `tail_protocol::price_reason` for the demand that
+priced the hint (how many hints the match bought in the last 5 minutes, public on chain), so the
+line can say why intel was dear. The fallback template states only the fact. Thinking is off and
+`max_tokens` is 60.
 
 The completion has a hard 3 s deadline: a `wasi:io/poll` on the response plus a monotonic
 timer. After that, or on any error, a template sentence is used. The signature lookup retries

@@ -84,8 +84,12 @@ pub enum Verdict {
         from: u16,
         amount: u128,
         hint_id: u32,
-        /// `hint_kind`, so the contract can check `amount == hint_price(stake, hint)`.
+        /// `hint_kind`, so the contract can check the price.
         hint: u8,
+        /// The referee clock (`TickInput.now_ms`, at most `end_ms`) when the hint was charged.
+        /// The contract requires it monotone and within `[start_ms, end_ms]`, and checks
+        /// `amount == hint_price(stake, hint, recent_hints(earlier hints' t_ms, t_ms))`.
+        t_ms: u64,
     },
     /// `credit` is what hints about `target` paid into the pool and nobody was credited yet; it
     /// moves from the pool onto `target`'s head just before that head goes to `hunter`.
@@ -302,6 +306,11 @@ pub struct Hud {
     pub root: Hash,
     /// This player's latest refused batch: `(seq, reject_code)`.
     pub rejected: Option<(u32, u8)>,
+    /// What each hint kind costs right now, indexed by `hint_kind` (NEAR, BEARING, TREND):
+    /// `hint_price(stake, kind, hint_recent)`.
+    pub hint_prices: [u128; 3],
+    /// Hints anyone bought in the last `PRICE_WINDOW_MS`, as of this tick.
+    pub hint_recent: u32,
 }
 
 /// `sig = ed25519(referee_sk, hud_sig_digest(hud))`; see `SignedPlayerKeys` for why.

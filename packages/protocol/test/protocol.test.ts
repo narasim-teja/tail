@@ -188,10 +188,17 @@ describe("verdicts", () => {
     expect(verifySignedVerdict({ ...sv, prev: new Uint8Array(32) }, pk)).toBe(false);
   });
 
-  test("a hint verdict carries its kind, and the price follows from it", () => {
+  test("a hint verdict carries its kind and time, and the price follows from them", () => {
     const hint = chain[1]?.body;
-    expect(hint).toEqual({ kind: "Hint", from: 1, amount: 20_000n, hintId: 3, hint: HintKind.Near });
-    if (hint?.kind === "Hint") expect(hint.amount).toBe(hintPrice(1_000_000n, hint.hint as HintKind));
+    expect(hint).toEqual({
+      kind: "Hint",
+      from: 1,
+      amount: 20_000n,
+      hintId: 3,
+      hint: HintKind.Near,
+      tMs: 1_794_514_120_000n,
+    });
+    if (hint?.kind === "Hint") expect(hint.amount).toBe(hintPrice(1_000_000n, hint.hint as HintKind, 0));
   });
 
   test("End reveals one target per hint, in order", () => {
@@ -277,12 +284,6 @@ describe("sealing", () => {
     expect(isLowOrderX25519(h(sealV.recipientPk))).toBe(false);
     expect(isLowOrderX25519(boxPublicKey(h(sealV.ephSk)))).toBe(false);
   });
-});
-
-test("hint price is basis points of the stake, rounded down", () => {
-  expect(hintPrice(1_000_000n, HintKind.Bearing)).toBe(50_000n);
-  expect(hintPrice(1_000_000n, HintKind.Near)).toBe(20_000n);
-  expect(hintPrice(49n, HintKind.Near)).toBe(0n);
 });
 
 describe("relay auth", () => {

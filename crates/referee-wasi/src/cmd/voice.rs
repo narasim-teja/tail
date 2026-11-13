@@ -154,7 +154,7 @@ pub fn run(input: Value) -> Result<Value, String> {
     let model = host::author_secret("NEARAI_MODEL").unwrap_or_else(|| DEFAULT_MODEL.to_owned());
     voice::check_model(&model)?;
 
-    let request = voice::request_body(&model, fact, question.as_deref(), &nonce);
+    let request = voice::request_body(&model, fact, hint.recent, question.as_deref(), &nonce);
     let t0 = host::now_ms();
     let completion = match &key {
         Ok(key) => complete(key, &request).map(|c| (key, c)),

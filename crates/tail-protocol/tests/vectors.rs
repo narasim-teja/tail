@@ -16,9 +16,9 @@ use tail_protocol::digest::{
 use tail_protocol::presence::{verify_presence, Presence, PresenceError};
 use tail_protocol::seal::{is_low_order, open, public_key, seal_with, SealError};
 use tail_protocol::{
-    hint_kind, hint_price, merkle, reject_code, ring, verify, Action, Batch, BatchEnvelope, Hash, Hud,
-    LogEntry, PlayerKeys, PresenceProof, SignedHud, SignedPlayerKeys, SignedVerdict, SignedVoiceLine,
-    Verdict,
+    hint_bps, hint_kind, hint_price, merkle, price_reason, recent_hints, reject_code, ring, verify, Action,
+    Batch, BatchEnvelope, Hash, Hud, LogEntry, PlayerKeys, PresenceProof, SignedHud, SignedPlayerKeys,
+    SignedVerdict, SignedVoiceLine, Verdict, PRICE_CAP_BPS, PRICE_STEP_BPS, PRICE_WINDOW_MS,
 };
 
 fn load(name: &str) -> Value {
@@ -162,10 +162,11 @@ fn verdicts_chain_digest_sign_and_verify_like_ts() {
             from: 1,
             amount: 20_000,
             hint_id: 3,
-            hint: hint_kind::NEAR
+            hint: hint_kind::NEAR,
+            t_ms: 1_794_514_120_000,
         }
     );
-    assert_eq!(hint_price(1_000_000, hint_kind::NEAR), Some(20_000));
+    assert_eq!(hint_price(1_000_000, hint_kind::NEAR, 0), Some(20_000));
     let mut tag = SignedVerdict::try_from_slice(&bytes(&v["verdicts"][2]["signed"])).unwrap();
     assert_eq!(
         tag.body,
@@ -398,6 +399,12 @@ fn hud_v2_round_trips() {
     assert_eq!(full.next_seq, 34);
     assert_eq!(full.rejected, Some((30, reject_code::CLOCK_SKEW)));
     assert_eq!(full.tagged_by, None);
+    let priced: Vec<_> = [hint_kind::NEAR, hint_kind::BEARING, hint_kind::TREND]
+        .iter()
+        .map(|&k| hint_price(1_000_000, k, full.hint_recent).unwrap())
+        .collect();
+    assert_eq!(full.hint_prices.to_vec(), priced);
+    assert_eq!(full.hint_recent, 3);
     let bare = Hud::try_from_slice(&bytes(&v["hudNoOptions"]["borsh"])).unwrap();
     assert!(bare.leak.is_none() && bare.hint_fact.is_none() && bare.rejected.is_none());
     let out = Hud::try_from_slice(&bytes(&v["hudOut"]["borsh"])).unwrap();
@@ -448,5 +455,44 @@ fn signed_hud_keys_and_voice_match_and_open() {
             }
             other => panic!("unexpected signed message {other}"),
         }
+    }
+}
+
+fn big(v: &Value) -> u128 {
+    v.as_str().expect("decimal string").parse().expect("u128")
+}
+
+#[test]
+fn hint_prices_match() {
+    let v = load("pricing");
+    assert_eq!(num(&v["windowMs"]), PRICE_WINDOW_MS);
+    assert_eq!(u128::from(num(&v["stepBps"])), PRICE_STEP_BPS);
+    assert_eq!(u128::from(num(&v["capBps"])), PRICE_CAP_BPS);
+    for (k, bps) in v["hintBps"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(hint_bps(k as u8), Some(u128::from(num(bps))));
+    }
+    let cases = v["prices"].as_array().unwrap();
+    assert!(cases.len() > 300);
+    for c in cases {
+        let (stake, kind, recent) = (big(&c["stake"]), num(&c["kind"]) as u8, num(&c["recent"]) as u32);
+        let want = (!c["price"].is_null()).then(|| big(&c["price"]));
+        assert_eq!(hint_price(stake, kind, recent), want, "{c}");
+    }
+    for c in v["recent"].as_array().unwrap() {
+        let times: Vec<u64> = c["times"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| big(t) as u64)
+            .collect();
+        assert_eq!(
+            recent_hints(&times, big(&c["now"]) as u64),
+            num(&c["recent"]) as u32,
+            "{c}"
+        );
+    }
+    for c in v["reasons"].as_array().unwrap() {
+        let reason = price_reason(num(&c["kind"]) as u8, num(&c["recent"]) as u32);
+        assert_eq!(reason.as_deref(), c["reason"].as_str(), "{c}");
     }
 }

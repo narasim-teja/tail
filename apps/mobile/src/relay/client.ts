@@ -6,6 +6,7 @@
 
 import { decodeLogEntry, type LogEntry } from "@tail/protocol";
 import { fromB64, toB64 } from "../lib/b64";
+import { parseSettlement, type Settlement } from "../near/chain";
 import { replayDigest, type Signer } from "../proximity/auth";
 import { isMatchId, matchIdBytes, type Obj, obj, RelayError, RelayTransport, read } from "../proximity/relay";
 
@@ -61,8 +62,11 @@ export type RelayPhase = "lobby" | "starting" | "running" | "ending" | "ended" |
 
 export interface ChainPlayer {
   accountId: string;
+  /** What the contract holds for this player now; 0 for everyone once the match settles. */
   head: bigint;
   out: boolean;
+  /** What settlement credited this player (0 until End or abort): the final amount. */
+  paid: bigint;
 }
 
 export interface ChainMatch {
@@ -82,6 +86,10 @@ export interface ChainMatch {
   refereePk: Uint8Array;
   /** SHA256 commitment to the zone and safehouses. */
   zoneHash: Uint8Array;
+  /** How the money left the match; null while it is a lobby or running. */
+  settledAs: Settlement | null;
+  /** On `refunded_rule_violation`: the rule End's replay found broken, in the contract's words. */
+  violation: string | null;
 }
 
 export interface SealedKeys {
@@ -113,6 +121,14 @@ export interface MatchZone {
   error: string | null;
 }
 
+function settlementOf(v: unknown): Settlement | null {
+  try {
+    return parseSettlement(v);
+  } catch (e) {
+    throw new RelayError(0, `relay answer: ${(e as Error).message}`);
+  }
+}
+
 function parseChain(v: unknown): ChainMatch | null {
   if (v === null || v === undefined) return null;
   const c = obj(v, "chain");
@@ -128,10 +144,17 @@ function parseChain(v: unknown): ChainMatch | null {
     lockedUntilMs: read.intOrNull(c, "locked_until_ms"),
     players: read.list(c, "players").map((p) => {
       const o = obj(p, "player");
-      return { accountId: read.str(o, "account_id"), head: read.amount(o, "head"), out: read.bool(o, "out") };
+      return {
+        accountId: read.str(o, "account_id"),
+        head: read.amount(o, "head"),
+        out: read.bool(o, "out"),
+        paid: read.amount(o, "paid"),
+      };
     }),
     refereePk: read.hex(c, "referee_pk"),
     zoneHash: read.hex(c, "zone_hash"),
+    settledAs: settlementOf(c["settled_as"]),
+    violation: c["violation"] === null || c["violation"] === undefined ? null : read.str(c, "violation"),
   };
 }
 

@@ -40,8 +40,10 @@ import {
   enrollClientDataHash,
   FixFlag,
   fromHex,
+  HINT_BPS,
   HintKind,
   type Hud,
+  hintPrice,
   hudSigDigest,
   keysSigDigest,
   type LogEntry,
@@ -51,10 +53,15 @@ import {
   merkleProof,
   merkleRoot,
   type PlayerKeys,
+  PRICE_CAP_BPS,
+  PRICE_STEP_BPS,
+  PRICE_WINDOW_MS,
   padCarry,
   playersHash,
   presenceProof,
+  priceReason,
   RejectCode,
+  recentHints,
   ringCommit,
   SealContext,
   sealCarryWith,
@@ -180,7 +187,8 @@ const bodies: Verdict[] = [
   },
   // Player 1 pays 20 000 into the pool for a hint about player 0; 0's head takes that credit
   // just before it goes to 2; 1 then forfeits to 2 with nothing pending. End names hint 0's target.
-  { kind: "Hint", from: 1, amount: 20_000n, hintId: 3, hint: HintKind.Near },
+  // Charged two minutes in, with no earlier hint in the window: the base price.
+  { kind: "Hint", from: 1, amount: 20_000n, hintId: 3, hint: HintKind.Near, tMs: 1_794_514_120_000n },
   { kind: "Tag", hunter: 2, target: 0, credit: 20_000n },
   { kind: "Forfeit", player: 1, to: 2, credit: 0n },
   { kind: "Checkpoint", logSize: 1234n, root: seed("root") },
@@ -371,6 +379,13 @@ const hud: Hud = {
   logSize: 1234n,
   root: seed("root"),
   rejected: { seq: 30, code: RejectCode.ClockSkew },
+  // Three hints in the last five minutes: every kind at 1.75x.
+  hintPrices: [HintKind.Near, HintKind.Bearing, HintKind.Trend].map((k) => hintPrice(1_000_000n, k, 3)) as [
+    bigint,
+    bigint,
+    bigint,
+  ],
+  hintRecent: 3,
 };
 const { leak: _leak, hintFact: _hintFact, rejected: _rejected, ...hudBare } = hud;
 // An out player's HUD: no target, no lock, but the account that took their head.
@@ -381,6 +396,8 @@ const hudOut: Hud = {
   lock: 0,
   heat: 0,
   head: 0n,
+  hintPrices: [20_000n, 50_000n, 20_000n],
+  hintRecent: 0,
   status: TargetStatus.Out,
   target: "",
   taggedBy: "carol.tail.testnet",
@@ -443,6 +460,54 @@ write("hud", {
       SealContext.voice,
     ),
   ],
+});
+
+// ── hint pricing ──
+// Every (stake, kind, recent) the contract might meet, edges included: rounding at tiny stakes,
+// the step, the cap and past it, an unknown kind (null), and yocto-sized stakes.
+const stakes = [0n, 49n, 999n, 1_000_000n, 5_000_000n, 10n ** 24n, 2n ** 100n];
+const recents = [0, 1, 2, 3, 4, 5, 7, 11, 12, 13, 100, 4_294_967_295];
+const kinds = [HintKind.Near, HintKind.Bearing, HintKind.Trend];
+const W = BigInt(PRICE_WINDOW_MS);
+const t0 = 1_794_514_000_000n;
+write("pricing", {
+  windowMs: PRICE_WINDOW_MS,
+  stepBps: PRICE_STEP_BPS,
+  capBps: PRICE_CAP_BPS,
+  hintBps: kinds.map((k) => HINT_BPS[k]),
+  prices: stakes.flatMap((stake) =>
+    [...kinds, 3].flatMap((kind) =>
+      recents.map((recent) => ({
+        stake,
+        kind,
+        recent,
+        price: kind === 3 ? null : hintPrice(stake, kind as HintKind, recent),
+      })),
+    ),
+  ),
+  // Each case: the times of earlier hints and the moment priced. The window is open below
+  // (a hint exactly PRICE_WINDOW_MS old has aged out) and closed above (same tick counts).
+  recent: [
+    { times: [], now: t0 },
+    { times: [t0], now: t0 },
+    { times: [t0, t0, t0], now: t0 },
+    { times: [t0 - W], now: t0 },
+    { times: [t0 - W + 1n], now: t0 },
+    { times: [t0 + 1n], now: t0 },
+    { times: [0n, 5n], now: 10n },
+    { times: [t0 - 400_000n, t0 - 299_999n, t0 - 120_000n, t0 - 10_000n, t0, t0], now: t0 },
+    {
+      times: Array.from({ length: 30 }, (_, i) => t0 + BigInt(i) * 30_000n),
+      now: t0 + 29n * 30_000n,
+    },
+    {
+      times: Array.from({ length: 30 }, (_, i) => t0 + BigInt(i) * 30_000n),
+      now: t0 + 29n * 30_000n + W,
+    },
+  ].map((c) => ({ ...c, recent: recentHints(c.times, c.now) })),
+  reasons: kinds.flatMap((kind) =>
+    [0, 1, 2, 3, 4, 5, 11, 12, 40].map((recent) => ({ kind, recent, reason: priceReason(kind, recent) })),
+  ),
 });
 
 // ── relay auth ──

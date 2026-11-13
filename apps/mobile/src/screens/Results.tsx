@@ -8,7 +8,7 @@ import type { RefereeKind } from "../relay/client";
 import { type Receipts, useApp } from "../state/app";
 import { LOG_FORKED } from "../tail/hud";
 import { handleOf, howVerified, money, type Outcome, resultOutcome } from "../tail/huntModel";
-import { receiptLines } from "../tail/results";
+import { type FinalMoney, finalMoney, receiptLines } from "../tail/results";
 import { Icon, Mark } from "../ui/brand";
 import { RollingMoney } from "../ui/game";
 import {
@@ -31,7 +31,8 @@ import { color, HIT, motion, radius, space } from "../ui/theme";
 
 export interface ResultsModel {
   outcome: Outcome;
-  head: bigint | null;
+  /** The money line: the head before settlement, what NEAR paid after, a refund said plainly. */
+  money: FinalMoney;
   tags: number;
   /** Null until the replay site is set or the match has ended. */
   replayUrl: string | null;
@@ -168,15 +169,23 @@ export function ResultsView({
         </View>
       ) : null}
       <Row gap="xxl">
-        <View accessible accessibilityLabel={`Final head ${m.head === null ? "pending" : money(m.head)}`}>
-          <Eyebrow muted>Final head</Eyebrow>
-          {m.head === null ? <Num>-</Num> : <RollingMoney units={m.head} reduceMotion={reduceMotion} />}
+        <View
+          accessible
+          accessibilityLabel={`${m.money.label} ${m.money.units === null ? "pending" : money(m.money.units)}`}
+        >
+          <Eyebrow muted>{m.money.label}</Eyebrow>
+          {m.money.units === null ? (
+            <Num>-</Num>
+          ) : (
+            <RollingMoney units={m.money.units} reduceMotion={reduceMotion} />
+          )}
         </View>
         <View accessible accessibilityLabel={`${m.tags} ${m.tags === 1 ? "tag" : "tags"}`}>
           <Eyebrow muted>Tags</Eyebrow>
           <Num>{tags}</Num>
         </View>
       </Row>
+      {m.money.refund ? <Body>{m.money.refund}</Body> : null}
       <Animated.View
         style={[styles.dispatch, dark && styles.dispatchDark, rise(handler, 10)]}
         accessible
@@ -274,7 +283,12 @@ export function Results() {
     <ResultsView
       m={{
         outcome,
-        head: mine?.head ?? snap?.hud?.head ?? null,
+        money: finalMoney({
+          settledAs: app.match?.chain?.settledAs ?? null,
+          violation: app.match?.chain?.violation ?? null,
+          paid: mine?.paid ?? null,
+          head: mine?.head ?? snap?.hud?.head ?? null,
+        }),
         tags: app.tags,
         replayUrl: replay,
         seed: Number.parseInt(app.matchId?.slice(0, 6) ?? "0", 16) || 0,

@@ -6,12 +6,33 @@
 import { type AnchoredRoot, fromHex } from "@tail/protocol";
 import type { NearRpc } from "./rpc";
 
+/**
+ * How a match's money left it (`get_match.settled_as`). Only `payout` follows the play; the two
+ * refunds give every player their stake back. Null while it is a lobby or running, and on a
+ * contract from before protocol v2, which does not report it.
+ */
+export const SETTLEMENTS = ["payout", "refunded_rule_violation", "refunded_abort"] as const;
+export type Settlement = (typeof SETTLEMENTS)[number];
+
+/** `settled_as` as the contract reports it, or null when it is absent. */
+export function parseSettlement(v: unknown): Settlement | null {
+  if (v === null || v === undefined) return null;
+  const s = SETTLEMENTS.find((x) => x === v);
+  if (!s) throw new Error(`settled_as ${String(v)} is not a settlement`);
+  return s;
+}
+
 export interface ChainFacts {
   /** ed25519 key copied into the match at create_match; a later rotation does not change it. */
   refereePk: Uint8Array;
   /** Account ids in player-index order (the contract keeps them sorted). */
   players: string[];
+  /** What settlement credited each player, in player-index order (0 until End or abort). */
+  paid: bigint[];
   phase: string;
+  settledAs: Settlement | null;
+  /** On `refunded_rule_violation`: the rule End's replay found broken, in the contract's words. */
+  violation: string | null;
 }
 
 export interface Roots {
@@ -29,11 +50,23 @@ const hex32 = (v: unknown, what: string): Uint8Array => {
   return fromHex(v);
 };
 
+const amount = (v: unknown, what: string): bigint => {
+  if (typeof v !== "string" || !/^[0-9]+$/.test(v)) throw new Error(`NEAR: ${what} is not an amount`);
+  return BigInt(v);
+};
+
 export function parseMatchFacts(v: unknown): ChainFacts | null {
   if (v === null || v === undefined) return null;
   const m = v as Obj;
   const players = m["players"];
   if (!Array.isArray(players)) throw new Error("NEAR: match has no player list");
+  const violation = m["violation"];
+  let settledAs: Settlement | null;
+  try {
+    settledAs = parseSettlement(m["settled_as"]);
+  } catch (e) {
+    throw new Error(`NEAR: ${(e as Error).message}`);
+  }
   return {
     refereePk: hex32(m["referee_pk"], "referee_pk"),
     players: players.map((p) => {
@@ -41,7 +74,10 @@ export function parseMatchFacts(v: unknown): ChainFacts | null {
       if (typeof id !== "string") throw new Error("NEAR: player without an account");
       return id;
     }),
+    paid: players.map((p) => amount((p as Obj)["paid"], "paid")),
     phase: String(m["phase"]),
+    settledAs,
+    violation: typeof violation === "string" ? violation : null,
   };
 }
 

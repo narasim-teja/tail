@@ -1,11 +1,11 @@
 // Everything the hunt screen shows, as plain data. The live screen builds it from the session;
 // the design preview builds it from fixtures. Both render the same HuntView.
 
-import { HintKind, hintPrice, LOCK_EPOCHS, type PlayerKeys } from "@tail/protocol";
+import { HINT_NAME, HintKind, LOCK_EPOCHS, type PlayerKeys, priceReason } from "@tail/protocol";
 import type { Blocked } from "../proximity/client";
 import type { RefereeKind } from "../relay/client";
 import type { LatLon } from "./geo";
-import { formatAmount, LOG_FORKED } from "./hud";
+import { type Board, formatAmount, LOG_FORKED, priceNow } from "./hud";
 import type { HuntSnapshot, Note } from "./hunt";
 import { clock, darkState, zoneState } from "./rules";
 import type { Zone } from "./zone";
@@ -23,6 +23,8 @@ export interface HintOption {
   kind: HintKind;
   name: string;
   price: string;
+  /** The Handler's one line on why it costs that; null before the first HUD. */
+  reason: string | null;
 }
 
 export interface Dispatch {
@@ -126,12 +128,18 @@ export function taggedLines(
   };
 }
 
-export function hintOptions(stake: bigint): HintOption[] {
-  return [
-    { kind: HintKind.Near, name: "Near", price: money(hintPrice(stake, HintKind.Near)) },
-    { kind: HintKind.Bearing, name: "Bearing", price: money(hintPrice(stake, HintKind.Bearing)) },
-    { kind: HintKind.Trend, name: "Warmer", price: money(hintPrice(stake, HintKind.Trend)) },
-  ];
+/**
+ * The three hints at the prices the referee's last signed HUD shows. They move with demand: each
+ * hint anyone bought in the last five minutes adds a quarter, up to 4x. Before the first HUD the
+ * phone cannot know the demand, so it shows the base price and no reason.
+ */
+export function hintOptions(stake: bigint, board: Board | null = null): HintOption[] {
+  return [HintKind.Near, HintKind.Bearing, HintKind.Trend].map((kind) => ({
+    kind,
+    name: HINT_NAME[kind],
+    price: money(priceNow(stake, kind, board)),
+    reason: board ? priceReason(kind, board.hintRecent) : null,
+  }));
 }
 
 function status(s: HuntSnapshot): string {
@@ -215,7 +223,7 @@ export function huntModel(
     leak: hud?.leak ?? null,
     dispatch: handler ? { atMs: handler.tMs, text: handler.text } : null,
     log: s.notes,
-    hints: hintOptions(ctx.stake),
+    hints: hintOptions(ctx.stake, hud),
     status: status(s),
     blocked: s.blocked,
   };

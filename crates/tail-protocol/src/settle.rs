@@ -3,7 +3,9 @@
 //! it lands but cannot check it: the ring is still secret, and a Hint does not say whom it was
 //! about. `End` reveals both (the VRF signature and `hint_targets`), and this replays the match
 //! in verdict order against them. The contract, the referee's verifier and the web replay all
-//! run this one rule (the TypeScript twin is `packages/protocol/src/settle.ts`).
+//! run this one rule (the TypeScript twin is `packages/protocol/src/settle.ts`). A hint's price
+//! needs no replay: it depends only on public data (the stake and earlier hints' times), so the
+//! contract checks it as each Hint lands (`pricing`).
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -11,12 +13,24 @@ use borsh::{BorshDeserialize, BorshSerialize};
 #[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(borsh::BorshSchema))]
 pub enum PlayEvent {
-    /// `amount` went from `from`'s head into the hint pool.
-    Hint { from: u16, amount: u128 },
+    /// `amount` went from `from`'s head into the hint pool at match time `t_ms` (the verdict's;
+    /// later hints are priced from these times, see `pricing`).
+    Hint { from: u16, amount: u128, t_ms: u64 },
     /// `credit` went from the pool onto `target`'s head, then the head to `hunter`.
     Tag { hunter: u16, target: u16, credit: u128 },
     /// `credit` went from the pool onto `player`'s head, then the head to `to`.
     Forfeit { player: u16, to: u16, credit: u128 },
+}
+
+impl PlayEvent {
+    /// The match time a Hint was charged at; `None` for a Tag or Forfeit. The contract prices
+    /// the next hint from these (`recent_hints`).
+    pub fn hint_t_ms(&self) -> Option<u64> {
+        match *self {
+            PlayEvent::Hint { t_ms, .. } => Some(t_ms),
+            PlayEvent::Tag { .. } | PlayEvent::Forfeit { .. } => None,
+        }
+    }
 }
 
 /// Which rule the replay found broken. Appended, never reordered: the contract stores it.
@@ -100,7 +114,7 @@ pub fn replay(
         };
         let current = |p: u16| target.get(usize::from(p)).copied().flatten();
         let (winner, loser, credit, ring_check) = match *e {
-            PlayEvent::Hint { from, amount } => {
+            PlayEvent::Hint { from, amount, .. } => {
                 let t = *about.next().expect("counted above");
                 if current(from) != Some(t) {
                     return Err(at(Check::HintTarget));
@@ -146,7 +160,11 @@ mod tests {
     const RING: [u16; 3] = [0, 1, 2];
 
     fn hint(from: u16, amount: u128) -> PlayEvent {
-        PlayEvent::Hint { from, amount }
+        PlayEvent::Hint {
+            from,
+            amount,
+            t_ms: 0,
+        }
     }
     fn tag(hunter: u16, target: u16, credit: u128) -> PlayEvent {
         PlayEvent::Tag {

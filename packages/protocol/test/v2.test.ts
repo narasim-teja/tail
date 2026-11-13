@@ -121,6 +121,8 @@ describe("HUD v2", () => {
     expect(full.nextSeq).toBe(34);
     expect(full.logSize).toBe(1234n);
     expect(full.taggedBy).toBeUndefined();
+    expect(full.hintPrices).toEqual([35_000n, 87_500n, 35_000n]);
+    expect(full.hintRecent).toBe(3);
     const bare = decodeHud(h(hudV.hudNoOptions.borsh));
     expect(bare.leak).toBeUndefined();
     expect(bare.hintFact).toBeUndefined();

@@ -32,6 +32,9 @@ pub struct HintBlob {
     pub hint: u8,
     /// `HintFact.value`.
     pub value: u8,
+    /// Hints bought in the price window before this one (`HintIssued.recent`), so the Handler
+    /// can say why it cost what it did.
+    pub recent: u32,
     pub question: Option<String>,
 }
 

@@ -22,6 +22,7 @@ bun run --cwd packages/protocol vectors            # regenerate (only on a delib
 | `ring.json`        | players hash, ring commitment, ring                                     |
 | `seal.json`        | sealing, and every low-order X25519 encoding                            |
 | `hud.json`         | HUD v2, and the signed, sealed HUD, keys and Handler line               |
+| `pricing.json`     | hint prices over (stake, kind, demand), the demand window, the reasons  |
 | `auth.json`        | relay request and challenge digests                                     |
 | `carry.json`       | mesh carry envelope and relay receipt (TypeScript only: phone ↔ relay)  |
 
@@ -58,12 +59,12 @@ enclave until `declassify` releases it with the log after End.
 | `Action`         | `Hint { hint u8, nonce u32, text Option<String> }` · `Strike { nonce u32 }`                                                                                                                                                                    |
 | `Batch`          | `match_id [u8;16], player u16, seq u32, prev [u8;32], t_ms u64, fixes, sightings, actions`                                                                                                                                                     |
 | `BatchEnvelope`  | `batch, assertion Vec<u8>` (App Attest assertion)                                                                                                                                                                                              |
-| `Verdict`        | `Start`, `Hint { from u16, amount u128, hint_id u32, hint u8 }` (no target), `Tag { hunter, target, credit u128 }`, `Forfeit { player, to, credit u128 }`, `Checkpoint`, `End { alpha, vrf_signature, log_size, root, hint_targets Vec<u16> }` |
+| `Verdict`        | `Start`, `Hint { from u16, amount u128, hint_id u32, hint u8, t_ms u64 }` (no target), `Tag { hunter, target, credit u128 }`, `Forfeit { player, to, credit u128 }`, `Checkpoint`, `End { alpha, vrf_signature, log_size, root, hint_targets Vec<u16> }` |
 | `SignedVerdict`  | `match_id, seq u32, prev [u8;32], call_id [u8;16], body Verdict, sig [u8;64]`                                                                                                                                                                  |
 | `LogEntry`       | `Batch`, `Contact`, `Verdict`, `HintReceipt` (tags 0–3) · `Tick`, `Rejected`, `Evidence`, `Enrolled` (v2, tags 4–7)                                                                                                                            |
 | `PresenceProof`  | `match_id, contract String, entry LogEntry, index u64, size u64, path Vec<[u8;32]>, accounts [String;2]`                                                                                                                                       |
 | `PlayerKeys`     | `match_id, player, start_ms, end_ms, k_tag, k_player, target String`                                                                                                                                                                           |
-| `Hud`            | `match_id, player u16, tick, epoch, lock, heat, head u128, status, target, leak?, hint_fact?, tagged_by?, next_seq u32, chain_tip [u8;32], dark_ms u32, tags u8, log_size u64, root [u8;32], rejected Option<(seq u32, code u8)>`              |
+| `Hud`            | `match_id, player u16, tick, epoch, lock, heat, head u128, status, target, leak?, hint_fact?, tagged_by?, next_seq u32, chain_tip [u8;32], dark_ms u32, tags u8, log_size u64, root [u8;32], rejected Option<(seq u32, code u8)>, hint_prices [u128;3], hint_recent u32` |
 | `VoiceLine`      | `match_id, player u16, hint_id u32, text String`                                                                                                                                                                                               |
 | `SignedHud` etc. | `SignedHud { hud, sig }`, `SignedPlayerKeys { keys, sig }`, `SignedVoiceLine { line, sig }`                                                                                                                                                    |
 | `CarryRequest`   | `account String, time_ms u64, method String, path String, body Vec<u8>, sig [u8;64]` (TypeScript only)                                                                                                                                         |
@@ -134,6 +135,17 @@ cannot get both onto the chain, and anyone holding the stream can check it
 and Forfeit against the ring (`ringOrder`, player indices) and End's `hintTargets`, and returns
 what each survivor is still owed, or the first broken rule (`SettleCheck`, stored by the
 contract as a borsh enum: append, never reorder). `MAX_HINTS` (240) bounds the hints per match.
+
+**Hint pricing.** `pricing.ts` / `pricing.rs` are the only place hint prices are defined. The
+Handler prices intel by demand: `hintPrice(stake, kind, recent) = HINT_BPS[kind] × stake / 10 000
+× min(10 000 + PRICE_STEP_BPS × recent, PRICE_CAP_BPS) / 10 000`, each division rounded down,
+where `recent = recentHints(earlier hints' t_ms, t_ms)` counts the match's hints with
+`t_ms − PRICE_WINDOW_MS < t ≤ t_ms`. Base prices are 2 % of the stake (NEAR, TREND) and 5 %
+(BEARING); each hint in the last 5 minutes adds 25 %, up to 4x. A Hint verdict carries its
+`t_ms` (the referee clock when charged, at most `end_ms`), so the contract recomputes the price
+from public data alone and refuses any other amount. The HUD's `hint_prices` (indexed by
+`HintKind`) and `hint_recent` are the board at the end of the tick; `priceReason(kind, recent)`
+is the Handler's one line on it, the same words the voice prompt gets.
 
 **Request auth.** The relay request digest names the account and the contract, so a signature
 cannot be replayed for another account that shares the key, or against another deployment.

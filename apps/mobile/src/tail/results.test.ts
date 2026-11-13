@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { RejectCode } from "@tail/protocol";
 import type { ReceiptResult } from "../proximity/receipts";
-import { receiptLines } from "./results";
+import { finalMoney, receiptLines } from "./results";
 
 const result = (o: Partial<ReceiptResult>): ReceiptResult => ({
   size: 8,
@@ -42,5 +42,40 @@ describe("receipt lines", () => {
       ],
       problems: [],
     });
+  });
+});
+
+describe("final money", () => {
+  const f = { violation: null, paid: 2_000_000n, head: 1_500_000n };
+
+  test("before settlement the head; after a payout what NEAR paid", () => {
+    expect(finalMoney({ ...f, settledAs: null })).toEqual({
+      label: "Final head",
+      units: 1_500_000n,
+      refund: null,
+    });
+    expect(finalMoney({ ...f, head: 0n, settledAs: "payout" })).toEqual({
+      label: "Final head",
+      units: 2_000_000n,
+      refund: null,
+    });
+  });
+
+  test("a refund is labelled as one and says why", () => {
+    const broken = finalMoney({
+      ...f,
+      paid: 1_000_000n,
+      settledAs: "refunded_rule_violation",
+      violation: "event 3: a Tag did not follow the ring",
+    });
+    expect(broken).toEqual({
+      label: "Refunded",
+      units: 1_000_000n,
+      refund:
+        "Refunded: the referee broke a rule (a Tag did not follow the ring), so every player got their stake back.",
+    });
+    expect(finalMoney({ ...f, paid: 1_000_000n, settledAs: "refunded_abort" }).refund).toBe(
+      "Refunded: the match was called off, so every player got their stake back.",
+    );
   });
 });

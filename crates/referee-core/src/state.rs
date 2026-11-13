@@ -152,6 +152,9 @@ pub struct State {
     pub(crate) next_hint_id: u32,
     /// Whom each hint charged so far was about, in hint order: `End.hint_targets`.
     pub(crate) hint_targets: Vec<u16>,
+    /// When each hint was charged (the Hint verdict's `t_ms`), in hint order: the demand that
+    /// prices the next one. At most `MAX_HINTS` entries, like `hint_targets`.
+    pub(crate) hint_times: Vec<u64>,
     /// Hints still waiting for a voice receipt: `(hint_id, referee time issued)`.
     pub(crate) pending_receipts: Vec<(u32, u64)>,
     /// Strikes from the previous tick waiting for the target's data, in their action order.

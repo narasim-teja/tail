@@ -8,7 +8,7 @@
 // - the Handler's signed lines, and every notice in plain words (a log fork above all)
 // - the tag count, saved beside the proximity record so a relaunch keeps it
 
-import { type AnchoredRoot, type HintKind, type Hud, hintPrice, type PlayerKeys } from "@tail/protocol";
+import type { AnchoredRoot, HintKind, Hud, PlayerKeys } from "@tail/protocol";
 import type { RadioFix } from "../../modules/tail-radio";
 import {
   ProximityClient,
@@ -29,6 +29,7 @@ import {
   LOG_FORKED,
   NOT_SIGNED,
   openVoice,
+  priceNow,
 } from "./hud";
 import { type DarkInfo, VehicleWatch } from "./rules";
 
@@ -129,7 +130,8 @@ export class TailHunt {
 
   hint(kind: HintKind, question?: string): void {
     this.prox.queueAction(this.tail.hint(kind, question));
-    this.note("info", `Hint asked: ${formatAmount(hintPrice(this.d.stake, kind))} from your head.`);
+    const price = priceNow(this.d.stake, kind, this.snap.hud);
+    this.note("info", `Hint asked: about ${formatAmount(price)} from your head.`);
   }
 
   strike(): void {

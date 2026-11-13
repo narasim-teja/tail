@@ -34,8 +34,8 @@ use std::time::Instant;
 use tail_protocol::digest::{batch_hash, sha256, verdict_digest};
 use tail_protocol::settle::{self, PlayEvent};
 use tail_protocol::{
-    constants::hint_kind, merkle, ring, target_status, CallId, Fix, Hash, Hud, LogEntry, Verdict,
-    VerdictPayload, LOCK_EPOCHS, WINDOW_EPOCHS,
+    constants::hint_kind, hint_price, merkle, recent_hints, ring, target_status, CallId, Fix, Hash, Hud,
+    LogEntry, Verdict, VerdictPayload, LOCK_EPOCHS, WINDOW_EPOCHS,
 };
 
 /// Sim matches start at a fixed instant so runs are reproducible.
@@ -44,6 +44,7 @@ pub const APP_ID: &str = "SIMTEAM.dev.tail.sim";
 
 const M_PER_DEG: f64 = 6_371_008.8 * PI / 180.0;
 const BOT_SPEED_MPS: f64 = 1.4;
+const BPS_F: f64 = 10_000.0;
 
 /// Everything a run produced, timestamped in sim seconds.
 #[derive(Debug, Default)]
@@ -269,25 +270,60 @@ struct Sim<'a> {
     k_log: Hash,
 }
 
-/// The contract's money rules, verdict by verdict (`contracts/tail`): a Hint pays into the pool, a
-/// Tag or Forfeit credits the loser from it and moves the loser's head, and End replays the match
-/// and credits each survivor what they are owed.
+/// The contract's money rules, verdict by verdict (`contracts/tail`): a Hint is charged at the
+/// price its time and the match's earlier hints set (`pricing`) and pays into the pool, a Tag or
+/// Forfeit credits the loser from it and moves the loser's head, and End replays the match and
+/// credits each survivor what they are owed.
 struct Chain {
+    stake: u128,
+    /// `(start_ms, end_ms)` from Start.
+    span: Option<(u64, u64)>,
     heads: Vec<u128>,
     pool: u128,
     events: Vec<PlayEvent>,
 }
 
 impl Chain {
+    fn hint_times(&self) -> Vec<u64> {
+        self.events.iter().filter_map(PlayEvent::hint_t_ms).collect()
+    }
+
+    /// `(recent, price per kind)` for a hint charged at `now_ms` (clamped to `end_ms`, as the
+    /// referee charges in a tick that runs past it).
+    fn board(&self, now_ms: u64) -> Result<(u32, [u128; 3]), String> {
+        let (_, end_ms) = self.span.ok_or("a HUD before Start")?;
+        let recent = recent_hints(&self.hint_times(), now_ms.min(end_ms));
+        let prices = std::array::from_fn(|k| hint_price(self.stake, k as u8, recent).expect("known kind"));
+        Ok((recent, prices))
+    }
+
     fn apply(&mut self, v: &Verdict, ring: impl FnOnce() -> Vec<u16>) -> Result<(), String> {
         match *v {
-            Verdict::Hint { from, amount, .. } => {
+            Verdict::Start { start_ms, end_ms, .. } => self.span = Some((start_ms, end_ms)),
+            Verdict::Hint {
+                from,
+                amount,
+                hint,
+                t_ms,
+                ..
+            } => {
+                let (start_ms, end_ms) = self.span.ok_or("a hint before Start")?;
+                let earlier = self.hint_times();
+                if t_ms < start_ms || t_ms > end_ms || earlier.last().is_some_and(|&last| t_ms < last) {
+                    return Err(format!(
+                        "hint t_ms {t_ms} is outside the match or before an earlier hint"
+                    ));
+                }
+                let price = hint_price(self.stake, hint, recent_hints(&earlier, t_ms));
+                if price != Some(amount) {
+                    return Err(format!("hint amount {amount} is not its price {price:?}"));
+                }
                 let head = &mut self.heads[usize::from(from)];
                 *head = head
                     .checked_sub(amount)
                     .ok_or("a hint costs more than the head")?;
                 self.pool += amount;
-                self.events.push(PlayEvent::Hint { from, amount });
+                self.events.push(PlayEvent::Hint { from, amount, t_ms });
             }
             Verdict::Tag {
                 hunter: w,
@@ -323,7 +359,7 @@ impl Chain {
                 }
                 self.pool = 0;
             }
-            Verdict::Start { .. } | Verdict::Checkpoint { .. } => {}
+            Verdict::Checkpoint { .. } => {}
         }
         Ok(())
     }
@@ -431,6 +467,8 @@ pub fn run_seeded(sc: &Scenario, seed: u64) -> Result<Report, String> {
         anchored: (0, merkle::empty_root()),
         tags: vec![0; n],
         chain: Chain {
+            stake: u128::from(sc.stake),
+            span: None,
             heads: vec![u128::from(sc.stake); n],
             pool: 0,
             events: Vec::new(),
@@ -681,9 +719,19 @@ impl Sim<'_> {
             if hunting && u32::from(lock) >= tail_protocol::LOCK_EPOCHS && self.rng.unit() < 0.05 {
                 self.phones[i].strike();
             }
-            if self.rng.unit() < 1.0 / 240.0 {
+            // Demand reacts to the price board: at 2x a bot asks half as often, and never when
+            // the price would take more than a quarter of its head.
+            let board = self.phones[i]
+                .last_hud
+                .as_ref()
+                .map_or((0, [0; 3], u128::MAX), |h| (h.hint_recent, h.hint_prices, h.head));
+            let (recent, prices, head) = board;
+            let eagerness = BPS_F / tail_protocol::demand_bps(recent) as f64;
+            if self.rng.unit() < eagerness / 240.0 {
                 let kind = (self.rng.next() % 3) as u8;
-                self.phones[i].hint(kind, Some("where are they?".into()));
+                if prices[usize::from(kind)].saturating_mul(4) <= head {
+                    self.phones[i].hint(kind, Some("where are they?".into()));
+                }
             }
         }
     }
@@ -736,7 +784,7 @@ impl Sim<'_> {
             self.report.tick_us.push(t0.elapsed().as_micros());
             self.record(s, call, &out.verdicts, &out.proofs, &out.log)?;
             check_rejected(&out.log, &out.rejected, &sent).map_err(|e| format!("tick {tick_no}: {e}"))?;
-            self.check_huds(&out.huds)
+            self.check_huds(&out.huds, t_ms)
                 .map_err(|e| format!("tick {tick_no}: {e}"))?;
             self.report
                 .rejections
@@ -987,10 +1035,18 @@ impl Sim<'_> {
         }
     }
 
-    /// HUD v2: the log at the end of the tick, and the tags each player made.
-    fn check_huds(&self, huds: &[(u16, Hud)]) -> Result<(), String> {
+    /// HUD v2: the log at the end of the tick, the tags each player made, and the price board
+    /// the contract would charge at `now_ms`.
+    fn check_huds(&self, huds: &[(u16, Hud)], now_ms: u64) -> Result<(), String> {
         let root = merkle::root(&self.leaves);
+        let board = self.chain.board(now_ms)?;
         for (p, h) in huds {
+            if (h.hint_recent, h.hint_prices) != board {
+                return Err(format!(
+                    "HUD of player {p} prices hints {:?} at demand {}, the contract {board:?}",
+                    h.hint_prices, h.hint_recent
+                ));
+            }
             if h.player != *p || h.log_size != self.leaves.len() as u64 || h.root != root {
                 return Err(format!("HUD of player {p} names another log or player"));
             }
@@ -1106,6 +1162,16 @@ fn check_huds(e: &Expect, r: &Report, bad: &mut Vec<String>) {
         if let Some(v) = c.rejected {
             let code = h.rejected.map_or(0, |(_, code)| code);
             diff("rejected", code == v, format!("{:?}", h.rejected));
+        }
+        if let Some(v) = c.hint_recent {
+            diff("hint_recent", h.hint_recent == v, h.hint_recent.to_string());
+        }
+        if let Some(v) = c.hint_prices {
+            diff(
+                "hint_prices",
+                h.hint_prices == v.map(u128::from),
+                format!("{:?}", h.hint_prices),
+            );
         }
     }
 }
@@ -1255,6 +1321,9 @@ pub struct Stats {
     pub hints: usize,
     pub contacts: usize,
     pub log_entries: usize,
+    /// The hint price index (the demand multiplier on every base price, in basis points) per
+    /// `PRICE_WINDOW_MS` of the match: `(minute it starts, mean, max)` over the ticks in it.
+    pub price_index: Vec<(u64, u128, u128)>,
 }
 
 pub fn stats(r: &Report) -> Stats {
@@ -1281,5 +1350,25 @@ pub fn stats(r: &Report) -> Stats {
             .filter(|e| matches!(e, LogEntry::Contact { .. }))
             .count(),
         log_entries: r.log.len(),
+        price_index: price_index(r),
     }
+}
+
+fn price_index(r: &Report) -> Vec<(u64, u128, u128)> {
+    let window_s = tail_protocol::PRICE_WINDOW_MS / 1000;
+    let mut buckets: BTreeMap<u64, Vec<u128>> = BTreeMap::new();
+    // Every HUD of a tick shows the same board; player 0's stands for it.
+    for (t, _, h) in r.huds.iter().filter(|(_, p, _)| *p == 0) {
+        buckets
+            .entry(t / window_s)
+            .or_default()
+            .push(tail_protocol::demand_bps(h.hint_recent));
+    }
+    buckets
+        .into_iter()
+        .map(|(k, v)| {
+            let mean = v.iter().sum::<u128>() / v.len() as u128;
+            (k * window_s / 60, mean, v.iter().copied().max().unwrap_or(0))
+        })
+        .collect()
 }

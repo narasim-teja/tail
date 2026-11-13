@@ -139,8 +139,13 @@ deferred strikes go before the new tick's actions. The coin is secret until `End
 VRF signature; after that the replay can recompute it. An action by a player who is already out
 is refused with `PlayerOut`.
 
-**Hints (4.7).** `price = hint_price(stake, kind)`, moved from the asker's head into the
-contract's hint pool. The `Hint` verdict names only the asker (it is public during play); the
+**Hints (4.7).** `price = hint_price(stake, kind, recent)` (`tail_protocol::pricing`), where
+`recent` counts the match's hints charged in the `PRICE_WINDOW_MS` (5 min) up to now, earlier
+ones in the same tick included: each adds 25 % to the base price, up to 4x. The hint is charged
+at `t_ms = min(now_ms, end_ms)`, which the `Hint` verdict carries so the contract can recompute
+the price; every HUD shows the board (`hint_prices`, `hint_recent`) as of the end of the tick,
+and the voice prompt gets the demand that priced the hint. The price is moved from the asker's
+head into the contract's hint pool. The `Hint` verdict names only the asker (it is public during play); the
 referee keeps the target, adds the price to the target's `hint_credit` and appends the target to
 `hint_targets`. The `Tag` or `Forfeit` that puts a player out carries their `hint_credit` as its
 `credit` (it moves onto their head just before the head goes to the winner); at End each
@@ -192,7 +197,8 @@ From `tail_protocol::constants` (shared with TS): `EPOCH_MS` sets the token and 
 implied speed beyond both accuracies, over at least 1 s, that rejects a batch.
 `CLOCK_SKEW_MS` sets how far ahead of the referee clock a batch may be dated, and how
 recent a batch must be to make its player present. `DARK_LEAK_MS`, `LEAK_CELL_M` and
-`DARK_FORFEIT_MS` drive the dark rules. `HINT_*` and `hint_bps` set hint prices and facts.
+`DARK_FORFEIT_MS` drive the dark rules. `HINT_*` set the hint facts; `tail_protocol::pricing`
+(`hint_bps`, `PRICE_WINDOW_MS`, `PRICE_STEP_BPS`, `PRICE_CAP_BPS`) sets their prices.
 `CHECKPOINT_MS` sets how often roots are anchored.
 
 Local to the engine (`referee_core::*`):
