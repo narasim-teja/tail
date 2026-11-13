@@ -1,6 +1,7 @@
-# TAIL replay
+# TAIL web: the front page and the replay
 
-A web page that replays a finished TAIL match on the park it was played in, in 3D, and checks
+The site at `/` is TAIL's front page (below, [The front page](#the-front-page)). Everything else
+is the replay: a web page that replays a finished TAIL match on the park it was played in, in 3D, and checks
 in the browser that every tag, hint and payout is the one the referee signed and NEAR settled. It
 re-runs the replay the contract runs at the end: money only becomes withdrawable after the
 contract has replayed and checked the whole match.
@@ -43,7 +44,8 @@ From the repo root, after `bun install`:
 
 ```sh
 cd apps/web
-bun run dev                     # http://localhost:5173, plays the Boston Common fixture
+bun run dev                     # http://localhost:5173: the front page
+open "http://localhost:5173/?fixture=boston-common"   # the Boston Common fixture film
 ```
 
 The dev server listens on every interface, so a phone on the same network opens it at
@@ -56,23 +58,24 @@ so `bun test` needs no generated files.
 
 The fixture is a generated match, not a real one (see below). Other URL options:
 
-| URL                                    | Shows                                                         |
-| -------------------------------------- | ------------------------------------------------------------- |
-| `/` or `/?fixture=boston-common`       | the fixture, with trails                                      |
-| `/?fixture=boston-common-no-trails`    | the same match without released batches                       |
-| `/?fixture=boston-common-tampered`     | one Tag verdict rewritten after signing                       |
-| `/?fixture=boston-common-tampered-log` | history rewritten behind a checkpoint (consistency fails)     |
-| `/?fixture=boston-common-refunded`     | signed, but End names a hint's target wrongly: refunded       |
-| `/?fixture=boston-common-v1`           | the same match as recorded before protocol v2 (read only)     |
-| `/?fixture=boston-common-economy`      | 12 players, 60 minutes, from the Rust engine (see below)      |
-| `&view=economy`                        | open on the economy view                                      |
-| `/?presence=<proof>` or `/?presence`   | the presence proof page: check one, or paste one              |
-| `/dossier/<account>`                   | a player's dossier, read from the pinned contract             |
-| `/?match=<32 hex>`                     | a real match from the relay's `GET /replay/:id`               |
-| `#account_id=…&nonce=…&sig=…`          | a player's one-time sign-in for a private match (below)       |
-| `&relay=<url>`                         | which relay to read (default `VITE_RELAY_URL`, else `/relay`) |
-| `&t=<seconds>`                         | open the film at that moment                                  |
-| `&gl=0`                                | force the flat 2D map (what browsers without WebGL 2 get)     |
+| URL                                    | Shows                                                                                                               |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `/`                                    | the front page (also with tracking tags such as `utm_source`)                                                       |
+| `/?fixture=boston-common`              | the fixture, with trails (any replay option below without a `fixture` or `match` plays it too, e.g. `/?t=372`)      |
+| `/?fixture=boston-common-no-trails`    | the same match without released batches                                                                             |
+| `/?fixture=boston-common-tampered`     | one Tag verdict rewritten after signing                                                                             |
+| `/?fixture=boston-common-tampered-log` | history rewritten behind a checkpoint (consistency fails)                                                           |
+| `/?fixture=boston-common-refunded`     | signed, but End names a hint's target wrongly: refunded                                                             |
+| `/?fixture=boston-common-v1`           | the same match as recorded before protocol v2 (read only)                                                           |
+| `/?fixture=boston-common-economy`      | 12 players, 60 minutes, from the Rust engine (see below)                                                            |
+| `&view=economy`                        | open on the economy view                                                                                            |
+| `/?presence=<proof>` or `/?presence`   | the presence proof page: check one, or paste one                                                                    |
+| `/dossier/<account>`                   | a player's dossier, read from the pinned contract                                                                   |
+| `/?match=<32 hex>`                     | a real match: the site's published copy if `public/matches/index.json` lists it, else the relay's `GET /replay/:id` |
+| `#account_id=…&nonce=…&sig=…`          | a player's one-time sign-in for a private match (below)                                                             |
+| `&relay=<url>`                         | which relay to read (default `VITE_RELAY_URL`, else `/relay`), even for a published match                           |
+| `&t=<seconds>`                         | open the film at that moment                                                                                        |
+| `&gl=0`                                | force the flat 2D map (what browsers without WebGL 2 get)                                                           |
 
 ### Against a relay
 
@@ -87,7 +90,8 @@ origin, or set `VITE_RELAY_URL` at build time and have the relay allow the page'
 
 Other build-time settings: `VITE_TAIL_CONTRACT` (default `tail.tail-dev-a38d13.testnet`; the
 contract every replay is checked against, and its network follows from its name),
-`VITE_NEAR_RPC_TESTNET` (default `https://test.rpc.fastnear.com`).
+`VITE_NEAR_RPC_TESTNET` (default `https://test.rpc.fastnear.com`), and the front page's own
+(below, [Settings](#settings)).
 
 ### A private match
 
@@ -146,7 +150,86 @@ bun test apps/web                          # verification, tamper and model test
 cd apps/web && bun run build                # fixtures, then the static site in dist/
 bun apps/web/scripts/make-fixture.ts       # write the fixtures without building
 bun apps/web/scripts/shots.ts http://localhost:5173/   # every state at 390, 1440 and 1920 wide
+bun apps/web/scripts/landing-shots.ts http://localhost:5173/   # the front page, 390 and 1440, motion and reduced
+bun apps/web/scripts/og-image.ts           # redraw public/og.png (after make-fixture)
 ```
+
+## The front page
+
+`/` answers two questions for a visitor arriving from a shared link: what TAIL is, and whether it
+is real. It is its own small bundle (`src/landing/`): it never loads MapLibre, deck.gl or the
+verifier, and the replay never loads it (`src/main.tsx` picks the page from `src/route.ts`, the
+one owner of which address opens what, and imports only that page's code).
+
+Day to dusk: it opens on the phone app's daylight paper and, as the visitor reads down from the
+game to the proof, the ground deepens through sand and a low-sun band (no text sits on it) to the
+replay's dusk, where the matches are listed. Every colour is derived in OKLCH from `@tail/brand`
+(`src/landing/palette.ts`), and `test/landing.test.tsx` holds each text colour to WCAG AA on each
+ground it is set on. Persimmon is spent on the game only: the hunter, the lock, and the STRIKE
+fold, which floods it as the phone's lock-full takeover does.
+
+- **Hero.** A recorded match playing its first chase on a loop, drawn in SVG from a scene cut
+  from the bundle by the replay's own model (`scripts/scene.ts`): every player's walked trail, the
+  hunter's lock arc filling from the logged contacts, the strike ring where the tag landed. It is
+  the featured published match, else the generated Boston Common fixture, labelled as generated.
+  It runs only on screen with the tab visible; Reduce Motion draws one still frame of the strike.
+- **Lock, Heat, Strike, Hints.** The phone's instruments redrawn. The rules in the words come from
+  `@tail/protocol`'s constants, and each hint price is `hintPrice` at a 5 USDC stake for the demand
+  the visitor sets (pinned by a test).
+- **One stake, one number.** A worked hunt as a ledger, every figure from the pricing rule; the
+  table's total never changes.
+- **What a tag proves.** The path from two phones to the browser, each step with where to check
+  it, then what is not claimed (the limits at the top of the root README).
+- **Matches.** The published matches, each with how the pinned contract settled it, read live with
+  `get_match` (paid out, refunded, not on NEAR, or that NEAR didn't answer). That is the contract's
+  record, not the replay's checks, which run when a row is opened. With none published, the
+  generated demos (`public/fixtures/demos.json`, written by `make-fixture.ts`) are offered,
+  labelled as generated and not on NEAR.
+- **A dossier.** One player's card, the contract's own `nft_token` media, when
+  `VITE_DOSSIER_ACCOUNT` is set and NEAR returns it; otherwise the section is absent.
+
+Everything the first screen needs (type, the match list, the scene, the demos) is fetched before
+the first render, so nothing moves when a font or file arrives. The browser's theme colour follows
+the ground: paper, then dusk once the proof turns.
+
+### Published matches
+
+`public/matches/index.json` lists the matches the site ships, newest first (it is committed empty):
+`{ id, place, playedAt, players, minutes, survivors?, featured? }`. Each has its bundle at
+`public/matches/<id>.json` and the front page's scene of it at `<id>.scene.json`. A link
+`/?match=<id>` reads a listed match from the site instead of the relay; it is checked exactly as
+any other, against the pinned contract and the linked id, so the site's copy earns no trust of its
+own. A list that can't be read (none deployed, or not the documented shape) sends every link to
+the relay, as before.
+
+```sh
+bun apps/web/scripts/publish-match.ts <match id> --place "Boston Common" [--relay <url>] [--featured]
+```
+
+It fetches the finished match from a relay (default `http://localhost:8787`), refuses a private one
+(the relay's 403, or a bundle whose `publicReplay` isn't true), writes the bundle and its scene,
+lists it first (with `--featured`, it becomes the hero's match), and prints what it published.
+**The bundle holds every player's location trail for the whole match**, and the script says so:
+once deployed anyone can download it, so publish only a match whose players agreed. No real match
+has been published.
+
+### Settings
+
+Build-time, all optional. Unset means the link or section they feed is left out.
+
+| Variable               | What it does                                                                                                                |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `VITE_SITE_URL`        | the canonical origin (default `https://playtail.app`; https only): the canonical link, `og:url`, `og:image`, the footer     |
+| `VITE_REPO_URL`        | the source repository; adds the Code and Source links and the proof steps' links into the repo (GitHub-style `/blob/main/`) |
+| `VITE_DOCS_URL`        | a Docs link in the footer                                                                                                   |
+| `VITE_DOSSIER_ACCOUNT` | the player whose Dossier the front page shows                                                                               |
+
+### Hosting
+
+`dist/` is a static site. `public/_redirects` sends `/dossier/<account>` to `index.html` for
+Cloudflare Pages (and Netlify), so a dossier link opens directly; every other page is `/` with a
+query. `public/og.png` is the social card (`scripts/og-image.ts`, committed), named with absolute
+URLs from `VITE_SITE_URL` in `index.html`.
 
 ## What the page checks, and how
 
