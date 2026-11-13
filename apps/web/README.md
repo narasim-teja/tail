@@ -3,10 +3,19 @@
 A web page that replays a finished TAIL match on the park it was played in, in 3D, and checks
 in the browser that every tag, hint and payout is the one the referee signed and NEAR settled.
 
-It opens as a short film: 30x through the quiet stretches, easing to real time around each tag
-while the lock line between hunter and target pulls taut, the tag flashes on the spot and the
-target's head counts across to the hunter in the roster. Space pauses, the timeline scrubs, a
-tick jumps to its moment, a player or line opens the details sheet, Esc closes it.
+It opens as a short film: the place and the match line come up large over the park and hand
+over to the corner title, then the film runs 30x through the quiet stretches, easing to real
+time around each tag while the lock line between hunter and target pulls taut, the tag flashes
+on the spot and the target's head counts across to the hunter in the roster. At the end the map
+dims and the final standings come up: everyone in order, their final head counted up from the
+stake, what they won or lost, and how each one went out, with Watch again and What was checked.
+Space pauses, the timeline scrubs, a tick jumps to its moment, a player or line opens the
+details sheet, Esc closes it.
+
+Pages with no film to play (loading, private, not finished, missing, broken) carry the Chase,
+the brand's ambient scene: the Trail mark tailing a target round a dotted zone, drawn from the
+same `@tail/brand` geometry as the phone app. Reduced motion holds it still and skips the
+cold open.
 
 Screenshots of every state at phone, laptop and TV sizes are generated, not committed: run
 `bun apps/web/scripts/shots.ts <url>` against a dev or preview server (they land in
