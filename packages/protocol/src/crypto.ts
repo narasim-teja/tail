@@ -1,22 +1,16 @@
-// Every hash, MAC, key derivation and signature input in TAIL (TECHNICAL.md 4.1–4.11).
-// SHA-256, HMAC-SHA256, HKDF-SHA256, X25519 + ChaCha20-Poly1305, ed25519.
+// Every hash, MAC, key derivation and signature input in TAIL (TECHNICAL.md 4.1–4.10).
+// SHA-256, HMAC-SHA256, HKDF-SHA256, X25519 + ChaCha20-Poly1305, ed25519. The Merkle log is in
+// merkle.ts, the referee's signed messages in signed.ts.
 
 import { chacha20poly1305 } from "@noble/ciphers/chacha.js";
-import { x25519 } from "@noble/curves/ed25519.js";
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { Writer } from "./borsh.ts";
 import { concat, equal, fixed, readU64le, toHex, u16le, u32le, utf8 } from "./bytes.ts";
 import { Domain, EPOCH_MS } from "./constants.ts";
-import {
-  type Batch,
-  encodeBatch,
-  encodeLogEntry,
-  encodeVerdictPayload,
-  type LogEntry,
-  type VerdictPayload,
-} from "./messages.ts";
+import { type Batch, encodeBatch, encodeVerdictPayload, type VerdictPayload } from "./messages.ts";
 
 export { sha256 };
 
@@ -113,7 +107,11 @@ export const enrollClientDataHash = (
 
 // ── Verdicts (4.10) ─────────────────────────────────────────────────────────────
 
-/** The 32 bytes the referee signs with ed25519 and the contract checks with ed25519_verify. */
+/**
+ * The 32 bytes the referee signs with ed25519 and the contract checks with ed25519_verify:
+ * SHA256("tail/verdict/v2" ‖ borsh(match_id, seq, prev, call_id, body)). The next verdict's
+ * `prev` is this value.
+ */
 export const verdictDigest = (p: VerdictPayload) =>
   sha256(concat(utf8(Domain.verdict), encodeVerdictPayload(p)));
 
@@ -159,63 +157,57 @@ export function buildRing(accountIds: readonly string[], vrfSignature: Uint8Arra
   return ring;
 }
 
-// ── Merkle log (4.11), RFC 6962 ─────────────────────────────────────────────────
+// ── ed25519 ─────────────────────────────────────────────────────────────────────
 
-export const merkleLeaf = (e: LogEntry) => sha256(concat(Uint8Array.of(0), encodeLogEntry(e)));
-const merkleNode = (l: Uint8Array, r: Uint8Array) => sha256(concat(Uint8Array.of(1), l, r));
-
-/** Largest power of two strictly below n (n ≥ 2). */
-function split(n: number): number {
-  let k = 1;
-  while (k << 1 < n) k <<= 1;
-  return k;
-}
-
-export function merkleRoot(leaves: readonly Uint8Array[]): Uint8Array {
-  if (leaves.length === 0) return sha256(new Uint8Array(0));
-  if (leaves.length === 1) return leaves[0] as Uint8Array;
-  const k = split(leaves.length);
-  return merkleNode(merkleRoot(leaves.slice(0, k)), merkleRoot(leaves.slice(k)));
-}
-
-/** Audit path for leaf `index` in a tree of `leaves.length` (RFC 6962 2.1.1). */
-export function merkleProof(leaves: readonly Uint8Array[], index: number): Uint8Array[] {
-  if (index < 0 || index >= leaves.length) throw new RangeError("leaf index out of range");
-  if (leaves.length === 1) return [];
-  const k = split(leaves.length);
-  return index < k
-    ? [...merkleProof(leaves.slice(0, k), index), merkleRoot(leaves.slice(k))]
-    : [...merkleProof(leaves.slice(k), index - k), merkleRoot(leaves.slice(0, k))];
-}
-
-export function merkleVerify(
-  leaf: Uint8Array,
-  index: number,
-  size: number,
-  proof: readonly Uint8Array[],
-  root: Uint8Array,
-) {
-  // Recompute bottom-up, following the same split as merkleProof.
-  const walk = (i: number, n: number, depth: number): Uint8Array | undefined => {
-    if (n === 1) return depth === proof.length ? leaf : undefined;
-    const k = split(n);
-    const sib = proof[proof.length - 1 - depth];
-    if (!sib) return undefined;
-    if (i < k) {
-      const l = walk(i, k, depth + 1);
-      return l && merkleNode(l, sib);
-    }
-    const r = walk(i - k, n - k, depth + 1);
-    return r && merkleNode(sib, r);
-  };
-  if (index < 0 || index >= size) return false;
-  const got = walk(index, size, 0);
-  return got !== undefined && equal(got, root);
+/**
+ * Does `sig` sign `digest` under the ed25519 key `publicKey`? Strict RFC 8032 checks
+ * (`zip215: false`), as the Rust side's `verify_strict`. Never throws.
+ */
+export function verifyEd25519(publicKey: Uint8Array, digest: Uint8Array, sig: Uint8Array): boolean {
+  if (publicKey.length !== 32 || sig.length !== 64) return false;
+  try {
+    return ed25519.verify(sig, digest, publicKey, { zip215: false });
+  } catch {
+    return false;
+  }
 }
 
 // ── Sealing (phone ↔ enclave) ───────────────────────────────────────────────────
 
 const NONCE = new Uint8Array(12); // Each sealing key is used exactly once (fresh ephemeral key).
+
+const P25519 = 2n ** 255n - 19n;
+/**
+ * u-coordinates of order dividing 8 on Curve25519 and its twist: 0, 1, p−1 and the two order-8
+ * points. Same list as libsodium.
+ */
+const LOW_ORDER_U = new Set([
+  0n,
+  1n,
+  P25519 - 1n,
+  325606250916557431795983626356110631294008115727848805560023387167927233504n,
+  39382357235489614581723060781553021112529911719440698176882885853963445705823n,
+]);
+
+/**
+ * True for an X25519 public key whose shared secret with any private key is all zeros. Such a
+ * key would make a "sealed" message readable by anyone. X25519 ignores bit 255 and reduces mod
+ * p, so the encodings p and p+1 of 0 and 1 are caught too.
+ */
+export function isLowOrderX25519(pk: Uint8Array): boolean {
+  const b = fixed(pk, 32, "X25519 public key");
+  let u = 0n;
+  for (let i = 31; i >= 0; i--) u = (u << 8n) | BigInt(i === 31 ? (b[i] as number) & 0x7f : (b[i] as number));
+  return LOW_ORDER_U.has(u % P25519);
+}
+
+function sharedSecret(sk: Uint8Array, pk: Uint8Array): Uint8Array {
+  if (isLowOrderX25519(pk)) throw new Error("low-order public key");
+  const s = x25519.getSharedSecret(sk, pk);
+  // Unreachable once low-order keys are refused; kept so a gap in the list cannot leak.
+  if (equal(s, new Uint8Array(32))) throw new Error("all-zero shared secret");
+  return s;
+}
 
 function sealKey(shared: Uint8Array, ephPk: Uint8Array, recipientPk: Uint8Array): Uint8Array {
   return hkdf(sha256, shared, concat(ephPk, recipientPk), utf8(Domain.seal), 32);
@@ -224,8 +216,8 @@ function sealKey(shared: Uint8Array, ephPk: Uint8Array, recipientPk: Uint8Array)
 /**
  * sealed = eph_pk (32) ‖ ChaCha20-Poly1305(key, nonce 0, plaintext, aad = context).
  * key = HKDF-SHA256(ikm = X25519(eph_sk, recipient_pk), salt = eph_pk ‖ recipient_pk, info = "tail/seal/v1").
- * `context` names what is sealed ("tail/batch", "tail/hud", …) so a ciphertext cannot be
- * replayed as a different kind of message.
+ * `context` names what is sealed (SealContext) so a ciphertext cannot be replayed as a different
+ * kind of message. Throws for a low-order recipient key.
  */
 export function sealWith(
   ephSk: Uint8Array,
@@ -234,22 +226,19 @@ export function sealWith(
   context: string,
 ): Uint8Array {
   const ephPk = x25519.getPublicKey(fixed(ephSk, 32, "ephemeral key"));
-  const key = sealKey(
-    x25519.getSharedSecret(ephSk, fixed(recipientPk, 32, "recipient key")),
-    ephPk,
-    recipientPk,
-  );
+  const key = sealKey(sharedSecret(ephSk, fixed(recipientPk, 32, "recipient key")), ephPk, recipientPk);
   return concat(ephPk, chacha20poly1305(key, NONCE, utf8(context)).encrypt(plaintext));
 }
 
 export const seal = (recipientPk: Uint8Array, plaintext: Uint8Array, context: string) =>
   sealWith(x25519.utils.randomSecretKey(), recipientPk, plaintext, context);
 
+/** Throws if the message is short, its ephemeral key is low-order, or it fails to authenticate. */
 export function open(recipientSk: Uint8Array, sealed: Uint8Array, context: string): Uint8Array {
   if (sealed.length < 32 + 16) throw new Error("sealed message too short");
   const ephPk = sealed.slice(0, 32);
   const recipientPk = x25519.getPublicKey(fixed(recipientSk, 32, "recipient key"));
-  const key = sealKey(x25519.getSharedSecret(recipientSk, ephPk), ephPk, recipientPk);
+  const key = sealKey(sharedSecret(recipientSk, ephPk), ephPk, recipientPk);
   return chacha20poly1305(key, NONCE, utf8(context)).decrypt(sealed.slice(32));
 }
 

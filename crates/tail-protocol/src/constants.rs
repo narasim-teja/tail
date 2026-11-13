@@ -57,15 +57,44 @@ pub mod target_status {
     pub const WON: u8 = 2;
 }
 
+/// Why the referee refused a batch: `LogEntry::Rejected.code` and `Hud.rejected`. Shared so the
+/// phone can name the reason without knowing the referee's types.
+pub mod reject_code {
+    pub const UNKNOWN_PLAYER: u8 = 1;
+    pub const WRONG_MATCH: u8 = 2;
+    pub const PLAYER_OUT: u8 = 3;
+    /// `seq` is not the next one expected.
+    pub const SEQ: u8 = 4;
+    /// `prev` is not the hash of the last accepted batch.
+    pub const PREV: u8 = 5;
+    /// The App Attest assertion did not verify.
+    pub const ASSERTION: u8 = 6;
+    pub const CLOCK_SKEW: u8 = 7;
+    /// A fix was simulated or came from an accessory.
+    pub const FIX_FLAGS: u8 = 8;
+    /// Fixes out of time order.
+    pub const FIX_ORDER: u8 = 9;
+    pub const TELEPORT: u8 = 10;
+    /// `t_ms` went backwards against an earlier batch of the same player.
+    pub const TIME_ORDER: u8 = 11;
+}
+
 pub mod domain {
     pub const TAG: &[u8] = b"tail/tag";
     pub const BEACON: &[u8] = b"tail/beacon";
     pub const TAG_MAC: &[u8] = b"tag";
     pub const TOKEN_MAC: &[u8] = b"tok";
     pub const BATCH: &[u8] = b"tail/batch";
-    pub const VERDICT: &[u8] = b"tail/verdict/v1";
+    /// v2: the payload carries `prev`, the digest of the match's previous verdict.
+    pub const VERDICT: &[u8] = b"tail/verdict/v2";
     pub const RING: &[u8] = b"tail/ring";
     pub const PLAYERS: &[u8] = b"tail/players";
     pub const SEAL: &[u8] = b"tail/seal/v1";
     pub const ENROLL: &[u8] = b"tail/enroll/v1";
+    /// Signature digest of a `Hud`, and the seal AAD of a `SignedHud`.
+    pub const HUD: &[u8] = b"tail/hud/v2";
+    /// Signature digest of `PlayerKeys`, and the seal AAD of a `SignedPlayerKeys`.
+    pub const KEYS: &[u8] = b"tail/keys/v2";
+    /// Signature digest of a `VoiceLine`, and the seal AAD of a `SignedVoiceLine`.
+    pub const VOICE: &[u8] = b"tail/voice/v1";
 }

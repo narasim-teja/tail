@@ -10,7 +10,6 @@ import {
   buildRing,
   decodeBatch,
   decodeBatchEnvelope,
-  decodeHud,
   decodeLogEntry,
   decodePlayerKeys,
   decodeSignedVerdict,
@@ -18,14 +17,15 @@ import {
   derivePlayerKey,
   deriveTagKey,
   encodeBatch,
-  encodeHud,
   encodeLogEntry,
+  encodeSignedVerdict,
   enrollClientDataHash,
   epochAt,
   fromHex,
   HintKind,
   hintPrice,
   hudDigest,
+  isLowOrderX25519,
   merkleLeaf,
   merkleProof,
   merkleRoot,
@@ -38,13 +38,15 @@ import {
   ringCommit,
   seal,
   sealWith,
-  TargetStatus,
+  signVerdict,
   tagMatches,
   toHex,
   tokenToUuid,
   utf8,
   uuidToToken,
+  verdictChainBreak,
   verdictDigest,
+  verifySignedVerdict,
 } from "../src/index.ts";
 import authV from "../vectors/auth.json";
 import batchV from "../vectors/batch.json";
@@ -137,23 +139,56 @@ describe("batch", () => {
 
 describe("verdicts", () => {
   const pk = h(verdictsV.refereePk);
+  const chain = verdictsV.verdicts.map((v) => decodeSignedVerdict(h(v.signed)));
 
   test("every verdict decodes, digests and verifies against the referee key", () => {
-    for (const v of verdictsV.verdicts) {
-      const sv = decodeSignedVerdict(h(v.signed));
+    for (const [i, v] of verdictsV.verdicts.entries()) {
+      const sv = chain[i] as ReturnType<typeof decodeSignedVerdict>;
       expect(sv.seq).toBe(v.seq);
       expect(toHex(verdictDigest(sv))).toBe(v.digest);
       expect(ed25519.verify(sv.sig, verdictDigest(sv), pk)).toBe(true);
+      expect(verifySignedVerdict(sv, pk)).toBe(true);
       expect(toHex(sv.sig)).toBe(v.sig);
+      expect(toHex(encodeSignedVerdict(sv))).toBe(v.signed);
     }
   });
 
+  test("each verdict's prev is the previous verdict's digest, zeros for the first", () => {
+    expect(verdictsV.verdicts[0]?.prev).toBe("00".repeat(32));
+    for (let i = 1; i < chain.length; i++)
+      expect(toHex(chain[i]?.prev as Uint8Array)).toBe(verdictsV.verdicts[i - 1]?.digest as string);
+    expect(verdictChainBreak(chain, pk)).toBeUndefined();
+  });
+
+  test("a fork, a gap or a foreign signature breaks the chain where it happens", () => {
+    const sk = h(verdictsV.refereeSeed);
+    const [first, second, third] = chain as [
+      (typeof chain)[0],
+      (typeof chain)[0],
+      (typeof chain)[0],
+      ...(typeof chain)[0][],
+    ];
+    // A second, validly signed verdict for seq 2 that does not chain to seq 1.
+    const fork = signVerdict({ ...second, prev: verdictDigest({ ...first, seq: 9 }) }, sk);
+    expect(verdictChainBreak([first, fork, third], pk)).toBe(1);
+    expect(verdictChainBreak([first, third], pk)).toBe(1);
+    const foreign = signVerdict(first, h("11".repeat(32)));
+    expect(verdictChainBreak([foreign], pk)).toBe(0);
+  });
+
   test("a verdict with any changed field no longer verifies", () => {
-    const sv = decodeSignedVerdict(h(verdictsV.verdicts[2]?.signed as string));
+    const sv = chain[2] as (typeof chain)[0];
     expect(sv.body).toEqual({ kind: "Tag", hunter: 2, target: 0 });
     const swapped = { ...sv, body: { kind: "Tag" as const, hunter: 0, target: 2 } };
-    expect(ed25519.verify(sv.sig, verdictDigest(swapped), pk)).toBe(false);
-    expect(ed25519.verify(sv.sig, verdictDigest({ ...sv, seq: sv.seq + 1 }), pk)).toBe(false);
+    expect(verifySignedVerdict(swapped, pk)).toBe(false);
+    expect(verifySignedVerdict({ ...sv, seq: sv.seq + 1 }, pk)).toBe(false);
+    expect(verifySignedVerdict({ ...sv, prev: new Uint8Array(32) }, pk)).toBe(false);
+  });
+
+  test("a hint verdict carries its kind, and the price follows from it", () => {
+    const hint = chain[1]?.body;
+    expect(hint).toEqual({ kind: "Hint", from: 0, to: 1, amount: 20_000n, hintId: 3, hint: HintKind.Near });
+    if (hint?.kind === "Hint") expect(hint.amount).toBe(hintPrice(1_000_000n, hint.hint as HintKind));
   });
 
   test("unknown verdict tags are rejected", () => {
@@ -214,34 +249,25 @@ describe("sealing", () => {
   });
 
   test("a sealed message does not open under another context, key, or after tampering", () => {
-    const sealed = seal(boxPublicKey(sk), utf8("hi"), "tail/hud");
+    const sealed = seal(boxPublicKey(sk), utf8("hi"), "tail/hud/v2");
     expect(() => open(sk, sealed, "tail/batch")).toThrow();
-    expect(() => open(h("11".repeat(32)), sealed, "tail/hud")).toThrow();
+    expect(() => open(h("11".repeat(32)), sealed, "tail/hud/v2")).toThrow();
     sealed[40] = (sealed[40] as number) ^ 1;
-    expect(() => open(sk, sealed, "tail/hud")).toThrow();
+    expect(() => open(sk, sealed, "tail/hud/v2")).toThrow();
   });
 
-  test("HUD with and without optional fields round-trips", () => {
-    const full = decodeHud(h(sealV.hud.borsh));
-    expect(full.leak).toEqual({ latE7: 423_551_000, lonE7: -710_651_000 });
-    expect(full.head).toBe(1_020_000n);
-    const bare = decodeHud(h(sealV.hudNoOptions.borsh));
-    expect(bare.leak).toBeUndefined();
-    expect(bare.hintFact).toBeUndefined();
-    expect(toHex(encodeHud(full))).toBe(sealV.hud.borsh);
-    expect(toHex(encodeHud(bare))).toBe(sealV.hudNoOptions.borsh);
-  });
-
-  test("an out player's HUD names who took their head", () => {
-    const out = decodeHud(h(sealV.hudOut.borsh));
-    expect(out.status).toBe(TargetStatus.Out);
-    expect(out.taggedBy).toBe("carol.tail.testnet");
-    expect(toHex(encodeHud(out))).toBe(sealV.hudOut.borsh);
-  });
-
-  test("a HUD of a player still in names no one", () => {
-    expect(decodeHud(h(sealV.hud.borsh)).taggedBy).toBeUndefined();
-    expect(decodeHud(h(sealV.hudNoOptions.borsh)).taggedBy).toBeUndefined();
+  test("every low-order key is refused, to seal to and as a sender's ephemeral key", () => {
+    expect(sealV.lowOrder).toHaveLength(14);
+    const sealed = h(sealV.sealed);
+    for (const k of sealV.lowOrder) {
+      expect(isLowOrderX25519(h(k))).toBe(true);
+      expect(() => sealWith(h(sealV.ephSk), h(k), utf8("x"), "c")).toThrow("low-order");
+      const forged = new Uint8Array(sealed);
+      forged.set(h(k), 0);
+      expect(() => open(sk, forged, sealV.context)).toThrow("low-order");
+    }
+    expect(isLowOrderX25519(h(sealV.recipientPk))).toBe(false);
+    expect(isLowOrderX25519(boxPublicKey(h(sealV.ephSk)))).toBe(false);
   });
 });
 
@@ -252,19 +278,28 @@ test("hint price is basis points of the stake, rounded down", () => {
 });
 
 describe("relay auth", () => {
+  const r = { ...authV.request, body: h(authV.request.body) };
+
   test("request, HUD and replay digests match the vectors", () => {
-    const r = authV.request;
-    expect(toHex(requestDigest(r.method, r.path, r.timeMs, h(r.body)))).toBe(r.digest);
+    expect(toHex(requestDigest(r))).toBe(r.digest);
     const { hud, replay } = authV;
     expect(toHex(hudDigest(h(hud.nonce), h(hud.matchId), hud.accountId))).toBe(hud.digest);
     expect(toHex(replayDigest(h(replay.nonce), h(replay.matchId), replay.accountId))).toBe(replay.digest);
   });
 
+  test("a request signature is bound to its account and contract", () => {
+    expect(toHex(requestDigest({ ...r, accountId: "bob.tail.testnet" }))).not.toBe(r.digest);
+    expect(toHex(requestDigest({ ...r, contractId: "tail.testnet" }))).not.toBe(r.digest);
+    // The two strings are length-prefixed, so moving bytes from one to the other changes the digest.
+    expect(
+      toHex(requestDigest({ ...r, contractId: `${r.contractId}a`, accountId: r.accountId.slice(1) })),
+    ).not.toBe(r.digest);
+  });
+
   test("the HUD and replay challenges never collide, and the method is case-insensitive", () => {
     const { hud } = authV;
     expect(toHex(replayDigest(h(hud.nonce), h(hud.matchId), hud.accountId))).not.toBe(hud.digest);
-    const r = authV.request;
-    expect(toHex(requestDigest("POST", r.path, r.timeMs, h(r.body)))).toBe(r.digest);
-    expect(toHex(requestDigest("PUT", r.path, r.timeMs, h(r.body)))).not.toBe(r.digest);
+    expect(toHex(requestDigest({ ...r, method: "POST" }))).toBe(r.digest);
+    expect(toHex(requestDigest({ ...r, method: "PUT" }))).not.toBe(r.digest);
   });
 });

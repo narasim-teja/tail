@@ -28,7 +28,7 @@ export const VEHICLE_HOLD_MS = 20_000;
 export const VEHICLE_FREEZE_MS = 120_000;
 /** Implied speed between consecutive fixes above this rejects the batch. */
 export const TELEPORT_MPS = 15;
-/** Device clock may differ from the tick's median device time by at most this. */
+/** A batch may be dated at most this far ahead of the referee clock; only batches this fresh refresh presence. */
 export const CLOCK_SKEW_MS = 20_000;
 /** No valid batch for this long: the hunter gets a coarse grid cell. */
 export const DARK_LEAK_MS = 45_000;
@@ -61,6 +61,30 @@ export const HINT_BPS: Record<HintKind, number> = {
 /** Fix.flags bits (CLLocationSourceInformation). Any set bit makes the batch invalid. */
 export const FixFlag = { SimulatedBySoftware: 1, ProducedByAccessory: 2 } as const;
 
+/**
+ * Why the referee refused a batch: LogEntry `Rejected.code` and `Hud.rejected.code`. Shared so
+ * the phone can name the reason without knowing the referee's types.
+ */
+export const RejectCode = {
+  UnknownPlayer: 1,
+  WrongMatch: 2,
+  PlayerOut: 3,
+  /** `seq` is not the next one expected. */
+  Seq: 4,
+  /** `prev` is not the hash of the last accepted batch. */
+  Prev: 5,
+  /** The App Attest assertion did not verify. */
+  Assertion: 6,
+  ClockSkew: 7,
+  /** A fix was simulated or came from an accessory. */
+  FixFlags: 8,
+  /** Fixes out of time order. */
+  FixOrder: 9,
+  Teleport: 10,
+  /** `t_ms` went backwards against an earlier batch of the same player. */
+  TimeOrder: 11,
+} as const;
+
 /** Domain strings. Every hash or MAC input starts with one, so no two contexts collide. */
 export const Domain = {
   tag: "tail/tag",
@@ -68,9 +92,29 @@ export const Domain = {
   tagMac: "tag",
   tokenMac: "tok",
   batch: "tail/batch",
-  verdict: "tail/verdict/v1",
+  /** v2: the payload carries `prev`, the digest of the match's previous verdict. */
+  verdict: "tail/verdict/v2",
   ring: "tail/ring",
   players: "tail/players",
   seal: "tail/seal/v1",
   enroll: "tail/enroll/v1",
+  /** Signature digest of a Hud, and the seal context of a SignedHud. */
+  hud: "tail/hud/v2",
+  /** Signature digest of PlayerKeys, and the seal context of a SignedPlayerKeys. */
+  keys: "tail/keys/v2",
+  /** Signature digest of a VoiceLine, and the seal context of a SignedVoiceLine. */
+  voice: "tail/voice/v1",
+  /** Seal context of a mesh-carried request (phone → relay). */
+  carry: "tail/carry/v1",
+  /** Signature digest of the relay's receipt for a carried envelope. */
+  carryAck: "tail/carry-ack/v1",
+} as const;
+
+/** The `context` (AAD) of every sealed message, by what it holds. */
+export const SealContext = {
+  batch: Domain.batch,
+  hud: Domain.hud,
+  keys: Domain.keys,
+  voice: Domain.voice,
+  carry: Domain.carry,
 } as const;

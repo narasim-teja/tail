@@ -1,0 +1,50 @@
+{
+  "players": [
+    "alice.tail.testnet",
+    "bob.tail.testnet",
+    "carol.tail.testnet"
+  ],
+  "roots": [
+    {
+      "logSize": 5,
+      "root": "7ab4863f302b63f60bdd2ef0687648dd6239cc2291fd31f5d57b04dfab4cc6eb"
+    },
+    {
+      "logSize": 8,
+      "root": "b8daa981b734bdb076c886362b056fa9ec7ea62f71354e6518134435df137467"
+    },
+    {
+      "logSize": 9,
+      "root": "525415695ced5119f247477da47b020274b4ad9f7231fa91c716bb0bba101cf0"
+    }
+  ],
+  "proof": {
+    "input": {
+      "matchId": "5f6232906ba95120646edd0a8b3ce6cb",
+      "contract": "tail-dev.testnet",
+      "entry": {
+        "kind": "Contact",
+        "a": 0,
+        "b": 1,
+        "epoch": 4000000
+      },
+      "index": "3",
+      "size": "8",
+      "path": [
+        "ebbcd0a0018d492ee21c3a3dcf191a0e2876dfe59c334463fa5b4d11e3131446",
+        "b96e931e5926e442ee1b45d8d5a2bf64cf72ff5146d3fca2087c3ae85efcbb3b",
+        "66b7c902c8919b1cbb79f28aa895d39c061387a8bdfb73e4a14beec980beb498"
+      ],
+      "accounts": [
+        "alice.tail.testnet",
+        "bob.tail.testnet"
+      ]
+    },
+    "borsh": "5f6232906ba95120646edd0a8b3ce6cb100000007461696c2d6465762e746573746e6574010000010000093d000300000000000000080000000000000003000000ebbcd0a0018d492ee21c3a3dcf191a0e2876dfe59c334463fa5b4d11e3131446b96e931e5926e442ee1b45d8d5a2bf64cf72ff5146d3fca2087c3ae85efcbb3b66b7c902c8919b1cbb79f28aa895d39c061387a8bdfb73e4a14beec980beb49812000000616c6963652e7461696c2e746573746e657410000000626f622e7461696c2e746573746e6574"
+  },
+  "expect": {
+    "a": 0,
+    "b": 1,
+    "epoch": 4000000
+  }
+}

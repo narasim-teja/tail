@@ -1,0 +1,77 @@
+{
+  "entries": [
+    {
+      "entry": {
+        "kind": "Enrolled",
+        "player": 0,
+        "account": "alice.tail.testnet",
+        "keyHash": "401bc93f0b5062b7e938db2009292479e9cefb7cf95c6fa271e1564506b403e2",
+        "attested": true
+      },
+      "borsh": "07000012000000616c6963652e7461696c2e746573746e6574401bc93f0b5062b7e938db2009292479e9cefb7cf95c6fa271e1564506b403e201",
+      "leaf": "20d78075a7549ca7941602571a7b7969ff10655973e90f420484342dcac0c6cd"
+    },
+    {
+      "entry": {
+        "kind": "Enrolled",
+        "player": 1,
+        "account": "bob.tail.testnet",
+        "keyHash": "7476a8942edc6097296e7abcf575a7a0f70a8869f9255e27490d13538ee3921f",
+        "attested": false
+      },
+      "borsh": "07010010000000626f622e7461696c2e746573746e65747476a8942edc6097296e7abcf575a7a0f70a8869f9255e27490d13538ee3921f00",
+      "leaf": "ee3f7a568f7077a1a8807efe35a9e9806026987b61290006e18cf52441e7e9ab"
+    },
+    {
+      "entry": {
+        "kind": "Tick",
+        "tickNo": 17,
+        "nowMs": "1794514170000",
+        "callId": "8579446759a1412f8e65eb3d13b5cb6a"
+      },
+      "borsh": "0411000000903061d1a10100008579446759a1412f8e65eb3d13b5cb6a",
+      "leaf": "2f4e2cba6aa4d3fd789b89d4e37a885d52ba475204bf3a89042db6a01457c615"
+    },
+    {
+      "entry": {
+        "kind": "Rejected",
+        "player": 1,
+        "seq": 9,
+        "hash": "6843d114481a3b1993f14edcc63a37223527e606543d232d12d2e104d062ac74",
+        "code": 10
+      },
+      "borsh": "050100090000006843d114481a3b1993f14edcc63a37223527e606543d232d12d2e104d062ac740a",
+      "leaf": "0c08142bcb3c0cd0ed80ed96c74863c2c5cab680197a1187fd56f8fcb0bec417"
+    },
+    {
+      "entry": {
+        "kind": "Evidence",
+        "hunter": 2,
+        "target": 0,
+        "strikeSeq": 31,
+        "strikeEpoch": 40,
+        "epochs": [
+          33,
+          35,
+          36,
+          38,
+          40
+        ]
+      },
+      "borsh": "06020000001f00000028000000050000002100000023000000240000002600000028000000",
+      "leaf": "92910ec884c9c6470091f6fb09d58c23e406be797a75a0502525ccf1612fadd4"
+    },
+    {
+      "entry": {
+        "kind": "Evidence",
+        "hunter": 0,
+        "target": 1,
+        "strikeSeq": 0,
+        "strikeEpoch": 0,
+        "epochs": []
+      },
+      "borsh": "0600000100000000000000000000000000",
+      "leaf": "b14aa05504b9dabbc6c26700c5197815835c9a4e51687f0fe2e311ce87426ef8"
+    }
+  ]
+}

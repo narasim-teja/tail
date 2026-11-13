@@ -13,6 +13,8 @@ default = []
 beacon = ["dep:hmac", "dep:hkdf"]
 # X25519 + ChaCha20-Poly1305 sealing between phones and the referee.
 seal = ["beacon", "dep:x25519-dalek", "dep:chacha20poly1305"]
+# ed25519 checks of referee signatures, for off-chain Rust verifiers (the contract uses env::ed25519_verify).
+verify = ["dep:ed25519-dalek"]
 
 [dependencies]
 borsh = { version = "1", features = ["derive"] }
@@ -21,10 +23,11 @@ hmac = { version = "0.12", optional = true }
 hkdf = { version = "0.12", optional = true }
 x25519-dalek = { version = "2", optional = true, features = ["static_secrets"] }
 chacha20poly1305 = { version = "0.10", optional = true }
+ed25519-dalek = { version = "2", optional = true, default-features = false }
 
 [dev-dependencies]
 # Tests always cover every feature, even under a plain `cargo test --workspace`.
-tail-protocol = { path = ".", features = ["seal"] }
+tail-protocol = { path = ".", features = ["seal", "verify"] }
 serde_json = "1"
 hex = "0.4"
 ed25519-dalek = "2"

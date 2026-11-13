@@ -77,6 +77,8 @@ pub enum Verdict {
         to: u16,
         amount: u128,
         hint_id: u32,
+        /// `hint_kind`, so the contract can check `amount == hint_price(stake, hint)`.
+        hint: u8,
     },
     Tag {
         hunter: u16,
@@ -98,12 +100,15 @@ pub enum Verdict {
     },
 }
 
-/// The signed part of a verdict. `call_id` is the OutLayer call that produced it, so the
-/// replay can fetch that call's attestation record and check the executed wasm hash.
+/// The signed part of a verdict. `prev` is the `verdict_digest` of the match's previous verdict
+/// (zeros for the first, seq 1), so two different verdicts for one seq cannot both extend the
+/// chain the contract holds. `call_id` is the OutLayer call that produced it, so the replay can
+/// fetch that call's attestation record and check the executed wasm hash.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct VerdictPayload {
     pub match_id: MatchId,
     pub seq: u32,
+    pub prev: Hash,
     pub call_id: CallId,
     pub body: Verdict,
 }
@@ -112,6 +117,7 @@ pub struct VerdictPayload {
 pub struct SignedVerdict {
     pub match_id: MatchId,
     pub seq: u32,
+    pub prev: Hash,
     pub call_id: CallId,
     pub body: Verdict,
     pub sig: [u8; 64],
@@ -122,6 +128,7 @@ impl SignedVerdict {
         VerdictPayload {
             match_id: self.match_id,
             seq: self.seq,
+            prev: self.prev,
             call_id: self.call_id,
             body: self.body.clone(),
         }
@@ -153,9 +160,53 @@ pub enum LogEntry {
         signature: Vec<u8>,
         signing_address: String,
     },
+    /// One referee tick: when it ran and which OutLayer call ran it.
+    Tick {
+        tick_no: u32,
+        now_ms: u64,
+        call_id: CallId,
+    },
+    /// A batch the referee refused; `hash` is `batch_hash`, `code` a `reject_code`.
+    Rejected {
+        player: u16,
+        seq: u32,
+        hash: Hash,
+        code: u8,
+    },
+    /// Written just before a Tag's `Verdict` entry: the strike and the contact epochs that
+    /// justified it.
+    Evidence {
+        hunter: u16,
+        target: u16,
+        strike_seq: u32,
+        strike_epoch: u32,
+        epochs: Vec<u32>,
+    },
+    /// At start, one per player: who plays as index `player`, with which device key.
+    Enrolled {
+        player: u16,
+        account: String,
+        key_hash: Hash,
+        attested: bool,
+    },
 }
 
-// ── Enclave → phone (sealed to the player's box key) ─────────────────────────────
+/// "These two phones were near each other": a `LogEntry::Contact` with its audit path to a root
+/// that the contract `contract` anchored for match `match_id`, plus the account ids it names.
+/// Checked from chain data alone (`presence::verify_presence`); no new signature.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PresenceProof {
+    pub match_id: MatchId,
+    pub contract: String,
+    pub entry: LogEntry,
+    pub index: u64,
+    pub size: u64,
+    pub path: Vec<Hash>,
+    /// Accounts of players `a` and `b` of the entry, in that order.
+    pub accounts: [String; 2],
+}
+
+// ── Enclave → phone (signed by the referee, sealed to the player's box key) ──────
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PlayerKeys {
@@ -167,6 +218,14 @@ pub struct PlayerKeys {
     pub k_player: [u8; 32],
     /// Account id of this player's target.
     pub target: String,
+}
+
+/// Anyone holding a player's box public key can seal to it, the relay included, so the
+/// referee signs what it seals: `sig = ed25519(referee_sk, keys_sig_digest(keys))`.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SignedPlayerKeys {
+    pub keys: PlayerKeys,
+    pub sig: [u8; 64],
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,6 +245,8 @@ pub struct HintFact {
 /// Per-tick heads-up display for one player: only their own data.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Hud {
+    pub match_id: MatchId,
+    pub player: u16,
     pub tick: u32,
     pub epoch: u32,
     pub lock: u8,
@@ -198,4 +259,42 @@ pub struct Hud {
     /// Once this player is out: the account that took their head (the hunter for a Tag, the
     /// receiver for a Forfeit). Lets the phone name who got them.
     pub tagged_by: Option<String>,
+    /// The seq the referee expects next from this player, and the hash of their last accepted
+    /// batch: a phone that lost its outbox rebuilds its chain from these two.
+    pub next_seq: u32,
+    pub chain_tip: Hash,
+    /// Cumulative dark time so far.
+    pub dark_ms: u32,
+    /// Tags this player has made.
+    pub tags: u8,
+    /// The log at the end of this tick, so the phone can ask for an inclusion proof later.
+    pub log_size: u64,
+    pub root: Hash,
+    /// This player's latest refused batch: `(seq, reject_code)`.
+    pub rejected: Option<(u32, u8)>,
+}
+
+/// `sig = ed25519(referee_sk, hud_sig_digest(hud))`; see `SignedPlayerKeys` for why.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SignedHud {
+    pub hud: Hud,
+    pub sig: [u8; 64],
+}
+
+/// The Handler's words for one hint, sealed to the asker so the relay can neither read nor
+/// swap them.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct VoiceLine {
+    pub match_id: MatchId,
+    pub player: u16,
+    pub hint_id: u32,
+    pub text: String,
+}
+
+/// `sig = ed25519(referee_sk, voice_sig_digest(line))`: sealing alone would stop reading, not
+/// swapping, since the relay can seal to the asker too.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SignedVoiceLine {
+    pub line: VoiceLine,
+    pub sig: [u8; 64],
 }
