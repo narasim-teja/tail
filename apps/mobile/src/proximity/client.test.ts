@@ -104,6 +104,7 @@ function rig(record: ProximityRecord = genesisRecord(), log: LogPort = noLog, as
   const boxPk = x25519.getPublicKey(boxSk);
   const uploaded: Uint8Array[] = [];
   const saved: ProximityRecord[] = [];
+  const disk = { failNext: false };
   let frame: ((m: HudMessage) => void) | undefined;
   const client = new ProximityClient({
     boxSk,
@@ -124,7 +125,13 @@ function rig(record: ProximityRecord = genesisRecord(), log: LogPort = noLog, as
     upload: async (r) => {
       uploaded.push(Uint8Array.from(Buffer.from(r.body, "hex")));
     },
-    save: (r) => saved.push(structuredClone(r)),
+    save: (r) => {
+      if (disk.failNext) {
+        disk.failNext = false;
+        throw new Error("disk full");
+      }
+      saved.push(structuredClone(r));
+    },
     hud: (onMessage) => {
       frame = onMessage;
       return { open: () => undefined, close: () => undefined };
@@ -146,6 +153,7 @@ function rig(record: ProximityRecord = genesisRecord(), log: LogPort = noLog, as
     sight: (s: RadioSighting) => sight?.(s),
     batches,
     saved,
+    disk,
     hud,
     frame: (m: HudMessage) => frame?.(m),
   };
@@ -249,6 +257,24 @@ describe("proximity client", () => {
     expect(after.map((b) => b.seq)).toEqual([2, 3, 4]);
     expect(r.client.status()).toMatchObject({ seq: 5, queued: 0 });
     expect(r.saved.at(-1)?.outbox.map((it) => it.seq)).toEqual([2, 3, 4]);
+  });
+
+  test("a batch the disk could not save does not keep its seq, so the next build takes it", async () => {
+    const r = rig();
+    const notices: ProximityNotice[] = [];
+    r.client.onNotice((n) => notices.push(n));
+    r.client.start(keys);
+    r.disk.failNext = true;
+    r.t.advance(BATCH_MS);
+    await flush();
+    expect(notices).toEqual([{ kind: "build-failed", message: "disk full" }]);
+    expect(r.client.status()).toMatchObject({ seq: 0, queued: 0 });
+    for (let i = 0; i < 2; i++) {
+      r.t.advance(BATCH_MS);
+      await flush();
+    }
+    expect(notices).toHaveLength(1);
+    expect(r.batches().map((b) => b.seq)).toEqual([0, 1]);
   });
 
   test("one client is for one match", () => {

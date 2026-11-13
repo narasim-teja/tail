@@ -34,9 +34,14 @@ export class Outbox {
   }
 
   push(item: OutboxItem): void {
+    this.items = this.with(item);
+  }
+
+  /** What the outbox holds once `item` is pushed, without pushing it (to save it first). */
+  with(item: OutboxItem): OutboxItem[] {
     const last = this.items[this.items.length - 1];
     if (last && item.seq !== last.seq + 1) throw new Error(`outbox: seq ${item.seq} after ${last.seq}`);
-    this.items.push(item);
+    return [...this.items, item];
   }
 
   get(seq: number): OutboxItem | undefined {

@@ -536,8 +536,11 @@ export class ProximityClient {
         actions: this.actions,
         assert: this.d.assert,
         commit: (item, chain) => {
+          // Saved before it is pushed: a save that throws leaves the outbox and the builder's
+          // seq as they were, so the next build takes this seq again. Pushed first, the batch
+          // would hold a seq the builder never moved past, and every later build would clash.
+          this.save(chain, this.outbox.with(item));
           this.outbox.push(item);
-          this.save(chain);
         },
         now: this.now,
       }),
@@ -554,11 +557,11 @@ export class ProximityClient {
     return this.k ? this.k.builder.unsentActions() : [...this.actions.peek()];
   }
 
-  private save(chain: ChainState = this.chain()): void {
+  private save(chain: ChainState = this.chain(), outbox: readonly OutboxItem[] = this.outbox.all()): void {
     const t = this.fixes.lastT;
     this.d.save({
       chain,
-      outbox: this.outbox.all().map((it) => ({ ...it })),
+      outbox: outbox.map((it) => ({ ...it })),
       confirmed: this.confirmed,
       reports: [...this.reports],
       hudTick: this.hudTick,
