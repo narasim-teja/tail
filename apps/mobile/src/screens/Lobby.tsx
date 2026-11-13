@@ -64,6 +64,7 @@ export interface LobbyActions {
   onStart: () => void;
   onTopUp: () => void;
   onAddTestPlayer: () => void;
+  onRefresh?: () => Promise<unknown>;
   onBack: () => void;
 }
 
@@ -202,7 +203,7 @@ export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions
     </>
   );
   return (
-    <Screen footer={footer}>
+    <Screen footer={footer} onRefresh={actions.onRefresh}>
       <Title>Lobby</Title>
       <View style={styles.qrWrap}>
         <Qr value={link} size={232} />
@@ -278,7 +279,9 @@ export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions
 
 export function Lobby() {
   const app = useApp();
-  useEffect(() => app.checkTestPlayers(), [app]);
+  useEffect(() => {
+    void app.checkRelay();
+  }, [app]);
   const m = app.match;
   const chain = m?.chain;
   const me = app.me;
@@ -323,6 +326,7 @@ export function Lobby() {
         onStart: () => void app.start(),
         onTopUp: () => void app.topUp(TOP_UP),
         onAddTestPlayer: () => void app.addTestPlayer(),
+        onRefresh: () => app.refresh(),
         onBack: () => app.closeMatch(),
       }}
     />

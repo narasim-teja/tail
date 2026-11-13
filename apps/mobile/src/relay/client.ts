@@ -232,6 +232,11 @@ function chainPhase(s: string): ChainPhase {
 
 const circle = (c: Circle) => ({ lat_e7: c.latE7, lon_e7: c.lonE7, radius_m: c.radiusM });
 
+export interface RelayInfo {
+  contract: string | null;
+  testPlayers: boolean;
+}
+
 /** The part of fetch the clients use; tests pass their own. */
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -378,12 +383,16 @@ export class RelayClient {
 
   /** Testnet only: the relay mints the test token and credits it to `accountId` in the contract. */
   /**
-   * Whether this relay is a test relay (its ghost door is open), so the lobby may offer a test
-   * player. False for a relay that does not say.
+   * What the relay says about itself: the contract it plays on (compared with the app's own
+   * setting, never adopted silently: the contract is what anchors the referee's keys) and whether
+   * it is a test relay that may fill a seat with a test player.
    */
-  async allowsTestPlayers(): Promise<boolean> {
+  async info(): Promise<RelayInfo> {
     const r = await this.json("GET", "/health");
-    return r["test_players"] === true;
+    return {
+      contract: typeof r["contract"] === "string" ? r["contract"] : null,
+      testPlayers: r["test_players"] === true,
+    };
   }
 
   /** Test relays only: the host fills one seat with a stand-in that never moves. */

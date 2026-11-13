@@ -6,6 +6,7 @@ import { Linking, Share, StyleSheet, Text, View } from "react-native";
 import { handleOf } from "../game/huntModel";
 import { NEAR_NETWORK, TOP_UP, useApp } from "../state/app";
 import { Icon } from "../ui/brand";
+import { ContractMismatch } from "../ui/contract";
 import { RollingMoney } from "../ui/game";
 import { Avatar, Button, Display, Eyebrow, Label, Notice, Num, Row, Rule, Screen } from "../ui/kit";
 import { useReduceMotion } from "../ui/motion";
@@ -18,11 +19,15 @@ export interface ProfileModel {
   contractId: string;
   busy: string | null;
   error: string | null;
+  /** The relay's contract when it differs from this app's (ui/contract.tsx). */
+  contractMismatch: string | null;
 }
 
 export interface ProfileActions {
   onTopUp: () => void;
   onWithdraw: () => void;
+  onUseRelayContract: () => void;
+  onRefresh?: () => Promise<unknown>;
   onBack: () => void;
 }
 
@@ -33,7 +38,10 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
   const reduceMotion = useReduceMotion();
   const testnet = m.network === "testnet";
   return (
-    <Screen footer={<Button kind="quiet" symbol="chevron.left" title="Back" onPress={actions.onBack} />}>
+    <Screen
+      onRefresh={actions.onRefresh}
+      footer={<Button kind="quiet" symbol="chevron.left" title="Back" onPress={actions.onBack} />}
+    >
       <View style={styles.who}>
         <Avatar name={m.accountId} size={64} mark />
         <Display>{handleOf(m.accountId)}</Display>
@@ -86,6 +94,9 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
           style={styles.grow}
         />
       </Row>
+      {m.contractMismatch ? (
+        <ContractMismatch relay={m.contractMismatch} onUse={actions.onUseRelayContract} />
+      ) : null}
       {m.error ? <Notice title="That didn't go through" detail={m.error} /> : null}
 
       <Rule />
@@ -118,7 +129,9 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 
 export function Profile() {
   const app = useApp();
-  useEffect(() => app.refreshWallet(), [app]);
+  useEffect(() => {
+    void app.refreshAccount();
+  }, [app]);
   return (
     <ProfileView
       m={{
@@ -128,10 +141,13 @@ export function Profile() {
         contractId: app.settings.contractId,
         busy: app.busy,
         error: app.error,
+        contractMismatch: app.contractMismatch,
       }}
       actions={{
         onTopUp: () => void app.topUp(TOP_UP),
         onWithdraw: () => void app.withdraw(),
+        onUseRelayContract: () => app.switchToRelayContract(),
+        onRefresh: () => app.refreshAccount(),
         onBack: () => app.openPage(null),
       }}
     />

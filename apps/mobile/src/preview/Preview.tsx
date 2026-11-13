@@ -153,24 +153,27 @@ export const STATES: Record<string, () => ReactNode> = {
           { matchId: ID, atMs: NOW - 40 * 60_000 },
           { matchId: "0b1c2d3e4f5061728394a5b6c7d8e9f0", atMs: NOW - 26 * 3_600_000 },
         ],
+        contractMismatch: null,
       }}
       nowMs={NOW}
       onCreate={noop}
       onScan={noop}
       onCode={noop}
       onProfile={noop}
+      onUseRelayContract={noop}
       onSettings={noop}
       onOpen={noop}
     />
   ),
   "home-first": () => (
     <HomeView
-      m={{ handle: "teja", balance: 0n, busy: null, error: null, recent: [] }}
+      m={{ handle: "teja", balance: 0n, busy: null, error: null, recent: [], contractMismatch: null }}
       nowMs={NOW}
       onCreate={noop}
       onScan={noop}
       onCode={noop}
       onProfile={noop}
+      onUseRelayContract={noop}
       onSettings={noop}
       onOpen={noop}
     />
@@ -184,8 +187,9 @@ export const STATES: Record<string, () => ReactNode> = {
         contractId: "tail.tail-dev-a38d13.testnet",
         busy: null,
         error: null,
+        contractMismatch: "tail-local.tail-dev-a38d13.testnet",
       }}
-      actions={{ onTopUp: noop, onWithdraw: noop, onBack: noop }}
+      actions={{ onTopUp: noop, onWithdraw: noop, onUseRelayContract: noop, onBack: noop }}
     />
   ),
   create: () => (

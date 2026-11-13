@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { handleOf, money } from "../game/huntModel";
 import { FINDING_LOBBY, NEAR_NETWORK, type RecentMatch, useApp } from "../state/app";
+import { ContractMismatch } from "../ui/contract";
 import { RollingMoney } from "../ui/game";
 import {
   Avatar,
@@ -39,6 +40,8 @@ export interface HomeModel {
   busy: string | null;
   error: string | null;
   recent: RecentMatch[];
+  /** The relay's contract when it differs from this app's (ui/contract.tsx). */
+  contractMismatch: string | null;
 }
 
 const shortCode = (id: string) => `${id.slice(0, 4)} ${id.slice(4, 8)}`.toUpperCase();
@@ -59,6 +62,8 @@ export function HomeView({
   onProfile,
   onSettings,
   onOpen,
+  onUseRelayContract,
+  onRefresh,
 }: {
   m: HomeModel;
   nowMs: number;
@@ -68,12 +73,14 @@ export function HomeView({
   onProfile: () => void;
   onSettings: () => void;
   onOpen: (matchId: string) => void;
+  onUseRelayContract: () => void;
+  onRefresh?: () => Promise<unknown>;
 }) {
   const [code, setCode] = useState("");
   const reduceMotion = useReduceMotion();
   const finding = m.busy === FINDING_LOBBY;
   return (
-    <Screen>
+    <Screen onRefresh={onRefresh}>
       <Row style={styles.header}>
         <Pressable
           onPress={onProfile}
@@ -102,6 +109,7 @@ export function HomeView({
         <Eyebrow muted>{NEAR_NETWORK === "testnet" ? "Test balance" : "Balance"}</Eyebrow>
         {m.balance === null ? <Num>-</Num> : <RollingMoney units={m.balance} reduceMotion={reduceMotion} />}
       </Pressable>
+      {m.contractMismatch ? <ContractMismatch relay={m.contractMismatch} onUse={onUseRelayContract} /> : null}
       {m.error ? <Notice title="Something didn't go through" detail={m.error} /> : null}
 
       <Gap size="m" />
@@ -172,7 +180,9 @@ export function HomeView({
 
 export function Home() {
   const app = useApp();
-  useEffect(() => app.refreshWallet(), [app]);
+  useEffect(() => {
+    void app.refreshAccount();
+  }, [app]);
   return (
     <HomeView
       m={{
@@ -181,6 +191,7 @@ export function Home() {
         busy: app.busy,
         error: app.error,
         recent: app.recent,
+        contractMismatch: app.contractMismatch,
       }}
       nowMs={Date.now()}
       onCreate={() => app.openPage("create")}
@@ -189,6 +200,8 @@ export function Home() {
       onProfile={() => app.openPage("profile")}
       onSettings={() => app.toggleSettings(true)}
       onOpen={(id) => void app.openMatch(id)}
+      onUseRelayContract={() => app.switchToRelayContract()}
+      onRefresh={() => app.refreshAccount()}
     />
   );
 }

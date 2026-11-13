@@ -3,11 +3,12 @@
 // context so text always picks the colour that passes contrast on it.
 
 import type { IconName } from "@tail/brand";
-import { createContext, type ReactNode, useContext, useRef } from "react";
+import { createContext, type ReactNode, useContext, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Switch,
@@ -65,19 +66,37 @@ export function Screen({
   tone = "paper",
   scroll = true,
   footer,
+  onRefresh,
 }: {
   children: ReactNode;
   tone?: Tone;
   scroll?: boolean;
   /** Pinned below the content, above the home indicator (primary actions, thumb reach). */
   footer?: ReactNode;
+  /** Pull down to refresh: the spinner stays until this settles. Scrolling screens only. */
+  onRefresh?: (() => Promise<unknown>) | undefined;
 }) {
   const inset = useSafeAreaInsets();
+  const [refreshing, setRefreshing] = useState(false);
+  const pull = onRefresh
+    ? () => {
+        setRefreshing(true);
+        void onRefresh().finally(() => setRefreshing(false));
+      }
+    : undefined;
   return (
     <ToneContext.Provider value={tone}>
       <View style={[s.fill, { backgroundColor: toneBg[tone], paddingTop: inset.top }]}>
         {scroll ? (
-          <ScrollView contentContainerStyle={s.pad} keyboardShouldPersistTaps="handled">
+          <ScrollView
+            contentContainerStyle={s.pad}
+            keyboardShouldPersistTaps="handled"
+            refreshControl={
+              pull ? (
+                <RefreshControl refreshing={refreshing} onRefresh={pull} tintColor={inkOn(tone)} />
+              ) : undefined
+            }
+          >
             {children}
           </ScrollView>
         ) : (

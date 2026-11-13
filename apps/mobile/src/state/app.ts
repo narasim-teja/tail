@@ -21,6 +21,7 @@ import {
   matchIdBytes,
   type NewMatch,
   RelayClient,
+  type RelayInfo,
   readJoin,
 } from "../relay/client";
 import { HudSocket } from "../relay/hud";
@@ -104,8 +105,8 @@ class AppModel {
   recent: RecentMatch[] = [];
   /** Home: this account's contract balance in the match token, and that token. */
   wallet: { token: string; balance: bigint } | null = null;
-  /** The relay is a test relay (it may fill a seat with a test player); read when a lobby opens. */
-  testPlayers = false;
+  /** What the relay says about itself (relay/client.ts `info`); null until read. */
+  relayInfo: RelayInfo | null = null;
   /** The player chose to see results while the match still runs (after being tagged). */
   resultsNow = false;
   busy: string | null = null;
@@ -197,6 +198,7 @@ class AppModel {
     files.write(SETTINGS_FILE, JSON.stringify(this.settings));
     this.showSettings = false;
     this.emit();
+    void this.checkRelay();
   }
 
   finishPrimer(): void {
@@ -223,10 +225,10 @@ class AppModel {
   }
 
   /** Home: reads this account's balance in the contract's first allowed token. */
-  refreshWallet() {
+  refreshWallet(): Promise<void> {
     const me = this.me;
-    if (!me || !this.settings.contractId) return;
-    void (async () => {
+    if (!me || !this.settings.contractId) return Promise.resolve();
+    return (async () => {
       try {
         const cfg = await this.rpc.view<{ allowed_tokens: string[] }>(
           this.settings.contractId,
@@ -259,7 +261,7 @@ class AppModel {
         this.settings.contractId,
         { methodName: "withdraw", args: { token: w.token, amount: w.balance.toString() }, gas: PLAYER_GAS },
       );
-      this.refreshWallet();
+      void this.refreshWallet();
     });
   }
 
@@ -363,16 +365,39 @@ class AppModel {
     });
   }
 
-  /** Asks a test relay whether it offers test players; the lobby shows its button only then. */
-  checkTestPlayers(): void {
-    void this.relay
-      .allowsTestPlayers()
-      .then((on) => {
-        this.testPlayers = on;
-        this.emit();
-      })
-      // No answer means no test players: the button stays hidden, which is the safe default.
-      .catch(() => {});
+  /** A test relay may fill a lobby seat with a test player; the lobby shows its button only then. */
+  get testPlayers(): boolean {
+    return this.relayInfo?.testPlayers ?? false;
+  }
+
+  /** The relay plays on another contract than this app is set to: balances and joins would miss. */
+  get contractMismatch(): string | null {
+    const theirs = this.relayInfo?.contract;
+    return theirs && theirs !== this.settings.contractId ? theirs : null;
+  }
+
+  /** Reads what the relay says about itself. No answer leaves the safe defaults. */
+  async checkRelay(): Promise<void> {
+    if (!this.settings.relayUrl) return;
+    try {
+      this.relayInfo = await this.relay.info();
+      this.emit();
+    } catch {
+      // Unreachable relay: no test players and no mismatch to report; the next call says why.
+    }
+  }
+
+  /** Pull to refresh on Home and Profile: the balance and what the relay says about itself. */
+  async refreshAccount(): Promise<void> {
+    await Promise.all([this.refreshWallet(), this.checkRelay()]);
+  }
+
+  /** The user chose the relay's contract after seeing the mismatch. */
+  switchToRelayContract(): void {
+    const theirs = this.contractMismatch;
+    if (!theirs) return;
+    this.saveSettings({ ...this.settings, contractId: theirs });
+    void this.refreshWallet();
   }
 
   addTestPlayer() {
@@ -389,7 +414,7 @@ class AppModel {
       const me = this.need();
       await this.relay.topUp(nearSigner(me), me.accountId as string, amount);
       await this.refresh();
-      this.refreshWallet();
+      void this.refreshWallet();
     });
   }
 
@@ -430,7 +455,7 @@ class AppModel {
     this.match = null;
     this.resultsNow = false;
     files.remove(CURRENT_FILE);
-    this.refreshWallet();
+    void this.refreshWallet();
     this.emit();
   }
 
