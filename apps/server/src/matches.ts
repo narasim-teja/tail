@@ -253,9 +253,11 @@ export class Matches {
       if (!m.zone) throw new HttpError(409, "this match's zone was deleted");
       return await this.startClaimed(matchId, m.zone, caller, progress);
     } catch (e) {
-      // The enclave starts a match id once. After it answered (or refused), a retry cannot work,
-      // and the lobby refunds through `abort`. Before that, the host may simply try again.
-      const final = progress.refereeStarted || (e instanceof RefereeError && e.refused);
+      // The enclave starts a match id once. After its `start` answered (or refused), a retry
+      // cannot work, and the lobby refunds through `abort`. Before that, the host may simply try
+      // again: a refusal of any other command (`devices` before the lock) is no answer to `start`.
+      const final =
+        progress.refereeStarted || (e instanceof RefereeError && e.refused && e.cmd === "start");
       this.d.store.setPhase(matchId, final ? "failed" : "lobby", (e as Error).message);
       this.d.store.releaseLease(matchId, this.holder);
       throw e;

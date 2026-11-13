@@ -430,6 +430,17 @@ describe("after the contract pins another referee", () => {
     expect((await req(env, "POST", `/matches/${l.id}/start`, {}, l.a)).status).toBe(200);
   });
 
+  test("a referee that refuses devices leaves the lobby open: only a refused start is final", async () => {
+    const env = setup();
+    const l = await lobby(env);
+    env.referee.refuseDevices = true;
+    expect((await req(env, "POST", `/matches/${l.id}/start`, {}, l.a)).status).toBe(502);
+    expect(env.store.match(l.id)?.phase).toBe("lobby");
+    expect(env.chain.locked).toEqual([]);
+    env.referee.refuseDevices = false;
+    expect((await req(env, "POST", `/matches/${l.id}/start`, {}, l.a)).status).toBe(200);
+  });
+
   test("a lobby made under another referee's pins is refused before the lock", async () => {
     const old = setup();
     const l = await lobby(old);

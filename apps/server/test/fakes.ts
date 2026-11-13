@@ -585,8 +585,11 @@ export class FakeReferee implements Referee {
     this.records.delete(account);
     this.unreadable.add(account);
   }
+  /** Refuse `devices`, as a referee build from before the command does ("unknown cmd"). */
+  refuseDevices = false;
   async devices(accountIds: string[]): Promise<HeldDevice[]> {
     this.calls.push("devices");
+    if (this.refuseDevices) throw new RefereeError("devices", 'unknown cmd "devices"', true);
     return accountIds.map((a) => ({
       accountId: a,
       receipt: this.records.get(a)?.receipt ?? null,
