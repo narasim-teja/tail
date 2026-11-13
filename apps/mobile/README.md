@@ -4,9 +4,10 @@ Expo SDK 58 dev-client app, TypeScript strict, iOS only, new architecture. It en
 runs the lobby, and during the hunt broadcasts rotating beacon tokens, listens for other players,
 and sends sealed, App Attest-signed reports to the referee through the relay.
 
-**Status.** Unit and integration tests pass without a phone (below). The app bundles, prebuilds
-and compiles for the iOS simulator. It has **not run on a phone yet**. The native modules are the
-ones the device spike proved on two iPhones (`spikes/device`), cleaned up.
+**Status.** Unit and integration tests pass without a phone (below). Release builds run on two
+iPhones (17 Pro Max, 14): enrolment with App Attest, lobbies, test players, the hunt and a Tag from
+Bluetooth contact all ran indoors on 2026-11-12, against the relay on a Mac with the local test
+referee. Range, pocket and outdoor play are not tested yet.
 
 ## Layout
 
@@ -215,4 +216,7 @@ receiver for a forfeit). A HUD without it falls back to "your hunter".
   id), sends the oldest sealed batch to that node, waits for the SDK's delivery receipt, then the
   next. Not exercised against a real node. Carrying for others while you have signal is not
   built: in Hunt mode the mesh runs only while you are dark (TECHNICAL.md 7).
-- **Not yet run on physical iPhones.** Everything here is tested in code and in the simulator.
+- **Not yet tested outdoors.** Bluetooth range (`RSSI_MIN_DBM`), pocket mode and a full match in a
+  park have not run; the indoor two-phone runs on 2026-11-12 are the only device runs so far.
+- **Relay address.** Use the Mac's LAN IP (`http://<ip>:8787`). Its `.local` name can resolve to
+  the USB link to a cabled phone, which drops requests when the cable moves.

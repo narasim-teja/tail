@@ -109,7 +109,11 @@ Ghosts are a testing door: they skip Apple's attestation, the route exists only 
     json-args '{}' network-config testnet now
   ```
 
-  `referee_pk` is the enclave's verdict key; `vrf_pk` is OutLayer's testnet VRF key.
+  Normally `referee_pk` is the enclave's verdict key and `vrf_pk` is OutLayer's testnet VRF key.
+  Since 2026-11-12, while OutLayer testnet does not answer calls (HTTP 524), the contract pins
+  the **local test referee's** keys instead: the same referee code run on the relay's machine,
+  not in an enclave (`apps/server/README.md`, "The local test referee"). Matches it judges say so
+  in the replay. `apps/server/scripts/pin-referee.ts` puts the enclave's keys back.
 - Referee: OutLayer project `tail-dev-a38d13.testnet/tail-referee` on testnet. Its commands,
   manifest and measured latency are in `crates/referee-wasi/README.md`.
 
@@ -145,18 +149,18 @@ the server running where the phones can reach it. Build and install steps are in
 
 ## Status
 
-| Part                                                                           | State                                                             |
-| ------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
-| Wire formats (TS + Rust)                                                       | Done; golden vectors shared by both                               |
-| Rules engine and simulator                                                     | Done; 18 scripted scenarios and a 12-player, 60-minute stress run |
-| Enclave referee on OutLayer testnet                                            | Deployed; a 3-player ghost match passes end to end                |
-| NEAR contract on testnet                                                       | Deployed; two independent security reviews, all findings fixed    |
-| Server (relay)                                                                 | Done; ghost matches pass on testnet; runs locally (not deployed)  |
-| Web replay                                                                     | Done; runs locally                                                |
-| iPhone app                                                                     | Built and tested in code and the simulator                        |
-| Two-phone Bluetooth test on real iPhones                                       | **Not run yet**                                                   |
-| Offline Protocol mesh carry (batches hop through nearby phones without signal) | In the app behind a setting; no mesh node yet, so not exercised   |
-| Sponsor-funded public matches (Sputnik DAO)                                    | Contract supports sponsors; no DAO flow                           |
+| Part                                                                           | State                                                                                                                                            |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Wire formats (TS + Rust)                                                       | Done; golden vectors shared by both                                                                                                              |
+| Rules engine and simulator                                                     | Done; 18 scripted scenarios and a 12-player, 60-minute stress run                                                                                |
+| Enclave referee on OutLayer testnet                                            | Deployed; a 3-player ghost match passed end to end. Testnet calls time out since 2026-11-12, so the contract pins the local test referee for now |
+| NEAR contract on testnet                                                       | Deployed; two independent security reviews, all findings fixed                                                                                   |
+| Server (relay)                                                                 | Done; ghost matches pass on testnet; runs locally (not deployed)                                                                                 |
+| Web replay                                                                     | Done; runs locally                                                                                                                               |
+| iPhone app                                                                     | Runs on two iPhones; matches settle on testnet with the local test referee                                                                       |
+| Two-phone Bluetooth test on real iPhones                                       | Run indoors (2026-11-12): a Tag landed from the phones' Bluetooth contact. Range, pocket and outdoor tests **not run yet**                       |
+| Offline Protocol mesh carry (batches hop through nearby phones without signal) | In the app behind a setting; no mesh node yet, so not exercised                                                                                  |
+| Sponsor-funded public matches (Sputnik DAO)                                    | Contract supports sponsors; no DAO flow                                                                                                          |
 
 Measured on testnet (2026-11-12): a game tick takes 2.9 s at the median and 6.7 s at p95, of
 which about 1.5 s is inside the enclave; an `apply` of one verdict burns about 2 Tgas; an
