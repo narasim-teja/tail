@@ -45,24 +45,33 @@ contract's `apply` unchanged.
 **`pubkeys`** `{}` → `{referee_pk, referee_pk_hex, referee_box_pk, box_pk_sig, vrf_pk}`.
 `box_pk_sig` = ed25519(referee_sk, SHA256(`"tail/referee-box/v1"` ‖ box_pk)). `vrf_pk` is hex.
 
-**`enroll`** `{account_id, app_attest_pk, player_box_pk, near_pk, attestation?, challenge?}`.
+**`enroll`** `{account_id, app_attest_pk, player_box_pk, near_pk, attestation?, challenge?, rebind_sig?}`.
 `app_attest_pk` is SEC1 P-256, 33 or 65 bytes. `attestation` is the CBOR object the phone got
 from `attestKey`, `challenge` the 32 bytes it covers. The referee verifies the chain to Apple's
 root, the App ID `LKABS9RZAC.com.lkabs9rzac.tail` (development aaguid), counter 0, and the nonce
 over `enroll_client_data_hash(challenge, account_id, player_box_pk, near_pk)`, and requires the
 attested key to be `app_attest_pk`. Without both, it enrols only when `ALLOW_UNATTESTED=1`
-(ghosts). A low-order `player_box_pk` is refused. → `{account_id, app_attest_pk (65 B),
-attested, call_id, receipt, sig}`. `receipt` = borsh `Device {account_id, app_attest_pk:
-[u8;65], attested: bool, player_box_pk: [u8;32], near_pk: [u8;32], call_id: [u8;16]}`; `sig` =
-ed25519 over SHA256(`"tail/enroll-receipt/v1"` ‖ receipt).
+(ghosts). A low-order `player_box_pk` is refused (`tail_protocol::seal::is_low_order`). An
+account keeps the device it first enrolled: the same three keys again return the stored receipt
+unchanged (a retry is safe; an attestation of a ghost's same keys upgrades it), and other keys
+need `rebind_sig`, the stored device's `near_pk` signing (ed25519, base64)
+`rebind_digest(account_id, app_attest_pk, player_box_pk, near_pk)` of the new keys
+(`packages/protocol/README.md`); with nothing stored it is ignored. Without it the call is refused, so a relay holding a genuine
+iPhone of its own cannot attest it for someone else's account. → `{account_id, app_attest_pk
+(65 B), attested, call_id, receipt, sig, referee_pk}`. `receipt` = borsh `Device {account_id,
+app_attest_pk: [u8;65], attested: bool, player_box_pk: [u8;32], near_pk: [u8;32], call_id:
+[u8;16]}`; `sig` = ed25519 under `referee_pk` (base64) over SHA256(`"tail/enroll-receipt/v1"` ‖
+receipt), so the relay can tell which referee holds the device.
 
 **`start`** `{match_id (16 B), players: [account_id], start_ms?, duration_ms, stake ("u128"),
-zone: {lat_e7, lon_e7, radius_m}, safehouses?: [circle], app_id?}`. `start_ms` defaults to the
-host clock; `app_id` to `LKABS9RZAC.com.lkabs9rzac.tail`. → `{call_id, seq: 1, verdicts:
+zone: {lat_e7, lon_e7, radius_m}, safehouses?: [circle]}`. `start_ms` defaults to the host
+clock. The App ID every assertion is checked against is `LKABS9RZAC.com.lkabs9rzac.tail`, the
+constant `enroll` checks attestations against, never the caller's. → `{call_id, seq: 1, verdicts:
 [Start], players_hash, ring_commit (hex), players (sorted), start_ms, end_ms, keys: [{player,
 account_id, sealed}], state, state_bytes, leaves, log_sealed, log_size, log_root (hex)}`.
-`sealed` = seal(player_box_pk, borsh `SignedPlayerKeys`, `"tail/keys/v2"`), signed with
-`keys_sig_digest`. The log so far: one `Enrolled` per player (`attested` from the device
+`sealed` = seal(player_box_pk, pad(borsh `SignedPlayerKeys`), `"tail/keys/v2"`), signed with
+`keys_sig_digest`. Every message sealed to a phone is padded to `PHONE_PAD` (1072 bytes sealed),
+so its length names neither the target nor the line. The log so far: one `Enrolled` per player (`attested` from the device
 record), then Start.
 
 **`tick`** `{match_id, state, last_seq, now_ms?, batches: [sealed], receipts: [b64]}`. Each
@@ -77,7 +86,7 @@ are the `receipt` blobs `voice` returned since the last tick, in the order recei
  refused: [{player, nonce, action: "strike" | "hint", reason: <RefuseCode>}]}
 ```
 
-`sealed` = seal(player_box_pk, borsh `SignedHud`, `"tail/hud/v2"`), signed with
+`sealed` = seal(player_box_pk, pad(borsh `SignedHud`), `"tail/hud/v2"`), signed with
 `hud_sig_digest`. `log_size` / `log_root` are the log after this tick; every HUD carries the
 same pair. A hint leaves only as its asker's index and `blob` = `match_id ‖` a referee-only
 blob of the fact and the question, for `voice`. `rejected[].reason` is the protocol
@@ -87,16 +96,21 @@ is always its `Tick`; receipts that open are logged after it (once per hint, wit
 each salted for the index it lands at.
 
 **`voice`** `{state, blob}`, one entry of a tick's `hints` plus any state blob of the match
-(voice changes no state and appends nothing). → `{player, hint_id, sealed, signed_text, receipt,
-source: "model"|"template", model, latency_ms, fallback_reason, signature_error}`.
-`sealed` = seal(asker's box key, borsh `SignedVoiceLine`, `"tail/voice/v1"`), signed with
-`voice_sig_digest`. `signed_text` is the exact text NEAR AI signed
+(voice changes no state and appends nothing). → `{player, hint_id, sealed, signed_text,
+receipt}`, nothing more: no source, model, latency or fallback reason. Whether a model or a
+template spoke shows only as `signed_text` (null: no model signature) and, after End, in the
+logged receipt (empty chat id or signature).
+`sealed` = seal(asker's box key, pad(borsh `SignedVoiceLine`), `"tail/voice/v1"`), signed with
+`voice_sig_digest`. A model line over `VOICE_TEXT_MAX` (930) bytes is replaced by the template. `signed_text` is the exact text NEAR AI signed
 (`model:sha256(request):sha256(response)`), or null for a template line; the replay needs it to
 check the signature in the logged receipt. The request carries a per-hint nonce in OpenAI's
 `user` field, `HMAC(K_log, "tail/voice-nonce" ‖ u32le(hint_id))[0..16]` as hex: without one, a
 hint with no question has a dozen possible requests, and `sha256(request)` would name its fact.
-`receipt` is the `HintReceipt`, sealed to the referee; pass it in the next tick's (or `end`'s)
-`receipts`. Its leaf is not known yet: the entry is salted for the index it lands at, and shows
+`receipt` = `u32le(hint_id) ‖ SHA256(sealed) ‖` the `HintReceipt` sealed to the referee with
+those 36 bytes as its bind, so it stands for this one line of this one hint (the relay can check
+the prefix against the line it delivers; altered, the receipt does not open); pass it in the next
+tick's (or `end`'s) `receipts`. The engine logs one receipt per hint however often it is passed,
+so voicing a hint twice cannot put a second line in the log. Its leaf is not known yet: the entry is salted for the index it lands at, and shows
 up in that call's `leaves`. `hint_id` is the one the Hint verdict on chain carries.
 
 **`end`** `{match_id, state, last_seq, receipts?}`, only after a tick returned `over`. →
@@ -140,8 +154,9 @@ The engine's rules are in `crates/referee-core/README.md`.
   it with the same blob.
 - **Voice every hint.** For each entry in a tick's `hints`, call `voice` with its blob and a
   state blob, send `sealed` to the asker, keep `signed_text` for the replay, and pass
-  `log_sealed` in the next tick's `receipts` (or `end`'s). The engine logs a receipt only for a
-  hint it issued, once, within 120 s of referee time. The fact never leaves the referee in the
+  `receipt` in the next tick's `receipts` (or `end`'s): the one whose prefix names the `sealed`
+  it delivered. The engine logs a receipt only for a hint it issued, once, within 120 s of
+  referee time. The fact never leaves the referee in the
   clear: `voice` reads it from the blob, which only the referee can make.
 - **Keep every sealed batch it forwards.** After End, it sends them back through
   `declassify_batches` in chunks of at most 500 (a 60-minute 12-player match is about 8,600
@@ -325,7 +340,7 @@ One process per command: one JSON object on stdin, one `{"ok": true, "result": �
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TAIL_LOCAL_REFEREE_DIR`   | Required. Holds `verdict.key` and `vrf.key` (ed25519 seeds), `state.key` (XChaCha20-Poly1305) and `storage/` (one file per record, `referee:box_sk` included). Each is generated on first use, mode 0600, dir 0700.    |
 | `TAIL_LOCAL_REFEREE_OWNER` | The sender in the VRF alpha, where OutLayer puts the caller. Default `local-test-referee`. It may not contain `:`.                                                                                                     |
-| `NEARAI_MODEL`             | Optional. Only echoed as `model`; no model is called.                                                                                                                                                                  |
+| `NEARAI_MODEL`             | Optional. Checked against the model rules; no model is called.                                                                                                                                                         |
 | `ALLOW_UNATTESTED`         | Optional. `1` lets `enroll` take a device without an App Attest attestation (ghosts), stored and receipted as `attested: false`. On OutLayer the same name is read from the author secret row; set it on testnet only. |
 
 How it differs from the enclave:
@@ -338,16 +353,18 @@ How it differs from the enclave:
 - Storage writes are files renamed or hard-linked into place. `set_if_absent` is a hard link.
   Compare-and-swap runs under an advisory lock, so two processes on one directory stay
   consistent.
-- No network. `voice` always returns `source: "template"` with `fallback_reason` "local test
-  referee: no network, so no Handler model call (not an enclave)", no `chat_id` and no
-  signature. `NEARAI_API_KEY` is not read.
+- No network. `voice` always uses the template: `signed_text` is null, and the logged receipt
+  has no `chat_id` and no signature. `NEARAI_API_KEY` is not read.
 
 `tests/local.rs` runs the built binary in a temporary directory, offline. It covers
 `pubkeys` (`box_pk_sig` under `referee_pk`, the same keys from a second process and from 8
-concurrent first calls), `enroll` ×3 and `start` (signature over the verdict digest, signed
-and sealed player keys, a second `start` refused). It then plays three ticks: a hint, a forged
-batch refused with `ASSERTION`, signed HUDs naming the log, `voice` (the template, sealed and
-signed to the asker; a forged hint blob refused), the receipt joining the next tick's log, a
+concurrent first calls), `enroll` ×3 (receipts naming `referee_pk`), re-enrolment (the same keys
+return the stored receipt; other keys are refused without `rebind_sig`, or with one from the
+wrong key, and accepted with the enrolled device's) and `start` (signature over the verdict
+digest, signed, padded and sealed player keys, a second `start` refused). It then plays three ticks: a hint, a forged
+batch refused with `ASSERTION`, signed HUDs naming the log, `voice` (only the five fields, the template padded,
+sealed and signed to the asker; a forged hint blob refused), a receipt with an altered prefix
+refused, the receipt passed twice and logged once in the next tick, a
 Checkpoint, and the end. Then two racing `end`s of which exactly one wins, the verdict chain,
 every consistency proof, the VRF reveal under `vrf_pk` with the contract's alpha checks,
 `declassify` (refused with a blob missing; the log equals the leaves, with `Enrolled`, `Tick`,

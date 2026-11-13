@@ -16,8 +16,14 @@ use crate::state::{self, MatchState};
 use crate::vault::{self, Purpose};
 use referee_core::ConsistencyProof;
 use serde_json::{json, Value};
-use tail_protocol::digest::{hud_sig_digest, verdict_digest};
+use tail_protocol::digest::{hud_sig_digest, sha256, verdict_digest};
+use tail_protocol::seal::ToPhone;
 use tail_protocol::{merkle, CallId, Hud, LogEntry, MatchId, SignedHud, SignedVerdict, VerdictPayload};
+
+/// App Attest App ID (`TEAMID.bundle.id`) of the TAIL iOS app: the only app whose attestations
+/// `enroll` takes and whose assertions the engine accepts from `start` on. Pinned in the code, so
+/// the published wasm hash pins it, rather than taken from the caller.
+pub const APP_ID: &str = "LKABS9RZAC.com.lkabs9rzac.tail";
 
 pub fn dispatch(name: &str, input: Value) -> Result<Value, String> {
     match name {
@@ -96,10 +102,11 @@ fn log_out(box_sk: &[u8; 32], match_id: &MatchId, first: u64, log: &[LogEntry]) 
     (leaves, b64(&sealed))
 }
 
-/// Seals `plaintext` to a player's box key under a protocol seal context.
-fn seal_to(pk: &[u8; 32], plaintext: &[u8], context: &[u8]) -> Result<Vec<u8>, String> {
+/// Seals a signed message to a player's box key: padded to `PHONE_PAD` under its type's context
+/// (`tail_protocol::seal::seal_to_phone_with`), so its length says nothing about what it holds.
+fn seal_to<T: ToPhone>(pk: &[u8; 32], msg: &T) -> Result<Vec<u8>, String> {
     let eph: [u8; 32] = host::random();
-    tail_protocol::seal::seal_with(&eph, pk, plaintext, context)
+    tail_protocol::seal::seal_to_phone_with(&eph, pk, msg)
         .map_err(|e| format!("cannot seal to a player's box key ({e:?})"))
 }
 
@@ -113,14 +120,33 @@ fn seal_huds(st: &MatchState, huds: Vec<(u16, Hud)>) -> Result<Vec<Value>, Strin
                 .get(usize::from(player))
                 .ok_or(format!("engine produced a HUD for unknown player {player}"))?;
             let sig = host::sign_digest(&hud_sig_digest(&hud))?;
-            let sealed = seal_to(pk, &to_borsh(&SignedHud { hud, sig }), tail_protocol::domain::HUD)?;
+            let sealed = seal_to(pk, &SignedHud { hud, sig })?;
             Ok(json!({ "player": player, "sealed": b64(&sealed) }))
         })
         .collect()
 }
 
+/// Length of a receipt's clear prefix: `u32le(hint_id) ‖ sha256(sealed line)`.
+const RECEIPT_BIND: usize = 4 + 32;
+
+/// `voice`'s receipt: `u32le(hint_id) ‖ sha256(sealed) ‖ vault blob`, the blob (a `HintReceipt`)
+/// bound to that prefix. A receipt stands for one line of one hint: whoever holds the sealed
+/// line can check the prefix names it, and a receipt cannot be moved to another line.
+fn seal_receipt(
+    box_sk: &[u8; 32],
+    match_id: &MatchId,
+    sealed_line: &[u8],
+    receipt: &referee_core::HintReceipt,
+) -> Vec<u8> {
+    let bind = [receipt.hint_id.to_le_bytes().as_slice(), &sha256(&[sealed_line])].concat();
+    let blob = vault::seal(box_sk, Purpose::Receipt, match_id, &bind, &to_borsh(receipt));
+    [bind, blob].concat()
+}
+
 /// Opens the receipts `voice` returned. Only this referee can make one, so a receipt that
-/// does not open is a relay bug, and the call is refused rather than the receipt dropped.
+/// does not open is a relay bug, and the call is refused rather than the receipt dropped. The
+/// engine logs at most one receipt per hint (`referee_core`), so a hint voiced twice cannot
+/// put two lines in the log.
 fn receipts(
     box_sk: &[u8; 32],
     match_id: &MatchId,
@@ -129,7 +155,12 @@ fn receipts(
     list.iter()
         .enumerate()
         .map(|(i, r)| {
-            let plain = vault::open(box_sk, Purpose::Receipt, match_id, &[], &from_b64("receipt", r)?)
+            let bytes = from_b64("receipt", r)?;
+            if bytes.len() < RECEIPT_BIND {
+                return Err(format!("receipt {i} is too short"));
+            }
+            let (bind, blob) = bytes.split_at(RECEIPT_BIND);
+            let plain = vault::open(box_sk, Purpose::Receipt, match_id, bind, blob)
                 .map_err(|e| format!("receipt {i}: {e}"))?;
             borsh::from_slice(&plain).map_err(|e| format!("receipt {i} is not a HintReceipt: {e}"))
         })
@@ -141,4 +172,57 @@ fn open_checked(match_id: &MatchId, blob_b64: &str, last_seq: u32) -> Result<Mat
     let st = state::open(&from_b64("state", blob_b64)?, domain::STATE, match_id)?;
     state::check_seq(st.last_seq(), last_seq)?;
     Ok(st)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{receipts, seal_receipt, seal_to};
+    use crate::codec::b64;
+    use crate::voice::Fact;
+    use tail_protocol::{SignedVoiceLine, VoiceLine};
+
+    #[test]
+    fn every_template_line_seals_to_the_same_length() {
+        let pk = tail_protocol::seal::public_key(&[3; 32]);
+        let facts = (0..2)
+            .map(|v| Fact::new(0, v))
+            .chain((0..8).map(|v| Fact::new(1, v)))
+            .chain((0..3).map(|v| Fact::new(2, v)));
+        let lengths: std::collections::BTreeSet<usize> = facts
+            .map(|f| {
+                let line = VoiceLine {
+                    match_id: [1; 16],
+                    player: 0,
+                    hint_id: 0,
+                    text: f.unwrap().template(),
+                };
+                seal_to(&pk, &SignedVoiceLine { line, sig: [0; 64] })
+                    .unwrap()
+                    .len()
+            })
+            .collect();
+        assert_eq!(lengths.len(), 1, "{lengths:?}");
+    }
+
+    #[test]
+    fn a_receipt_opens_only_with_its_hint_and_line() {
+        let (sk, match_id) = ([4; 32], [5; 16]);
+        let r = referee_core::HintReceipt {
+            hint_id: 7,
+            chat_id: String::new(),
+            text_hash: [6; 32],
+            signature: Vec::new(),
+            signing_address: String::new(),
+        };
+        let sealed = seal_receipt(&sk, &match_id, b"the sealed line", &r);
+        assert_eq!(sealed[..4], 7u32.to_le_bytes());
+        assert_eq!(receipts(&sk, &match_id, &[b64(&sealed)]).unwrap(), vec![r]);
+        for at in [0, 4, 40] {
+            let mut moved = sealed.clone();
+            moved[at] ^= 1;
+            assert!(receipts(&sk, &match_id, &[b64(&moved)]).is_err(), "byte {at}");
+        }
+        assert!(receipts(&sk, &[6; 16], &[b64(&sealed)]).is_err());
+        assert!(receipts(&sk, &match_id, &[b64(&sealed[..35])]).is_err());
+    }
 }

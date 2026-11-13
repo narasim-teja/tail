@@ -22,6 +22,7 @@ import {
   encodeLogEntry,
   encodePresenceProof,
   fromHex,
+  type Hud,
   hudSigDigest,
   keysSigDigest,
   type LogEntry,
@@ -30,20 +31,30 @@ import {
   merkleLeaf,
   open,
   openCarry,
+  openOnPhone,
   openSignedHud,
   openSignedPlayerKeys,
   openSignedVoiceLine,
+  PHONE_PAD,
+  type PhoneContext,
   padCarry,
+  padPhone,
   presenceProof,
   RejectCode,
   requestDigest,
   SealContext,
   sealCarry,
   sealSignedHud,
+  sealSignedPlayerKeys,
+  sealSignedVoiceLine,
+  sealWith,
   signHud,
+  signPlayerKeys,
+  signVoiceLine,
   TargetStatus,
   toHex,
   unpadCarry,
+  VOICE_TEXT_MAX,
   verifyCarryAck,
   verifyEd25519,
   verifyPresence,
@@ -137,6 +148,8 @@ describe("HUD v2", () => {
 
 describe("referee-signed sealed messages", () => {
   const pk = h(hudV.refereePk);
+  const refereeSk = h(hudV.refereeSeed);
+  const refereePk = pk;
   const boxSk = h(hudV.recipientSk);
   const [hudS, keysS, voiceS] = hudV.signed as [
     (typeof hudV.signed)[0],
@@ -175,6 +188,75 @@ describe("referee-signed sealed messages", () => {
       sig: decodeSignedHud(h(hudS.signed)).sig,
     });
     expect(() => openSignedHud(boxSk, resealed, pk)).toThrow("not signed by the referee");
+  });
+
+  test("every message to a phone is padded to PHONE_PAD, and the vectors pin it", () => {
+    expect(hudV.phonePad).toBe(PHONE_PAD);
+    expect(hudV.voiceTextMax).toBe(VOICE_TEXT_MAX);
+    for (const s of hudV.signed) {
+      expect(toHex(padPhone(h(s.signed)))).toBe(s.padded);
+      expect(h(s.sealed).length).toBe(32 + PHONE_PAD + 16);
+      expect(toHex(openOnPhone(boxSk, h(s.sealed), s.context as PhoneContext))).toBe(s.signed);
+    }
+  });
+
+  test("the length of a sealed message names neither the target nor the line", () => {
+    const box = boxPublicKey(boxSk);
+    const keys = decodeSignedPlayerKeys(h(keysS.signed));
+    const lengths = (xs: Uint8Array[]) => new Set(xs.map((x) => x.length));
+    const longest = `${"a".repeat(56)}.testnet`; // a 64-byte account id, NEAR's maximum
+    expect(
+      lengths(
+        ["bo.testnet", "alice.tail.testnet", longest].map((target) =>
+          sealSignedPlayerKeys(box, signPlayerKeys({ ...keys.keys, target }, refereeSk)),
+        ),
+      ).size,
+    ).toBe(1);
+    const hud = decodeHud(h(hudV.hud.borsh));
+    const huds = [
+      decodeHud(h(hudV.hudNoOptions.borsh)),
+      hud,
+      // The largest HUD: two 64-byte account ids and every option set.
+      {
+        ...hud,
+        target: longest,
+        taggedBy: longest,
+        hintPrices: [2n ** 127n, 2n ** 127n, 2n ** 127n] as const,
+      },
+    ].map((x) => sealSignedHud(box, signHud(x as Hud, refereeSk)));
+    expect(lengths(huds).size).toBe(1);
+    const voice = decodeSignedVoiceLine(h(voiceS.signed)).line;
+    const lines = [
+      "Warmer. You're closing in.",
+      "Your target is to the north-west.",
+      "x".repeat(VOICE_TEXT_MAX),
+    ].map((text) => sealSignedVoiceLine(box, signVoiceLine({ ...voice, text }, refereeSk)));
+    expect(lengths([...lines, ...huds, h(keysS.sealed)])).toEqual(new Set([32 + PHONE_PAD + 16]));
+    expect(openSignedVoiceLine(boxSk, lines[2] as Uint8Array, refereePk).text.length).toBe(VOICE_TEXT_MAX);
+  });
+
+  test("a message too long for PHONE_PAD is refused, and bad padding does not open", () => {
+    const box = boxPublicKey(boxSk);
+    const voice = decodeSignedVoiceLine(h(voiceS.signed)).line;
+    expect(() =>
+      sealSignedVoiceLine(box, signVoiceLine({ ...voice, text: "x".repeat(VOICE_TEXT_MAX + 1) }, refereeSk)),
+    ).toThrow("at most");
+    const signed = h(keysS.signed);
+    const dirty = padPhone(signed);
+    dirty[PHONE_PAD - 1] = 1;
+    expect(() =>
+      openOnPhone(boxSk, sealWith(h("33".repeat(32)), box, dirty, SealContext.keys), SealContext.keys),
+    ).toThrow("padding is not zero");
+    const long = padPhone(signed);
+    long[0] = 0xff;
+    long[1] = 0xff;
+    expect(() =>
+      openOnPhone(boxSk, sealWith(h("33".repeat(32)), box, long, SealContext.keys), SealContext.keys),
+    ).toThrow("length out of range");
+    // Unpadded, as the referee sealed before padding: refused.
+    expect(() =>
+      openSignedPlayerKeys(boxSk, sealWith(h("33".repeat(32)), box, signed, SealContext.keys), pk),
+    ).toThrow("must be");
   });
 
   test("each kind opens only under its own context", () => {

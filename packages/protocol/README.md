@@ -10,21 +10,21 @@ cargo test -p tail-protocol                        # Rust against the same vecto
 bun run --cwd packages/protocol vectors            # regenerate (only on a deliberate format change)
 ```
 
-| Vector file        | Pins                                                                    |
-| ------------------ | ----------------------------------------------------------------------- |
-| `beacon.json`      | key derivation, tokens, UUIDs                                           |
-| `batch.json`       | `Batch`, `BatchEnvelope`, batch hash, App Attest client data, enrolment |
-| `verdicts.json`    | every `Verdict` kind, signed and chained by `prev`                      |
-| `merkle.json`      | the four v1 log entries, roots for every size, audit paths              |
-| `log.json`         | the log entries added in v2                                             |
-| `consistency.json` | consistency proofs for a set of (m, n) up to 70, with the peaks at m    |
-| `presence.json`    | a presence proof and the anchored roots it checks against               |
-| `ring.json`        | players hash, ring commitment, ring                                     |
-| `seal.json`        | sealing, and every low-order X25519 encoding                            |
-| `hud.json`         | HUD v2, and the signed, sealed HUD, keys and Handler line               |
-| `pricing.json`     | hint prices over (stake, kind, demand), the demand window, the reasons  |
-| `auth.json`        | relay request and challenge digests                                     |
-| `carry.json`       | mesh carry envelope and relay receipt (TypeScript only: phone ↔ relay)  |
+| Vector file        | Pins                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------- |
+| `beacon.json`      | key derivation, tokens, UUIDs                                                         |
+| `batch.json`       | `Batch`, `BatchEnvelope`, batch hash, App Attest client data, enrolment, re-enrolment |
+| `verdicts.json`    | every `Verdict` kind, signed and chained by `prev`                                    |
+| `merkle.json`      | the four v1 log entries, roots for every size, audit paths                            |
+| `log.json`         | the log entries added in v2                                                           |
+| `consistency.json` | consistency proofs for a set of (m, n) up to 70, with the peaks at m                  |
+| `presence.json`    | a presence proof and the anchored roots it checks against                             |
+| `ring.json`        | players hash, ring commitment, ring                                                   |
+| `seal.json`        | sealing, and every low-order X25519 encoding                                          |
+| `hud.json`         | HUD v2, and the signed, padded, sealed HUD, keys and Handler line, `PHONE_PAD`        |
+| `pricing.json`     | hint prices over (stake, kind, demand), the demand window, the reasons                |
+| `auth.json`        | relay request and challenge digests                                                   |
+| `carry.json`       | mesh carry envelope and relay receipt (TypeScript only: phone ↔ relay)                |
 
 ## Encoding
 
@@ -52,23 +52,23 @@ enclave until `declassify` releases it with the log after End.
 
 ## Messages
 
-| Message          | Fields (borsh order)                                                                                                                                                                                                                           |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Fix`            | `t_ms u64, lat_e7 i32, lon_e7 i32, acc_m u16, speed_cmps u16, flags u8`                                                                                                                                                                        |
-| `Sighting`       | `epoch u32, token [u8;16], rssi_max i8, rssi_med i8, n u8`                                                                                                                                                                                     |
-| `Action`         | `Hint { hint u8, nonce u32, text Option<String> }` · `Strike { nonce u32 }`                                                                                                                                                                    |
-| `Batch`          | `match_id [u8;16], player u16, seq u32, prev [u8;32], t_ms u64, fixes, sightings, actions`                                                                                                                                                     |
-| `BatchEnvelope`  | `batch, assertion Vec<u8>` (App Attest assertion)                                                                                                                                                                                              |
-| `Verdict`        | `Start`, `Hint { from u16, amount u128, hint_id u32, hint u8, t_ms u64 }` (no target), `Tag { hunter, target, credit u128 }`, `Forfeit { player, to, credit u128 }`, `Checkpoint`, `End { alpha, vrf_signature, log_size, root, hint_targets Vec<u16> }` |
-| `SignedVerdict`  | `match_id, seq u32, prev [u8;32], call_id [u8;16], body Verdict, sig [u8;64]`                                                                                                                                                                  |
-| `LogEntry`       | `Batch`, `Contact`, `Verdict`, `HintReceipt` (tags 0–3) · `Tick`, `Rejected`, `Evidence`, `Enrolled` (v2, tags 4–7)                                                                                                                            |
-| `PresenceProof`  | `match_id, contract String, entry LogEntry, index u64, size u64, path Vec<[u8;32]>, accounts [String;2]`                                                                                                                                       |
-| `PlayerKeys`     | `match_id, player, start_ms, end_ms, k_tag, k_player, target String`                                                                                                                                                                           |
+| Message          | Fields (borsh order)                                                                                                                                                                                                                                                     |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Fix`            | `t_ms u64, lat_e7 i32, lon_e7 i32, acc_m u16, speed_cmps u16, flags u8`                                                                                                                                                                                                  |
+| `Sighting`       | `epoch u32, token [u8;16], rssi_max i8, rssi_med i8, n u8`                                                                                                                                                                                                               |
+| `Action`         | `Hint { hint u8, nonce u32, text Option<String> }` · `Strike { nonce u32 }`                                                                                                                                                                                              |
+| `Batch`          | `match_id [u8;16], player u16, seq u32, prev [u8;32], t_ms u64, fixes, sightings, actions`                                                                                                                                                                               |
+| `BatchEnvelope`  | `batch, assertion Vec<u8>` (App Attest assertion)                                                                                                                                                                                                                        |
+| `Verdict`        | `Start`, `Hint { from u16, amount u128, hint_id u32, hint u8, t_ms u64 }` (no target), `Tag { hunter, target, credit u128 }`, `Forfeit { player, to, credit u128 }`, `Checkpoint`, `End { alpha, vrf_signature, log_size, root, hint_targets Vec<u16> }`                 |
+| `SignedVerdict`  | `match_id, seq u32, prev [u8;32], call_id [u8;16], body Verdict, sig [u8;64]`                                                                                                                                                                                            |
+| `LogEntry`       | `Batch`, `Contact`, `Verdict`, `HintReceipt` (tags 0–3) · `Tick`, `Rejected`, `Evidence`, `Enrolled` (v2, tags 4–7)                                                                                                                                                      |
+| `PresenceProof`  | `match_id, contract String, entry LogEntry, index u64, size u64, path Vec<[u8;32]>, accounts [String;2]`                                                                                                                                                                 |
+| `PlayerKeys`     | `match_id, player, start_ms, end_ms, k_tag, k_player, target String`                                                                                                                                                                                                     |
 | `Hud`            | `match_id, player u16, tick, epoch, lock, heat, head u128, status, target, leak?, hint_fact?, tagged_by?, next_seq u32, chain_tip [u8;32], dark_ms u32, tags u8, log_size u64, root [u8;32], rejected Option<(seq u32, code u8)>, hint_prices [u128;3], hint_recent u32` |
-| `VoiceLine`      | `match_id, player u16, hint_id u32, text String`                                                                                                                                                                                               |
-| `SignedHud` etc. | `SignedHud { hud, sig }`, `SignedPlayerKeys { keys, sig }`, `SignedVoiceLine { line, sig }`                                                                                                                                                    |
-| `CarryRequest`   | `account String, time_ms u64, method String, path String, body Vec<u8>, sig [u8;64]` (TypeScript only)                                                                                                                                         |
-| `CarryAck`       | `status u16, received_ms u64, sig [u8;64]` (TypeScript only)                                                                                                                                                                                   |
+| `VoiceLine`      | `match_id, player u16, hint_id u32, text String`                                                                                                                                                                                                                         |
+| `SignedHud` etc. | `SignedHud { hud, sig }`, `SignedPlayerKeys { keys, sig }`, `SignedVoiceLine { line, sig }`                                                                                                                                                                              |
+| `CarryRequest`   | `account String, time_ms u64, method String, path String, body Vec<u8>, sig [u8;64]` (TypeScript only)                                                                                                                                                                   |
+| `CarryAck`       | `status u16, received_ms u64, sig [u8;64]` (TypeScript only)                                                                                                                                                                                                             |
 
 The log entries:
 
@@ -106,21 +106,22 @@ took no action on a valid batch's Strike or Hint (the tick's `refused[].reason`)
 
 ## Hashes and signatures
 
-| What                            | Definition                                                                                                                           |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| batch hash (chain link, log id) | `SHA256(borsh(Batch))`                                                                                                               |
-| assertion client data hash      | `SHA256("tail/batch" ‖ borsh(Batch))`                                                                                                |
-| enrolment client data hash      | `SHA256("tail/enroll/v1" ‖ challenge[32] ‖ borsh(account_id) ‖ player_box_pk ‖ near_pk)`                                             |
-| verdict digest                  | `SHA256("tail/verdict/v2" ‖ borsh(match_id, seq, prev, call_id, body))`, signed with ed25519 by the enclave key                      |
-| HUD signature                   | `ed25519(referee_sk, SHA256("tail/hud/v2" ‖ borsh(Hud)))`                                                                            |
-| keys signature                  | `ed25519(referee_sk, SHA256("tail/keys/v2" ‖ borsh(PlayerKeys)))`                                                                    |
-| Handler line signature          | `ed25519(referee_sk, SHA256("tail/voice/v1" ‖ borsh(VoiceLine)))`                                                                    |
-| relay request                   | `SHA256("tail/relay-req/v2" ‖ borsh(contract_id) ‖ borsh(account_id) ‖ borsh(METHOD) ‖ borsh(path) ‖ u64le(time_ms) ‖ SHA256(body))` |
-| HUD / replay challenge          | `SHA256("tail/hud-auth/v1" or "tail/replay-auth/v1" ‖ nonce[32] ‖ match_id[16] ‖ borsh(account_id))`                                 |
-| carry receipt                   | `ed25519(relay_sk, SHA256("tail/carry-ack/v1" ‖ SHA256(envelope) ‖ u16le(status) ‖ u64le(received_ms)))`                             |
-| players hash                    | `SHA256("tail/players" ‖ borsh(Vec<String> sorted by UTF-8 bytes))`                                                                  |
-| ring commit                     | `SHA256("tail/ring" ‖ vrf_signature)`                                                                                                |
-| ring                            | Fisher–Yates over sorted ids; `r_k = u64le(SHA256(SHA256(vrf_sig) ‖ u32le(k))[0..8])`, `j = r_k mod (i+1)`                           |
+| What                            | Definition                                                                                                                                |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| batch hash (chain link, log id) | `SHA256(borsh(Batch))`                                                                                                                    |
+| assertion client data hash      | `SHA256("tail/batch" ‖ borsh(Batch))`                                                                                                     |
+| enrolment client data hash      | `SHA256("tail/enroll/v1" ‖ challenge[32] ‖ borsh(account_id) ‖ player_box_pk ‖ near_pk)`                                                  |
+| re-enrolment (`rebind_sig`)     | `ed25519(old near_sk, SHA256("tail/rebind/v1" ‖ borsh(account_id) ‖ app_attest_pk[65] ‖ player_box_pk ‖ near_pk))`, the new device's keys |
+| verdict digest                  | `SHA256("tail/verdict/v2" ‖ borsh(match_id, seq, prev, call_id, body))`, signed with ed25519 by the enclave key                           |
+| HUD signature                   | `ed25519(referee_sk, SHA256("tail/hud/v2" ‖ borsh(Hud)))`                                                                                 |
+| keys signature                  | `ed25519(referee_sk, SHA256("tail/keys/v2" ‖ borsh(PlayerKeys)))`                                                                         |
+| Handler line signature          | `ed25519(referee_sk, SHA256("tail/voice/v1" ‖ borsh(VoiceLine)))`                                                                         |
+| relay request                   | `SHA256("tail/relay-req/v2" ‖ borsh(contract_id) ‖ borsh(account_id) ‖ borsh(METHOD) ‖ borsh(path) ‖ u64le(time_ms) ‖ SHA256(body))`      |
+| HUD / replay challenge          | `SHA256("tail/hud-auth/v1" or "tail/replay-auth/v1" ‖ nonce[32] ‖ match_id[16] ‖ borsh(account_id))`                                      |
+| carry receipt                   | `ed25519(relay_sk, SHA256("tail/carry-ack/v1" ‖ SHA256(envelope) ‖ u16le(status) ‖ u64le(received_ms)))`                                  |
+| players hash                    | `SHA256("tail/players" ‖ borsh(Vec<String> sorted by UTF-8 bytes))`                                                                       |
+| ring commit                     | `SHA256("tail/ring" ‖ vrf_signature)`                                                                                                     |
+| ring                            | Fisher–Yates over sorted ids; `r_k = u64le(SHA256(SHA256(vrf_sig) ‖ u32le(k))[0..8])`, `j = r_k mod (i+1)`                                |
 
 `call_id` is the OutLayer call that produced the verdict. With it, anyone can fetch that call's
 public attestation record and check which wasm hash actually ran.
@@ -190,17 +191,26 @@ from the log.
 A fresh ephemeral key per message makes the fixed nonce safe. The context names what is sealed,
 so a ciphertext can't be replayed as another kind of message:
 
-| Context         | Plaintext                                           | Sealed to       |
-| --------------- | --------------------------------------------------- | --------------- |
-| `tail/batch`    | `BatchEnvelope`                                     | referee box key |
-| `tail/keys/v2`  | `SignedPlayerKeys`                                  | player box key  |
-| `tail/hud/v2`   | `SignedHud`                                         | player box key  |
-| `tail/voice/v1` | `SignedVoiceLine`                                   | asker's box key |
-| `tail/carry/v1` | `u32le(len) ‖ borsh(CarryRequest) ‖ 0…`, 4096 bytes | relay box key   |
+| Context         | Plaintext                                               | Sealed to       |
+| --------------- | ------------------------------------------------------- | --------------- |
+| `tail/batch`    | `BatchEnvelope`                                         | referee box key |
+| `tail/keys/v2`  | `u32le(len) ‖ borsh(SignedPlayerKeys) ‖ 0…`, 1024 bytes | player box key  |
+| `tail/hud/v2`   | `u32le(len) ‖ borsh(SignedHud) ‖ 0…`, 1024 bytes        | player box key  |
+| `tail/voice/v1` | `u32le(len) ‖ borsh(SignedVoiceLine) ‖ 0…`, 1024 bytes  | asker's box key |
+| `tail/carry/v1` | `u32le(len) ‖ borsh(CarryRequest) ‖ 0…`, 4096 bytes     | relay box key   |
+
+Everything the referee seals to a phone is padded to `PHONE_PAD` (1024) bytes first, so every
+one seals to 32 + 1024 + 16 bytes. Otherwise the relay could read the target's account id off
+the length of the keys, and a template Handler line's hint off its length. The padding lives
+inside the helpers, so no caller can forget it: `sealToPhone` / `openOnPhone` (TS) and
+`seal_to_phone_with` / `open_on_phone` (Rust, typed by `ToPhone`, which also fixes the context).
+Unpadding is strict (size, length and zero padding), and an oversized message is refused. The
+largest HUD (two 64-byte account ids, every option) is 401 bytes and keys at most 230, so the
+voice is the only variable one: its text may be at most `VOICE_TEXT_MAX` (930) bytes.
 
 Anyone with a phone's box public key can seal to it, the relay included, so what the referee
 seals is also signed by it: `openSignedHud`, `openSignedPlayerKeys` and `openSignedVoiceLine`
-open, decode and check the signature in one step.
+open, unpad, decode and check the signature in one step.
 
 Low-order X25519 public keys (the 7 encodings of points of order dividing 8, with or without bit
 255) are refused when sealing and when opening (`isLowOrderX25519` / `is_low_order`), and an

@@ -6,6 +6,7 @@ export * from "./constants.ts";
 export * from "./crypto.ts";
 export * from "./merkle.ts";
 export * from "./messages.ts";
+export * from "./pad.ts";
 export * from "./presence.ts";
 export * from "./pricing.ts";
 export * from "./replay.ts";

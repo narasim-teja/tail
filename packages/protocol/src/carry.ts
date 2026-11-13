@@ -15,29 +15,17 @@ import { utf8 } from "./bytes.ts";
 import { Domain, SealContext } from "./constants.ts";
 import { open, seal, sealWith, verifyEd25519 } from "./crypto.ts";
 import { type CarryAck, type CarryRequest, decodeCarryRequest, encodeCarryRequest } from "./messages.ts";
+import { padTo, unpadFrom } from "./pad.ts";
 
 type Bytes = Uint8Array;
 
 /** Plaintext size of every carry envelope (sealed: 32 + 4096 + 16 bytes). */
 export const CARRY_PAD = 4096;
 
-export function padCarry(x: Bytes): Bytes {
-  if (x.length > CARRY_PAD - 4)
-    throw new RangeError(`carried request is ${x.length} bytes, at most ${CARRY_PAD - 4}`);
-  const out = new Uint8Array(CARRY_PAD);
-  new DataView(out.buffer).setUint32(0, x.length, true);
-  out.set(x, 4);
-  return out;
-}
+export const padCarry = (x: Bytes) => padTo(CARRY_PAD, x, "carried request");
 
 /** Strict: the length must fit and every padding byte must be zero. */
-export function unpadCarry(padded: Bytes): Bytes {
-  if (padded.length !== CARRY_PAD) throw new Error(`carry plaintext must be ${CARRY_PAD} bytes`);
-  const len = new DataView(padded.buffer, padded.byteOffset, padded.byteLength).getUint32(0, true);
-  if (len > CARRY_PAD - 4) throw new Error("carry length out of range");
-  if (padded.subarray(4 + len).some((b) => b !== 0)) throw new Error("carry padding is not zero");
-  return padded.slice(4, 4 + len);
-}
+export const unpadCarry = (padded: Bytes) => unpadFrom(CARRY_PAD, padded, "carry");
 
 export const sealCarry = (relayBoxPk: Bytes, req: CarryRequest) =>
   seal(relayBoxPk, padCarry(encodeCarryRequest(req)), SealContext.carry);

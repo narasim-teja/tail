@@ -63,5 +63,15 @@
     "playerBoxPk": "dd1496da5992ccedcef1e83c7c3caa6c18757bd8ce5be2d98fe941579da5a317",
     "nearPk": "841d97d0e8c60369840fc737d1e5ce428475a4b95dce338711c47f5e072ef33c",
     "clientDataHash": "13f0bcea2bf88b366c1d9cdb5d79c503e088dd1275212ebddaa54ee75a85bc24"
+  },
+  "rebind": {
+    "accountId": "alice.tail.testnet",
+    "appAttestPk": "04be188eda8c12ea57ba44064e64d9a3b310073cc5c654c04f29b09dc492ba95049d8d95bf78cb939675ca45dc335e4facc445a3bef35bfbec5370c411fe5ce44c",
+    "playerBoxPk": "ff459196048c01499680aad8fc00cf1bb2f045fb370979df88afb37bd03d3389",
+    "nearPk": "190c4fe213ea4ecc0b5496eff25f3f0788746a6860f11b332abee1b43a255508",
+    "digest": "c292101841951bfa2bebc9208399753fd2a97927e0c3db19e3a182a41e31de6e",
+    "oldNearSeed": "75b1dc57d7c42175ae4c0562a9d5809e2de749300eb3e1f8c9b2370f589cd846",
+    "oldNearPk": "e6ded10259a624cbbbbe09ca28f33c70430e367b97da2fe076e8f4da4e7251a3",
+    "sig": "839a6848cd2af9c9b40531bfb791abf0c750ca282df8ccb2558165b6815dd5df944e5dddf861f8937d10f551118dd36e99ea5badbb218d89fd945b067ae4c50f"
   }
 }

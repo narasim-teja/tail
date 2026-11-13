@@ -144,6 +144,29 @@ export const enrollClientDataHash = (
       .bytes(),
   );
 
+/**
+ * What the account's current NEAR key signs (ed25519, as `rebind_sig`) to move an enrolled
+ * account to a new device: SHA256("tail/rebind/v1" ‖ borsh(account_id) ‖ app_attest_pk (65,
+ * uncompressed) ‖ player_box_pk ‖ near_pk), all three keys the new device's. The referee refuses
+ * a re-enrolment with other keys without it, so whoever relays enrolments cannot bind an
+ * enrolled account to a phone of its own.
+ */
+export const rebindDigest = (
+  accountId: string,
+  appAttestPk: Uint8Array,
+  playerBoxPk: Uint8Array,
+  nearPk: Uint8Array,
+) =>
+  sha256(
+    new Writer()
+      .raw(utf8(Domain.rebind))
+      .string(accountId)
+      .fixed(appAttestPk, 65)
+      .fixed(playerBoxPk, 32)
+      .fixed(nearPk, 32)
+      .bytes(),
+  );
+
 // ── Verdicts (4.10) ─────────────────────────────────────────────────────────────
 
 /**

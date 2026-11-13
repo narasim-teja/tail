@@ -6,12 +6,16 @@
 //   HUD:    sig = ed25519(referee_sk, SHA256("tail/hud/v2"   ‖ borsh(Hud))),        sealed with context "tail/hud/v2"
 //   keys:   sig = ed25519(referee_sk, SHA256("tail/keys/v2"  ‖ borsh(PlayerKeys))), sealed with context "tail/keys/v2"
 //   voice:  sig = ed25519(referee_sk, SHA256("tail/voice/v1" ‖ borsh(VoiceLine))),  sealed with context "tail/voice/v1"
+//
+// Each is padded before sealing to PHONE_PAD bytes, u32le(len) ‖ borsh ‖ zeros (sealToPhone /
+// openOnPhone), so every one of them seals to the same length: otherwise the length of the keys
+// would name the target's account and the length of a template Handler line its hint.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { concat, equal, utf8 } from "./bytes.ts";
-import { Domain, SealContext } from "./constants.ts";
-import { open, seal, verdictDigest, verifyEd25519 } from "./crypto.ts";
+import { Domain, PHONE_PAD, SealContext } from "./constants.ts";
+import { open, seal, sealWith, verdictDigest, verifyEd25519 } from "./crypto.ts";
 import {
   decodeSignedHud,
   decodeSignedPlayerKeys,
@@ -31,8 +35,28 @@ import {
   type VerdictPayload,
   type VoiceLine,
 } from "./messages.ts";
+import { padTo, unpadFrom } from "./pad.ts";
 
 type Bytes = Uint8Array;
+
+/** The seal contexts of what the referee sends a phone. */
+export type PhoneContext = typeof SealContext.hud | typeof SealContext.keys | typeof SealContext.voice;
+
+export const padPhone = (x: Bytes) => padTo(PHONE_PAD, x, "message to a phone");
+export const unpadPhone = (padded: Bytes) => unpadFrom(PHONE_PAD, padded, "message to a phone");
+
+/** Seals to a phone's box key, padded to PHONE_PAD: every message seals to 32 + PHONE_PAD + 16 bytes. */
+export const sealToPhone = (boxPk: Bytes, plaintext: Bytes, context: PhoneContext) =>
+  seal(boxPk, padPhone(plaintext), context);
+/** Fixed ephemeral key, for vectors and tests only. */
+export const sealToPhoneWith = (ephSk: Bytes, boxPk: Bytes, plaintext: Bytes, context: PhoneContext) =>
+  sealWith(ephSk, boxPk, padPhone(plaintext), context);
+/**
+ * Opens what sealToPhone sealed and strips the padding (strictly). The signature inside is the
+ * caller's to check: anyone can seal to a box key. Prefer the openSigned* helpers below.
+ */
+export const openOnPhone = (boxSk: Bytes, sealed: Bytes, context: PhoneContext) =>
+  unpadPhone(open(boxSk, sealed, context));
 
 export const hudSigDigest = (hud: Hud) => sha256(concat(utf8(Domain.hud), encodeHud(hud)));
 export const keysSigDigest = (keys: PlayerKeys) => sha256(concat(utf8(Domain.keys), encodePlayerKeys(keys)));
@@ -57,11 +81,12 @@ export const signVoiceLine = (line: VoiceLine, refereeSk: Bytes): SignedVoiceLin
   sig: ed25519.sign(voiceSigDigest(line), refereeSk),
 });
 
-export const sealSignedHud = (boxPk: Bytes, s: SignedHud) => seal(boxPk, encodeSignedHud(s), SealContext.hud);
+export const sealSignedHud = (boxPk: Bytes, s: SignedHud) =>
+  sealToPhone(boxPk, encodeSignedHud(s), SealContext.hud);
 export const sealSignedPlayerKeys = (boxPk: Bytes, s: SignedPlayerKeys) =>
-  seal(boxPk, encodeSignedPlayerKeys(s), SealContext.keys);
+  sealToPhone(boxPk, encodeSignedPlayerKeys(s), SealContext.keys);
 export const sealSignedVoiceLine = (boxPk: Bytes, s: SignedVoiceLine) =>
-  seal(boxPk, encodeSignedVoiceLine(s), SealContext.voice);
+  sealToPhone(boxPk, encodeSignedVoiceLine(s), SealContext.voice);
 
 // ── Verifying ───────────────────────────────────────────────────────────────────
 
@@ -96,19 +121,19 @@ export function verdictChainBreak(verdicts: readonly SignedVerdict[], refereePk:
 
 /** Opens a sealed SignedHud and checks the referee's signature; throws if either fails. */
 export function openSignedHud(boxSk: Bytes, sealed: Bytes, refereePk: Bytes): Hud {
-  const s = decodeSignedHud(open(boxSk, sealed, SealContext.hud));
+  const s = decodeSignedHud(openOnPhone(boxSk, sealed, SealContext.hud));
   if (!verifySignedHud(s, refereePk)) throw new Error("HUD not signed by the referee");
   return s.hud;
 }
 
 export function openSignedPlayerKeys(boxSk: Bytes, sealed: Bytes, refereePk: Bytes): PlayerKeys {
-  const s = decodeSignedPlayerKeys(open(boxSk, sealed, SealContext.keys));
+  const s = decodeSignedPlayerKeys(openOnPhone(boxSk, sealed, SealContext.keys));
   if (!verifySignedPlayerKeys(s, refereePk)) throw new Error("keys not signed by the referee");
   return s.keys;
 }
 
 export function openSignedVoiceLine(boxSk: Bytes, sealed: Bytes, refereePk: Bytes): VoiceLine {
-  const s = decodeSignedVoiceLine(open(boxSk, sealed, SealContext.voice));
+  const s = decodeSignedVoiceLine(openOnPhone(boxSk, sealed, SealContext.voice));
   if (!verifySignedVoiceLine(s, refereePk)) throw new Error("Handler line not signed by the referee");
   return s.line;
 }

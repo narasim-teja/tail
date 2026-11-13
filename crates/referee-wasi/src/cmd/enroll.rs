@@ -6,21 +6,22 @@
 //! chose, and fake a tag. So the referee checks the attestation object itself: Apple's chain,
 //! this app, and a clientDataHash it recomputes from the challenge and the very keys it stores
 //! (`enroll_client_data_hash`, the same bytes as `enrollClientDataHash` in packages/protocol).
+//!
+//! An account keeps the device it first enrolled. Moving it to other keys takes `rebind_sig`, the
+//! enrolled device's NEAR key signing the new keys (`rebind_digest`): otherwise a relay holding a
+//! genuine iPhone of its own could attest it for someone else's account and take over their
+//! seat. Enrolling the same keys again changes nothing and returns the stored receipt, so a call
+//! that timed out on the way back is safe to repeat.
 
-use crate::cmd::start::DEFAULT_APP_ID;
+use crate::cmd::APP_ID;
 use crate::codec::{b64, fixed_b64, from_b64, parse, to_borsh, uuid_string};
 use crate::records::{device_record_key, enroll_receipt_digest, Device};
 use crate::{account, host};
 use appattest::Environment;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tail_protocol::digest::enroll_client_data_hash;
+use tail_protocol::digest::{enroll_client_data_hash, rebind_digest};
 use tail_protocol::CallId;
-
-/// The App ID whose attestations count. Pinned in the code (so the published wasm hash pins it)
-/// rather than taken from the caller: a relay that could name the app could enrol keys attested
-/// for an app of its own.
-const APP_ID: &str = DEFAULT_APP_ID;
 /// The phone app is signed with the development App Attest entitlement
 /// (`apps/mobile/app.config.ts`); a TestFlight / App Store build changes both together.
 const ENVIRONMENT: Environment = Environment::Development;
@@ -42,6 +43,11 @@ struct Input {
     attestation: Option<String>,
     /// The 32-byte challenge the phone's attestation covers, base64.
     challenge: Option<String>,
+    /// Only to move an enrolled account to other keys: ed25519 by the enrolled device's
+    /// `near_pk` over `rebind_digest(account_id, app_attest_pk, player_box_pk, near_pk)` of the
+    /// new keys, base64 (64 bytes).
+    #[serde(default)]
+    rebind_sig: Option<String>,
 }
 
 /// Normalises to the 65-byte uncompressed form with the same check the engine applies at
@@ -52,12 +58,11 @@ fn app_attest_key(b64_key: &str) -> Result<[u8; 65], String> {
     Ok(appattest::public_key_bytes(&key))
 }
 
-/// The referee seals the player's keys and HUDs to this key. A point of small order (all-zero
-/// included) makes every X25519 shared secret one of a handful of known values, so anyone could
-/// open them. X25519 clamps the scalar to a multiple of the cofactor 8, so the product is zero
-/// exactly for those points.
+/// The referee seals the player's keys and HUDs to this key. With a point of small order the
+/// X25519 shared secret is all zeros whatever the secret, so anyone could open them. Sealing
+/// refuses such a key too (`tail_protocol::seal`); refusing it here stops it before a match.
 fn check_box_pk(pk: &[u8; 32]) -> Result<(), String> {
-    if x25519_dalek::x25519([0x55; 32], *pk) == [0; 32] {
+    if tail_protocol::seal::is_low_order(pk) {
         return Err("player_box_pk: a low-order X25519 point".into());
     }
     Ok(())
@@ -114,15 +119,81 @@ fn device(i: Input, allow_unattested: bool, now_unix_s: u64, call_id: CallId) ->
     })
 }
 
+/// What enrolment does when the account already has a device stored. With none stored, the new
+/// one is stored, and a `rebind_sig` is ignored: a phone that cannot know whether this referee
+/// holds its account (a retry, a referee newly pinned) may send one anyway.
+#[derive(Debug, PartialEq, Eq)]
+enum Admit {
+    /// The same keys again: keep the stored record and return its receipt. An attestation of
+    /// the same keys for a device stored as a ghost is `Replace` instead.
+    Keep,
+    /// Other keys, with the stored device's consent (or the same keys, now attested).
+    Replace,
+}
+
+fn admit(old: &Device, new: &Device, rebind_sig: Option<&[u8; 64]>) -> Result<Admit, String> {
+    let same_keys = old.app_attest_pk == new.app_attest_pk
+        && old.player_box_pk == new.player_box_pk
+        && old.near_pk == new.near_pk;
+    if same_keys {
+        return Ok(if new.attested && !old.attested {
+            Admit::Replace
+        } else {
+            Admit::Keep
+        });
+    }
+    let sig = rebind_sig.ok_or(format!(
+        "{} is enrolled with another device: moving it takes rebind_sig from that device's NEAR key",
+        new.account_id
+    ))?;
+    let digest = rebind_digest(
+        &new.account_id,
+        &new.app_attest_pk,
+        &new.player_box_pk,
+        &new.near_pk,
+    );
+    if !tail_protocol::verify::ed25519(&old.near_pk, &digest, sig) {
+        return Err("rebind_sig is not the enrolled device's signature over these keys".into());
+    }
+    Ok(Admit::Replace)
+}
+
 pub fn run(input: Value) -> Result<Value, String> {
-    let i: Input = parse(input)?;
+    let mut i: Input = parse(input)?;
+    let rebind_sig = i
+        .rebind_sig
+        .take()
+        .map(|s| fixed_b64::<64>("rebind_sig", &s))
+        .transpose()?;
     let allow_unattested = host::author_secret(ALLOW_UNATTESTED).as_deref() == Some("1");
-    let device = device(i, allow_unattested, host::wall_ms() / 1000, host::call_id()?)?;
+    let new = device(i, allow_unattested, host::wall_ms() / 1000, host::call_id()?)?;
+    let key = device_record_key(&new.account_id);
+    let stored = host::storage_get(&key)?
+        .map(|bytes| borsh::from_slice::<Device>(&bytes).map(|d| (d, bytes)))
+        .transpose()
+        .map_err(|e| format!("device record of {}: {e}", new.account_id))?;
+    let raced = || format!("{} was enrolled by another call meanwhile; retry", new.account_id);
+    // The writes are conditional on what was read, so of two enrolments racing for one account
+    // only one lands. A match already started keeps the copy of the device it took at `start`.
+    let device = match stored {
+        None => {
+            if !host::storage_set_if_absent(&key, &to_borsh(&new))? {
+                return Err(raced());
+            }
+            new
+        }
+        Some((old, old_bytes)) => match admit(&old, &new, rebind_sig.as_ref())? {
+            Admit::Keep => old,
+            Admit::Replace => {
+                if !host::storage_replace(&key, &old_bytes, &to_borsh(&new))? {
+                    return Err(raced());
+                }
+                new
+            }
+        },
+    };
     let receipt = to_borsh(&device);
     let sig = host::sign_digest(&enroll_receipt_digest(&device))?;
-    // A re-enrolment (new phone, reinstalled app) replaces the record. A match already started
-    // keeps the copy it took at `start`.
-    host::storage_set(&device_record_key(&device.account_id), &receipt)?;
     Ok(json!({
         "account_id": device.account_id,
         "app_attest_pk": b64(&device.app_attest_pk),
@@ -130,15 +201,20 @@ pub fn run(input: Value) -> Result<Value, String> {
         "call_id": uuid_string(&device.call_id),
         "receipt": b64(&receipt),
         "sig": b64(&sig),
+        // The key that signed `sig`: the relay can tell which referee holds this device.
+        "referee_pk": b64(&host::referee_pk()?),
     }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{app_attest_key, check_attested, check_box_pk, device, Input};
+    use super::{admit, app_attest_key, check_attested, check_box_pk, device, Admit, Input};
     use crate::codec::b64;
+    use crate::records::Device;
     use base64::{engine::general_purpose::STANDARD, Engine};
+    use ed25519_dalek::{Signer, SigningKey};
     use serde_json::{json, Value};
+    use tail_protocol::digest::rebind_digest;
 
     /// The S3 spike's real iPhone attestation (crates/appattest/tests/data).
     const VECTOR: &str = include_str!("../../../appattest/tests/data/s3-tail-attest.json");
@@ -254,6 +330,58 @@ mod tests {
         let mut i = ghost();
         i["challenge"] = json!(b64(&[1; 32]));
         assert!(device(input(&i), true, 0, [0; 16]).is_err());
+    }
+
+    fn enrolled(near_seed: u8, attested: bool) -> Device {
+        Device {
+            account_id: "alice.tail.testnet".into(),
+            app_attest_pk: g().try_into().unwrap(),
+            attested,
+            player_box_pk: tail_protocol::seal::public_key(&[near_seed; 32]),
+            near_pk: SigningKey::from_bytes(&[near_seed; 32])
+                .verifying_key()
+                .to_bytes(),
+            call_id: [near_seed; 16],
+        }
+    }
+
+    fn rebind_sig(signer: u8, to: &Device) -> [u8; 64] {
+        let digest = rebind_digest(&to.account_id, &to.app_attest_pk, &to.player_box_pk, &to.near_pk);
+        SigningKey::from_bytes(&[signer; 32]).sign(&digest).to_bytes()
+    }
+
+    #[test]
+    fn the_same_keys_again_keep_the_record_unless_now_attested() {
+        let old = enrolled(1, false);
+        assert_eq!(admit(&old, &enrolled(1, false), None), Ok(Admit::Keep));
+        assert_eq!(admit(&old, &enrolled(1, true), None), Ok(Admit::Replace));
+        // An attested device is never downgraded to a ghost.
+        assert_eq!(
+            admit(&enrolled(1, true), &enrolled(1, false), None),
+            Ok(Admit::Keep)
+        );
+    }
+
+    #[test]
+    fn other_keys_take_the_enrolled_devices_signature() {
+        let old = enrolled(1, true);
+        // The relay's own genuine iPhone, attested for this account: refused without consent.
+        let new = enrolled(2, true);
+        let err = admit(&old, &new, None).unwrap_err();
+        assert!(err.contains("rebind_sig"), "{err}");
+        // Signed by the new device itself, not the enrolled one.
+        assert!(admit(&old, &new, Some(&rebind_sig(2, &new))).is_err());
+        // The enrolled device's consent to some other keys.
+        assert!(admit(&old, &new, Some(&rebind_sig(1, &enrolled(3, true)))).is_err());
+        assert_eq!(admit(&old, &new, Some(&rebind_sig(1, &new))), Ok(Admit::Replace));
+        // One changed key is a move too.
+        let mut box_only = old.clone();
+        box_only.player_box_pk = tail_protocol::seal::public_key(&[9; 32]);
+        assert!(admit(&old, &box_only, None).is_err());
+        assert_eq!(
+            admit(&old, &box_only, Some(&rebind_sig(1, &box_only))),
+            Ok(Admit::Replace)
+        );
     }
 
     #[test]

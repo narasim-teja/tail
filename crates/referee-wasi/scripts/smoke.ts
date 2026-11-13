@@ -31,6 +31,7 @@ import {
   openSignedHud,
   openSignedPlayerKeys,
   openSignedVoiceLine,
+  PHONE_PAD,
   type PlayerKeys,
   playersHash,
   RejectCode,
@@ -112,6 +113,7 @@ for (const name of ["ana", "bo", "cy"]) {
     .bytes();
   const receipt = unb64(r.receipt);
   check(r.attested === false, `${account}: an unattested key is marked so`);
+  check(r.referee_pk === keys.referee_pk, `${account}: the receipt names its referee`);
   check(equal(receipt, expected), `${account}: receipt is borsh(Device) with this call's id`);
   check(
     ed25519Verify(refereePk, sha256(concat(utf8("tail/enroll-receipt/v1"), receipt)), unb64(r.sig)),
@@ -272,14 +274,21 @@ console.log("voice");
 const { result: v, call: vCall } = await ok("voice", { state: t1.state, blob: t1.hints[0].blob });
 const line = openSignedVoiceLine(ana.boxSk, unb64(v.sealed), refereePk);
 console.log(
-  `  "${line.text}" (${v.source}, model ${v.latency_ms} ms, call wall ${vCall.wall.toFixed(0)} ms)`,
+  `  "${line.text}" (${v.signed_text ? "model, signed" : "no model signature"}, call wall ${vCall.wall.toFixed(0)} ms)`,
 );
 check(
   line.player === asker && line.hintId === 0 && equal(line.matchId, matchId) && line.text.length > 0,
   "the Handler line opens with the asker's box key and is signed by referee_pk",
 );
-check(v.text === undefined && v.fact === undefined, "nothing the relay sees names the fact or the words");
-if (v.source !== "model") console.log(`  template fallback: ${v.fallback_reason}`);
+check(
+  Object.keys(v).sort().join() === "hint_id,player,receipt,sealed,signed_text",
+  "the relay sees who asked, the sealed line, the signed text and the receipt; nothing names the fact or the words",
+);
+check(unb64(v.sealed).length === 32 + PHONE_PAD + 16, "the Handler line is padded to PHONE_PAD");
+check(
+  equal(unb64(v.receipt).subarray(4, 36), sha256(unb64(v.sealed))),
+  "the receipt names the sealed line it stands for",
+);
 
 const { result: t2, call: t2Call } = await ok("tick", {
   match_id: b64(matchId),

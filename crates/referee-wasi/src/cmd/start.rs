@@ -4,7 +4,7 @@
 //! K_m and the VRF reveal stay in storage for `end` and `declassify`; the sealed tick state
 //! carries everything a tick needs.
 
-use super::{log_out, seal_to, sign_all};
+use super::{log_out, seal_to, sign_all, APP_ID};
 use crate::codec::{b64, fixed_b64, parse, to_borsh, uuid_string};
 use crate::records::{device_record_key, domain, match_record_key, Device, MatchRecord};
 use crate::state::{self, MatchState};
@@ -14,9 +14,6 @@ use serde_json::{json, Value};
 use tail_protocol::digest::keys_sig_digest;
 use tail_protocol::ring::{build_ring, sort_accounts};
 use tail_protocol::{PlayerKeys, SignedPlayerKeys, Verdict};
-
-/// App Attest App ID (`TEAMID.bundle.id`) of the TAIL iOS app.
-pub const DEFAULT_APP_ID: &str = "LKABS9RZAC.com.lkabs9rzac.tail";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,8 +47,6 @@ struct Input {
     zone: CircleIn,
     #[serde(default)]
     safehouses: Vec<CircleIn>,
-    #[serde(default)]
-    app_id: Option<String>,
 }
 
 fn load_device(account_id: &str) -> Result<Device, String> {
@@ -68,11 +63,7 @@ fn seal_keys(keys: Vec<(u16, PlayerKeys)>, devices: &[Device]) -> Result<Vec<Val
             let device = &devices[usize::from(player)];
             let sig = host::sign_digest(&keys_sig_digest(&pk))?;
             let signed = SignedPlayerKeys { keys: pk, sig };
-            let sealed = seal_to(
-                &device.player_box_pk,
-                &to_borsh(&signed),
-                tail_protocol::domain::KEYS,
-            )?;
+            let sealed = seal_to(&device.player_box_pk, &signed)?;
             Ok(json!({ "player": player, "account_id": device.account_id, "sealed": b64(&sealed) }))
         })
         .collect()
@@ -108,7 +99,10 @@ pub fn run(input: Value) -> Result<Value, String> {
     let vrf = host::vrf(&hex::encode(match_id))?;
     let cfg = referee_core::MatchConfig {
         match_id,
-        app_id: i.app_id.unwrap_or_else(|| DEFAULT_APP_ID.to_owned()),
+        // The App ID the engine checks every assertion against is the one enrolment checked
+        // attestations against, pinned in the code: a relay that could name it could have
+        // assertions from an app of its own accepted.
+        app_id: APP_ID.to_owned(),
         stake,
         duration_ms: i.duration_ms,
         zone: (&i.zone).into(),

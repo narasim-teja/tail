@@ -32,6 +32,7 @@ import {
   merkleVerify,
   open,
   playersHash,
+  rebindDigest,
   replayDigest,
   requestDigest,
   resolveToken,
@@ -134,6 +135,19 @@ describe("batch", () => {
     expect(toHex(enrollClientDataHash(h(e.challenge), e.accountId, h(e.playerBoxPk), h(e.nearPk)))).toBe(
       e.clientDataHash,
     );
+  });
+
+  test("re-enrolment digest matches the vector, signed by the old NEAR key", () => {
+    const r = batchV.rebind;
+    const digest = rebindDigest(r.accountId, h(r.appAttestPk), h(r.playerBoxPk), h(r.nearPk));
+    expect(toHex(digest)).toBe(r.digest);
+    expect(toHex(ed25519.sign(digest, h(r.oldNearSeed)))).toBe(r.sig);
+    expect(ed25519.verify(h(r.sig), digest, h(r.oldNearPk))).toBe(true);
+    // Every key is covered: another box key is another digest.
+    expect(toHex(rebindDigest(r.accountId, h(r.appAttestPk), h(r.nearPk), h(r.nearPk)))).not.toBe(r.digest);
+    expect(() =>
+      rebindDigest(r.accountId, h(r.appAttestPk).slice(0, 33), h(r.playerBoxPk), h(r.nearPk)),
+    ).toThrow();
   });
 });
 

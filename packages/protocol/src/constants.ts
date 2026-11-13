@@ -53,6 +53,18 @@ export const HINT_TEXT_MAX = 140;
  * The referee refuses the next one (RefuseCode.HintLimit).
  */
 export const MAX_HINTS = 240;
+/**
+ * Plaintext size of every message the referee seals to a phone (SignedPlayerKeys, SignedHud,
+ * SignedVoiceLine): u32le(len) ‖ borsh ‖ zeros, so the sealed size (32 + 1024 + 16 bytes) is the
+ * same whatever the target's account id, the HUD's options or the Handler's words. The largest
+ * HUD (two 64-byte account ids, every option set) is 401 bytes signed; keys are at most 230.
+ */
+export const PHONE_PAD = 1024;
+/**
+ * Most bytes of Handler text that fit PHONE_PAD: the rest of a SignedVoiceLine is 90 bytes (match
+ * id 16, player 2, hint id 4, text length 4, signature 64), and the length prefix 4.
+ */
+export const VOICE_TEXT_MAX = PHONE_PAD - 4 - 90;
 
 export const HintKind = { Near: 0, Bearing: 1, Trend: 2 } as const;
 export type HintKind = (typeof HintKind)[keyof typeof HintKind];
@@ -140,6 +152,8 @@ export const Domain = {
   carry: "tail/carry/v1",
   /** Signature digest of the relay's receipt for a carried envelope. */
   carryAck: "tail/carry-ack/v1",
+  /** Re-enrolment of an account: the old NEAR key signs the new device's keys. */
+  rebind: "tail/rebind/v1",
 } as const;
 
 /** The `context` (AAD) of every sealed message, by what it holds. */

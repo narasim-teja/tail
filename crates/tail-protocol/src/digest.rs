@@ -1,5 +1,5 @@
 //! Hashes that cross a trust boundary: verdict, HUD, keys and voice signature digests, batch
-//! hash, App Attest client data.
+//! hash, App Attest client data, and the re-enrolment digest.
 
 use crate::constants::domain;
 use crate::messages::{Batch, Hash, Hud, PlayerKeys, VerdictPayload, VoiceLine};
@@ -61,6 +61,25 @@ pub fn enroll_client_data_hash(
         domain::ENROLL,
         challenge,
         &borsh(&account_id.to_owned()),
+        player_box_pk,
+        near_pk,
+    ])
+}
+
+/// What the account's current NEAR key signs to move the account to a new device:
+/// `SHA256("tail/rebind/v1" ‖ borsh(account_id) ‖ app_attest_pk (65, uncompressed) ‖
+/// player_box_pk ‖ near_pk)`, all three keys the new device's. Without it, whoever relays the
+/// enrolment could bind an enrolled account to a phone of its own.
+pub fn rebind_digest(
+    account_id: &str,
+    app_attest_pk: &[u8; 65],
+    player_box_pk: &[u8; 32],
+    near_pk: &[u8; 32],
+) -> Hash {
+    sha256(&[
+        domain::REBIND,
+        &borsh(&account_id.to_owned()),
+        app_attest_pk,
         player_box_pk,
         near_pk,
     ])

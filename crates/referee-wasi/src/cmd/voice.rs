@@ -5,8 +5,8 @@
 //! relay never learns it. The line goes back signed and sealed to the asker, so the relay can
 //! neither read nor swap it, and its receipt goes back sealed for the next tick to log.
 
-use super::seal_to;
-use crate::codec::{b64, from_b64, parse, to_borsh};
+use super::{seal_receipt, seal_to};
+use crate::codec::{b64, from_b64, parse};
 use crate::host;
 use crate::http::{self, deadline_in, encode_component, passed, sleep_ms, Method};
 use crate::records::{domain, HintBlob};
@@ -16,7 +16,7 @@ use crate::voice::{self, ChatSignature, Fact};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tail_protocol::digest::{sha256, voice_sig_digest};
-use tail_protocol::{MatchId, SignedVoiceLine, VoiceLine};
+use tail_protocol::{MatchId, SignedVoiceLine, VoiceLine, VOICE_TEXT_MAX};
 
 const AUTHORITY: &str = "cloud-api.near.ai";
 const DEFAULT_MODEL: &str = "deepseek-ai/DeepSeek-V4.1-Flash-1017";
@@ -144,33 +144,31 @@ pub fn run(input: Value) -> Result<Value, String> {
     let question = hint.question.as_deref().map(voice::clean_question).transpose()?;
     // A missing key or a refused model is a broken deployment, not a slow model: say so
     // instead of quietly serving templates. Without a network (the local test referee) no
-    // model is asked, so no key is needed; `Err` carries why.
-    let key: Result<String, &str> = match http::OFFLINE {
-        Some(reason) => Err(reason),
+    // model is asked, so no key is needed.
+    let key: Option<String> = match http::OFFLINE {
+        Some(_) => None,
         None => {
-            Ok(host::author_secret("NEARAI_API_KEY").ok_or("the NEARAI_API_KEY author secret is not set")?)
+            Some(host::author_secret("NEARAI_API_KEY").ok_or("the NEARAI_API_KEY author secret is not set")?)
         }
     };
     let model = host::author_secret("NEARAI_MODEL").unwrap_or_else(|| DEFAULT_MODEL.to_owned());
     voice::check_model(&model)?;
 
     let request = voice::request_body(&model, fact, hint.recent, question.as_deref(), &nonce);
-    let t0 = host::now_ms();
-    let completion = match &key {
-        Ok(key) => complete(key, &request).map(|c| (key, c)),
-        Err(reason) => Err((*reason).to_owned()),
-    };
-    let latency_ms = host::now_ms() - t0;
-
-    let (text, chat, fallback_reason, signature, signature_error) = match completion {
-        Ok((key, c)) => {
-            let (sig, err) = match fetch_signature(key, &model, &c) {
-                Ok(s) => (Some(s), None),
-                Err(e) => (None, Some(e)),
-            };
-            (c.text.clone(), Some(c), None, sig, err)
+    // A line too long to seal at the one size every message to a phone has is not used.
+    let completion = key
+        .as_deref()
+        .and_then(|key| complete(key, &request).ok().map(|c| (key, c)))
+        .filter(|(_, c)| c.text.len() <= VOICE_TEXT_MAX);
+    // Whether the model answered, and why not, stays here: the relay learns only what
+    // `signed_text` tells it, and the logged receipt (empty chat id or signature) tells the rest
+    // after End.
+    let (text, chat, signature) = match completion {
+        Some((key, c)) => {
+            let sig = fetch_signature(key, &model, &c).ok();
+            (c.text.clone(), Some(c), sig)
         }
-        Err(reason) => (fact.template(), None, Some(reason), None, None),
+        None => (fact.template(), None, None),
     };
     let text_hash = sha256(&[text.as_bytes()]);
 
@@ -196,36 +194,23 @@ pub fn run(input: Value) -> Result<Value, String> {
         text,
     };
     let sig = host::sign_digest(&voice_sig_digest(&line))?;
-    let sealed = seal_to(
-        &asker_pk,
-        &to_borsh(&SignedVoiceLine { line, sig }),
-        tail_protocol::domain::VOICE,
-    )?;
+    let sealed = seal_to(&asker_pk, &SignedVoiceLine { line, sig })?;
     // Voice changes no state and appends nothing: the receipt joins the log in the tick (or
     // `end`) that takes it, salted for the index it lands at, and shows up in that call's own
-    // `leaves` and `log_sealed`.
-    let receipt = vault::seal(
-        &box_sk,
-        Purpose::Receipt,
-        &hint.match_id,
-        &[],
-        &to_borsh(&receipt),
-    );
+    // `leaves` and `log_sealed`. It is bound to this hint and to this sealed line, so it cannot
+    // stand for another line of the same hint.
+    let receipt = seal_receipt(&box_sk, &hint.match_id, &sealed, &receipt);
 
-    // Nothing here names the fact or the words. `signed_text` is what NEAR AI signed
-    // (`model:sha256(request):sha256(response)`); the replay needs it to check the signature
-    // that the receipt carries into the log. The request's nonce keeps its hash unguessable.
-    // `hint_id` is public already: the Hint verdict on chain carries it.
+    // Nothing here names the fact or the words: `sealed` is one fixed size whatever the line.
+    // `signed_text` is what NEAR AI signed (`model:sha256(request):sha256(response)`); the
+    // replay needs it to check the signature that the receipt carries into the log. The
+    // request's nonce keeps its hash unguessable. `hint_id` is public already: the Hint verdict
+    // on chain carries it.
     Ok(json!({
         "player": hint.player,
         "hint_id": hint.hint_id,
         "sealed": b64(&sealed),
         "signed_text": signature.as_ref().map(|s| s.text.clone()),
         "receipt": b64(&receipt),
-        "source": if chat.is_some() { "model" } else { "template" },
-        "model": model,
-        "latency_ms": latency_ms,
-        "fallback_reason": fallback_reason,
-        "signature_error": signature_error,
     }))
 }

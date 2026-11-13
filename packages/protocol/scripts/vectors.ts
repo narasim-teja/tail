@@ -52,19 +52,24 @@ import {
   merklePeaks,
   merkleProof,
   merkleRoot,
+  PHONE_PAD,
+  type PhoneContext,
   type PlayerKeys,
   PRICE_CAP_BPS,
   PRICE_STEP_BPS,
   PRICE_WINDOW_MS,
   padCarry,
+  padPhone,
   playersHash,
   presenceProof,
   priceReason,
   RejectCode,
+  rebindDigest,
   recentHints,
   ringCommit,
   SealContext,
   sealCarryWith,
+  sealToPhoneWith,
   sealWith,
   sha256,
   signCarryAck,
@@ -78,6 +83,7 @@ import {
   utf8,
   type Verdict,
   type VerdictPayload,
+  VOICE_TEXT_MAX,
   type VoiceLine,
   verdictDigest,
   voiceSigDigest,
@@ -170,6 +176,22 @@ write("batch", {
     nearPk: seed("near"),
     clientDataHash: enrollClientDataHash(seed("challenge"), "alice.tail.testnet", seed("box"), seed("near")),
   },
+  // Re-enrolment: the account's current NEAR key signs the new device's three keys.
+  rebind: (() => {
+    const oldNearSk = seed("old-near");
+    const appAttestPk = new Uint8Array([4, ...seed("attest-x"), ...seed("attest-y")]);
+    const digest = rebindDigest("alice.tail.testnet", appAttestPk, seed("box2"), seed("near2"));
+    return {
+      accountId: "alice.tail.testnet",
+      appAttestPk,
+      playerBoxPk: seed("box2"),
+      nearPk: seed("near2"),
+      digest,
+      oldNearSeed: oldNearSk,
+      oldNearPk: ed25519.getPublicKey(oldNearSk),
+      sig: ed25519.sign(digest, oldNearSk),
+    };
+  })(),
 });
 
 // ── verdicts (v2: each payload chains to the previous verdict's digest) ──
@@ -422,9 +444,13 @@ const signedMsg = (
   sig,
   signed,
   context,
-  sealed: sealWith(seed(`eph/${name}`), recipientPk, signed, context),
+  ephSk: seed(`eph/${name}`),
+  padded: padPhone(signed),
+  sealed: sealToPhoneWith(seed(`eph/${name}`), recipientPk, signed, context as PhoneContext),
 });
 write("hud", {
+  phonePad: PHONE_PAD,
+  voiceTextMax: VOICE_TEXT_MAX,
   refereeSeed: refereeSk,
   refereePk,
   recipientSk,

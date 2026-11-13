@@ -857,7 +857,6 @@ dependencies = [
  "sha2 0.10.9",
  "tail-protocol",
  "wasi 0.13.3+wasi-0.2.2",
- "x25519-dalek",
 ]
 
 [[package]]
@@ -1062,6 +1061,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "chacha20poly1305",
+ "ed25519-dalek",
  "hkdf",
  "hmac 0.12.1",
  "sha2 0.10.9",

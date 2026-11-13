@@ -295,7 +295,7 @@ for (let k = 1; !over; k++) {
     const line = openSignedVoiceLine(asker.boxSk, unb64(v.sealed), refereePk);
     receipts.push(v.receipt);
     signedText = v.signed_text;
-    voiceRow = `"${line.text}" (${v.source}, model ${v.latency_ms} ms, call ${vc.wall.toFixed(0)} ms, ${v.signed_text ? "signed" : (v.signature_error ?? v.fallback_reason)})`;
+    voiceRow = `"${line.text}" (call ${vc.wall.toFixed(0)} ms, ${v.signed_text ? "model, signed" : "no model signature"})`;
   }
   const kinds = t.verdicts.map((s: string) => decodeSignedVerdict(unb64(s)).body.kind).join(",");
   rows.push({

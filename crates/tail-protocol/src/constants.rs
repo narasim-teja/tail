@@ -29,6 +29,15 @@ pub const HINT_TEXT_MAX: usize = 140;
 /// them, and pays for that storage when the match is created, so the count needs a bound: 20 per
 /// player at 12 players. The referee refuses the next one (`refuse_code::HINT_LIMIT`).
 pub const MAX_HINTS: usize = 240;
+/// Plaintext size of every message the referee seals to a phone (`SignedPlayerKeys`, `SignedHud`,
+/// `SignedVoiceLine`): `u32le(len) ‖ borsh ‖ zeros`, so the sealed size (32 + 1024 + 16 bytes) is
+/// the same whatever the target's account id, the HUD's options or the Handler's words. The
+/// largest HUD (two 64-byte account ids, every option set) is 401 bytes signed; keys are at most
+/// 230.
+pub const PHONE_PAD: usize = 1024;
+/// Most bytes of Handler text that fit `PHONE_PAD`: the rest of a `SignedVoiceLine` is 90 bytes
+/// (match id 16, player 2, hint id 4, text length 4, signature 64), and the length prefix 4.
+pub const VOICE_TEXT_MAX: usize = PHONE_PAD - 4 - 90;
 
 pub mod hint_kind {
     pub const NEAR: u8 = 0;
@@ -118,4 +127,6 @@ pub mod domain {
     pub const LOG: &[u8] = b"tail/log";
     /// HMAC prefix of a log entry's salt.
     pub const LOG_SALT: &[u8] = b"tail/log-salt";
+    /// Re-enrolment of an account: the old NEAR key signs the new device's keys.
+    pub const REBIND: &[u8] = b"tail/rebind/v1";
 }

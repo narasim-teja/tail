@@ -11,14 +11,18 @@ use tail_protocol::beacon::{
 };
 use tail_protocol::digest::{
     batch_client_data_hash, batch_hash, enroll_client_data_hash, hud_sig_digest, keys_sig_digest,
-    verdict_digest, voice_sig_digest,
+    rebind_digest, verdict_digest, voice_sig_digest,
 };
 use tail_protocol::presence::{verify_presence, Presence, PresenceError};
-use tail_protocol::seal::{is_low_order, open, public_key, seal_with, SealError};
+use tail_protocol::seal::{
+    is_low_order, open, open_on_phone, pad, public_key, seal_to_phone_with, seal_with, unpad, SealError,
+    ToPhone,
+};
 use tail_protocol::{
     hint_bps, hint_kind, hint_price, merkle, price_reason, recent_hints, reject_code, ring, verify, Action,
     Batch, BatchEnvelope, Hash, Hud, LogEntry, PlayerKeys, PresenceProof, SignedHud, SignedPlayerKeys,
-    SignedVerdict, SignedVoiceLine, Verdict, PRICE_CAP_BPS, PRICE_STEP_BPS, PRICE_WINDOW_MS,
+    SignedVerdict, SignedVoiceLine, Verdict, VoiceLine, PHONE_PAD, PRICE_CAP_BPS, PRICE_STEP_BPS,
+    PRICE_WINDOW_MS, VOICE_TEXT_MAX,
 };
 
 fn load(name: &str) -> Value {
@@ -129,6 +133,19 @@ fn batch_round_trips_and_hashes_match() {
         ),
         arr::<32>(&e["clientDataHash"])
     );
+
+    let r = &v["rebind"];
+    let digest = rebind_digest(
+        r["accountId"].as_str().unwrap(),
+        &arr(&r["appAttestPk"]),
+        &arr(&r["playerBoxPk"]),
+        &arr(&r["nearPk"]),
+    );
+    assert_eq!(digest, arr::<32>(&r["digest"]));
+    let old = SigningKey::from_bytes(&arr(&r["oldNearSeed"]));
+    assert_eq!(old.verifying_key().to_bytes(), arr::<32>(&r["oldNearPk"]));
+    assert_eq!(old.sign(&digest).to_bytes(), arr::<64>(&r["sig"]));
+    assert!(verify::ed25519(&arr(&r["oldNearPk"]), &digest, &arr(&r["sig"])));
 }
 
 #[test]
@@ -425,15 +442,22 @@ fn signed_hud_keys_and_voice_match_and_open() {
         let digest: Hash = arr(&s["digest"]);
         assert_eq!(sk.sign(&digest).to_bytes(), arr::<64>(&s["sig"]), "{name}");
         assert!(verify::ed25519(&pk, &digest, &arr(&s["sig"])));
+        let sealed = bytes(&s["sealed"]);
+        assert_eq!(sealed.len(), 32 + PHONE_PAD + 16, "{name}");
+        assert_eq!(pad(&signed).unwrap(), bytes(&s["padded"]), "{name}");
         assert_eq!(
-            open(&box_sk, &bytes(&s["sealed"]), ctx).unwrap(),
-            signed,
+            open(&box_sk, &sealed, ctx).unwrap(),
+            bytes(&s["padded"]),
             "{name}"
         );
+        let eph: [u8; 32] = arr(&s["ephSk"]);
+        let recipient = public_key(&box_sk);
         match name {
             "hud" => {
-                assert_eq!(ctx, tail_protocol::domain::HUD);
-                let h = SignedHud::try_from_slice(&signed).unwrap();
+                assert_eq!(ctx, SignedHud::CONTEXT);
+                let h: SignedHud = open_on_phone(&box_sk, &sealed).unwrap();
+                assert_eq!(borsh::to_vec(&h).unwrap(), signed);
+                assert_eq!(seal_to_phone_with(&eph, &recipient, &h).unwrap(), sealed);
                 assert_eq!(hud_sig_digest(&h.hud), digest);
                 assert!(verify::signed_hud(&h, &pk));
                 let mut forged = h;
@@ -441,14 +465,23 @@ fn signed_hud_keys_and_voice_match_and_open() {
                 assert!(!verify::signed_hud(&forged, &pk));
             }
             "keys" => {
-                assert_eq!(ctx, tail_protocol::domain::KEYS);
-                let k = SignedPlayerKeys::try_from_slice(&signed).unwrap();
+                assert_eq!(ctx, SignedPlayerKeys::CONTEXT);
+                let k: SignedPlayerKeys = open_on_phone(&box_sk, &sealed).unwrap();
+                assert_eq!(borsh::to_vec(&k).unwrap(), signed);
+                assert_eq!(seal_to_phone_with(&eph, &recipient, &k).unwrap(), sealed);
+                // Under another type's context it does not open.
+                assert_eq!(
+                    open_on_phone::<SignedHud>(&box_sk, &sealed),
+                    Err(SealError::Decrypt)
+                );
                 assert_eq!(keys_sig_digest(&k.keys), digest);
                 assert!(verify::signed_keys(&k, &pk));
             }
             "voice" => {
-                assert_eq!(ctx, tail_protocol::domain::VOICE);
-                let l = SignedVoiceLine::try_from_slice(&signed).unwrap();
+                assert_eq!(ctx, SignedVoiceLine::CONTEXT);
+                let l: SignedVoiceLine = open_on_phone(&box_sk, &sealed).unwrap();
+                assert_eq!(borsh::to_vec(&l).unwrap(), signed);
+                assert_eq!(seal_to_phone_with(&eph, &recipient, &l).unwrap(), sealed);
                 assert_eq!(voice_sig_digest(&l.line), digest);
                 assert!(verify::signed_voice(&l, &pk));
                 assert_eq!(l.line.text, "Your mark drifts east. Mind the café. ☕");
@@ -456,6 +489,111 @@ fn signed_hud_keys_and_voice_match_and_open() {
             other => panic!("unexpected signed message {other}"),
         }
     }
+}
+
+#[test]
+fn phone_messages_seal_to_one_length_whatever_they_hold() {
+    let v = load("hud");
+    assert_eq!(num(&v["phonePad"]) as usize, PHONE_PAD);
+    assert_eq!(num(&v["voiceTextMax"]) as usize, VOICE_TEXT_MAX);
+    let box_sk: [u8; 32] = arr(&v["recipientSk"]);
+    let pk = public_key(&box_sk);
+    let eph = [7; 32];
+    let want = 32 + PHONE_PAD + 16;
+    let longest = format!("{}.testnet", "a".repeat(56));
+    assert_eq!(longest.len(), 64, "NEAR's longest account id");
+
+    let keys = PlayerKeys::try_from_slice(&bytes(&v["signed"][1]["borsh"])).unwrap();
+    for target in ["bo.testnet", "alice.tail.testnet", longest.as_str()] {
+        let k = SignedPlayerKeys {
+            keys: PlayerKeys {
+                target: target.into(),
+                ..keys.clone()
+            },
+            sig: [1; 64],
+        };
+        assert_eq!(seal_to_phone_with(&eph, &pk, &k).unwrap().len(), want, "{target}");
+    }
+
+    let hud = Hud::try_from_slice(&bytes(&v["hud"]["borsh"])).unwrap();
+    let bare = Hud::try_from_slice(&bytes(&v["hudNoOptions"]["borsh"])).unwrap();
+    let largest = Hud {
+        target: longest.clone(),
+        tagged_by: Some(longest.clone()),
+        hint_prices: [u128::MAX; 3],
+        ..hud.clone()
+    };
+    for h in [bare, hud, largest.clone()] {
+        let s = SignedHud { hud: h, sig: [1; 64] };
+        assert_eq!(seal_to_phone_with(&eph, &pk, &s).unwrap().len(), want);
+    }
+    let largest = borsh::to_vec(&SignedHud {
+        hud: largest,
+        sig: [1; 64],
+    })
+    .unwrap();
+    assert_eq!(largest.len(), 401, "the largest HUD, as PHONE_PAD's comment says");
+
+    let line = |text: String| SignedVoiceLine {
+        line: VoiceLine {
+            match_id: [1; 16],
+            player: 2,
+            hint_id: 3,
+            text,
+        },
+        sig: [1; 64],
+    };
+    for text in [
+        "Warmer. You're closing in.".to_owned(),
+        "x".repeat(VOICE_TEXT_MAX),
+    ] {
+        let sealed = seal_to_phone_with(&eph, &pk, &line(text.clone())).unwrap();
+        assert_eq!(sealed.len(), want);
+        assert_eq!(
+            open_on_phone::<SignedVoiceLine>(&box_sk, &sealed)
+                .unwrap()
+                .line
+                .text,
+            text
+        );
+    }
+    assert_eq!(
+        seal_to_phone_with(&eph, &pk, &line("x".repeat(VOICE_TEXT_MAX + 1))),
+        Err(SealError::TooLong)
+    );
+}
+
+#[test]
+fn phone_padding_is_strict() {
+    assert_eq!(unpad(&pad(b"abc").unwrap()).unwrap(), b"abc");
+    assert_eq!(pad(&[0; PHONE_PAD - 4]).unwrap().len(), PHONE_PAD);
+    assert_eq!(pad(&[0; PHONE_PAD - 3]), Err(SealError::TooLong));
+    let mut dirty = pad(b"abc").unwrap();
+    dirty[PHONE_PAD - 1] = 1;
+    assert_eq!(unpad(&dirty), Err(SealError::Padding));
+    let mut long = pad(b"abc").unwrap();
+    long[..4].copy_from_slice(&(PHONE_PAD as u32 - 3).to_le_bytes());
+    assert_eq!(unpad(&long), Err(SealError::Padding));
+    assert_eq!(
+        unpad(&pad(b"abc").unwrap()[..PHONE_PAD - 1]),
+        Err(SealError::Padding)
+    );
+    // A message sealed without padding, as before, does not open as one to a phone.
+    let sk = [5; 32];
+    let unpadded = seal_with(&[6; 32], &public_key(&sk), b"abc", SignedHud::CONTEXT).unwrap();
+    assert_eq!(
+        open_on_phone::<SignedHud>(&sk, &unpadded),
+        Err(SealError::Padding)
+    );
+    // Padding that holds no SignedHud.
+    let junk = seal_with(
+        &[6; 32],
+        &public_key(&sk),
+        &pad(b"abc").unwrap(),
+        SignedHud::CONTEXT,
+    )
+    .unwrap();
+    assert_eq!(open_on_phone::<SignedHud>(&sk, &junk), Err(SealError::Decode));
 }
 
 fn big(v: &Value) -> u128 {

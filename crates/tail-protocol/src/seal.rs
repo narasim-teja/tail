@@ -6,8 +6,15 @@
 //!
 //! Low-order public keys are refused on both sides. With one, the X25519 output is all zeros
 //! whatever the secret, so the "sealed" message would be readable by anyone.
+//!
+//! What the referee seals to a phone (`ToPhone`: keys, HUDs, Handler lines) is padded first to
+//! `PHONE_PAD` bytes, `u32le(len) ‖ borsh ‖ zeros`, inside `seal_to_phone_with` and
+//! `open_on_phone`, so no caller can forget: a ciphertext's length would otherwise tell the relay
+//! the target's account id or which template line the Handler sent.
 
-use crate::constants::domain;
+use crate::constants::{domain, PHONE_PAD};
+use crate::messages::{SignedHud, SignedPlayerKeys, SignedVoiceLine};
+use borsh::{BorshDeserialize, BorshSerialize};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::ChaCha20Poly1305;
 use hkdf::Hkdf;
@@ -22,6 +29,13 @@ pub enum SealError {
     Decrypt,
     /// A low-order public key, or a shared secret of all zeros.
     LowOrderKey,
+    /// The message does not fit `PHONE_PAD`.
+    TooLong,
+    /// The padded plaintext is the wrong size, its length is out of range, or a padding byte is
+    /// not zero.
+    Padding,
+    /// The plaintext is not the borsh message its context names.
+    Decode,
 }
 
 /// The u-coordinates of order dividing 8 on Curve25519 and its twist (0, 1, p−1 and the two
@@ -128,4 +142,59 @@ pub fn open(recipient_sk: &[u8; 32], sealed: &[u8], context: &[u8]) -> Result<Ve
             },
         )
         .map_err(|_| SealError::Decrypt)
+}
+
+/// A message the referee seals to a phone. The seal context comes with the type, so a HUD can
+/// never go out under the keys' context, and every one is padded to `PHONE_PAD`.
+pub trait ToPhone: BorshSerialize + BorshDeserialize {
+    const CONTEXT: &'static [u8];
+}
+impl ToPhone for SignedPlayerKeys {
+    const CONTEXT: &'static [u8] = domain::KEYS;
+}
+impl ToPhone for SignedHud {
+    const CONTEXT: &'static [u8] = domain::HUD;
+}
+impl ToPhone for SignedVoiceLine {
+    const CONTEXT: &'static [u8] = domain::VOICE;
+}
+
+/// `u32le(len(x)) ‖ x ‖ zeros`, `PHONE_PAD` bytes in all.
+pub fn pad(x: &[u8]) -> Result<Vec<u8>, SealError> {
+    if x.len() > PHONE_PAD - 4 {
+        return Err(SealError::TooLong);
+    }
+    let mut out = vec![0; PHONE_PAD];
+    out[..4].copy_from_slice(&u32::try_from(x.len()).expect("under PHONE_PAD").to_le_bytes());
+    out[4..4 + x.len()].copy_from_slice(x);
+    Ok(out)
+}
+
+/// Strict: the size must be `PHONE_PAD`, the length must fit and every padding byte be zero.
+pub fn unpad(padded: &[u8]) -> Result<&[u8], SealError> {
+    if padded.len() != PHONE_PAD {
+        return Err(SealError::Padding);
+    }
+    let len = u32::from_le_bytes(padded[..4].try_into().expect("4 bytes")) as usize;
+    if len > PHONE_PAD - 4 || padded[4 + len..].iter().any(|&b| b != 0) {
+        return Err(SealError::Padding);
+    }
+    Ok(&padded[4..4 + len])
+}
+
+/// Seals a message to a phone's box key, padded to `PHONE_PAD`, under its type's context.
+pub fn seal_to_phone_with<T: ToPhone>(
+    eph_sk: &[u8; 32],
+    recipient_pk: &[u8; 32],
+    msg: &T,
+) -> Result<Vec<u8>, SealError> {
+    let plain = borsh::to_vec(msg).expect("borsh serialization into a Vec cannot fail");
+    seal_with(eph_sk, recipient_pk, &pad(&plain)?, T::CONTEXT)
+}
+
+/// Opens what `seal_to_phone_with` sealed. The signature inside is the caller's to check
+/// (`verify`): anyone can seal to a box key.
+pub fn open_on_phone<T: ToPhone>(recipient_sk: &[u8; 32], sealed: &[u8]) -> Result<T, SealError> {
+    let padded = open(recipient_sk, sealed, T::CONTEXT)?;
+    T::try_from_slice(unpad(&padded)?).map_err(|_| SealError::Decode)
 }

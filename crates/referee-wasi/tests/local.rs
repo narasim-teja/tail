@@ -26,6 +26,8 @@ const BIN: &str = env!("CARGO_BIN_EXE_tail-referee");
 const OWNER: &str = "relay.test.near";
 const APP_ID: &str = "LKABS9RZAC.com.lkabs9rzac.tail";
 const ZONE: (i32, i32) = (423_601_000, -710_589_000);
+/// Every message the referee seals to a phone: ephemeral key, padded plaintext, tag.
+const SEALED_TO_PHONE: usize = 32 + tail_protocol::PHONE_PAD + 16;
 
 /// A key directory that is removed when the test ends, pass or fail.
 struct TempDir(PathBuf);
@@ -159,6 +161,11 @@ fn enroll_all(dir: &Path, referee_pk: &VerifyingKey, accounts: &[&str]) {
             r["attested"], false,
             "{account}: a software key is never attested"
         );
+        assert_eq!(
+            unb64(&r["referee_pk"]),
+            referee_pk.to_bytes(),
+            "{account}: the receipt names its referee"
+        );
         let receipt = unb64(&r["receipt"]);
         let digest = sha256(&[b"tail/enroll-receipt/v1", &receipt]);
         assert!(
@@ -258,8 +265,9 @@ impl Phone {
             .iter()
             .find(|k| k["account_id"] == account)
             .unwrap();
-        let plain = seal::open(&box_sk(account), &unb64(&entry["sealed"]), domain::KEYS).unwrap();
-        let signed: SignedPlayerKeys = borsh::from_slice(&plain).unwrap();
+        let sealed = unb64(&entry["sealed"]);
+        assert_eq!(sealed.len(), SEALED_TO_PHONE, "{account}: keys padded");
+        let signed: SignedPlayerKeys = seal::open_on_phone(&box_sk(account), &sealed).unwrap();
         assert!(
             verifies(referee_pk, &keys_sig_digest(&signed.keys), &signed.sig),
             "{account}: keys signed by referee_pk"
@@ -319,8 +327,9 @@ impl Phone {
             .iter()
             .find(|h| h["player"] == self.index)
             .unwrap();
-        let plain = seal::open(&box_sk(&self.account), &unb64(&entry["sealed"]), domain::HUD).unwrap();
-        let signed: SignedHud = borsh::from_slice(&plain).unwrap();
+        let sealed = unb64(&entry["sealed"]);
+        assert_eq!(sealed.len(), SEALED_TO_PHONE, "{}: HUD padded", self.account);
+        let signed: SignedHud = seal::open_on_phone(&box_sk(&self.account), &sealed).unwrap();
         assert!(
             verifies(referee_pk, &hud_sig_digest(&signed.hud), &signed.sig),
             "{}: HUD signed by referee_pk",
@@ -398,22 +407,19 @@ fn check_voice(
         dir,
         &json!({ "cmd": "voice", "state": t1["state"], "blob": hints[0]["blob"] }),
     );
-    assert_eq!(v["source"], "template");
-    assert!(v["fallback_reason"]
-        .as_str()
-        .unwrap()
-        .contains("local test referee"));
+    // Only what the relay needs: nothing names the fact, the words, or whether the model or a
+    // template spoke beyond `signed_text` (null: no model signature).
+    let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["hint_id", "player", "receipt", "sealed", "signed_text"]);
     assert!(v["signed_text"].is_null(), "no model, so nothing NEAR AI signed");
-    assert!(
-        v.get("text").is_none() && v.get("fact").is_none(),
-        "the words stay sealed"
-    );
-    assert!(
-        v.get("leaves").is_none(),
-        "the receipt's leaf depends on where it lands in the log, so voice cannot name it"
-    );
-    let plain = seal::open(&box_sk(&asker.account), &unb64(&v["sealed"]), domain::VOICE).unwrap();
-    let line: SignedVoiceLine = borsh::from_slice(&plain).unwrap();
+    let sealed = unb64(&v["sealed"]);
+    assert_eq!(sealed.len(), SEALED_TO_PHONE, "the line is padded");
+    // The receipt names its hint and this sealed line, in the clear.
+    let receipt = unb64(&v["receipt"]);
+    assert_eq!(receipt[..4], 0u32.to_le_bytes());
+    assert_eq!(receipt[4..36], sha256(&[&sealed]));
+    let line: SignedVoiceLine = seal::open_on_phone(&box_sk(&asker.account), &sealed).unwrap();
     assert!(verifies(referee_pk, &voice_sig_digest(&line.line), &line.sig));
     assert_eq!(
         line.line,
@@ -470,9 +476,13 @@ fn check_log(d: &Value, kept: &Kept, phones: &[Phone], forger: u16, forged_hash:
         hash: forged_hash,
         code: reject_code::ASSERTION
     }));
-    assert!(log
-        .iter()
-        .any(|e| matches!(e, LogEntry::HintReceipt { hint_id: 0, .. })));
+    assert_eq!(
+        log.iter()
+            .filter(|e| matches!(e, LogEntry::HintReceipt { hint_id: 0, .. }))
+            .count(),
+        1,
+        "one receipt per hint, however often the relay passes it"
+    );
     // K_m comes out with the log, so anyone can check every salt is the one its index gets.
     let k_m: [u8; 32] = hex::decode(d["k_m"].as_str().unwrap())
         .unwrap()
@@ -635,6 +645,74 @@ fn start_match(
     (started, start_ms, end_ms, rc)
 }
 
+/// A receipt is bound to its hint and its sealed line: renamed for another line, it is refused
+/// (and the refused tick changes nothing).
+fn refuse_moved_receipt(dir: &Path, match_id: [u8; 16], t1: &Value, batch: &str, v: &Value) {
+    let mut moved = unb64(&v["receipt"]);
+    moved[4] ^= 1;
+    let err = refused(
+        Some(dir),
+        &json!({ "cmd": "tick", "match_id": b64(&match_id), "state": t1["state"], "last_seq": t1["seq"],
+                 "now_ms": t1["now_ms"].as_u64().unwrap() + 50_000, "batches": [batch],
+                 "receipts": [b64(&moved)] }),
+    );
+    assert!(err.contains("receipt 0"), "{err}");
+}
+
+#[test]
+fn an_enrolled_account_moves_only_with_its_devices_consent() {
+    let tmp = TempDir::new("rebind");
+    let dir = tmp.0.as_path();
+    let account = "dana.test.near";
+    let near = |n: u8| ed25519_dalek::SigningKey::from_bytes(&[n; 32]);
+    let input = |box_seed: u8, near_seed: u8| {
+        json!({
+            "cmd": "enroll",
+            "account_id": account,
+            "app_attest_pk": b64(&appattest::public_key_bytes(device_key(&format!("{account}/{box_seed}")).verifying_key())),
+            "player_box_pk": b64(&seal::public_key(&[box_seed; 32])),
+            "near_pk": b64(&near(near_seed).verifying_key().to_bytes()),
+        })
+    };
+    // With nothing stored, a rebind_sig (a phone unsure whether this referee knows it) is ignored.
+    let mut fresh = input(1, 1);
+    fresh["rebind_sig"] = json!(b64(&[0; 64]));
+    let first = call(dir, &fresh);
+    // The same keys again (a retry after a lost answer): the stored receipt, unchanged.
+    let again = call(dir, &input(1, 1));
+    assert_eq!(again["receipt"], first["receipt"]);
+    assert_eq!(again["call_id"], first["call_id"]);
+    // Other keys, as a relay with a phone of its own would send: refused.
+    let err = refused(Some(dir), &input(2, 2));
+    assert!(err.contains("rebind_sig"), "{err}");
+    // Signed by the new NEAR key rather than the enrolled one: refused.
+    let rebind = |signer: u8| {
+        let mut i = input(2, 2);
+        let new_attest: [u8; 65] = unb64(&i["app_attest_pk"]).try_into().unwrap();
+        let digest = tail_protocol::digest::rebind_digest(
+            account,
+            &new_attest,
+            &fixed(&i["player_box_pk"]),
+            &fixed(&i["near_pk"]),
+        );
+        i["rebind_sig"] = json!(b64(
+            &ed25519_dalek::Signer::sign(&near(signer), &digest).to_bytes()
+        ));
+        i
+    };
+    let err = refused(Some(dir), &rebind(2));
+    assert!(err.contains("not the enrolled device"), "{err}");
+    // The enrolled device's consent moves it.
+    let moved = call(dir, &rebind(1));
+    assert_ne!(moved["receipt"], first["receipt"]);
+    let device: [u8; 32] = unb64(&moved["receipt"])[account.len() + 4 + 65 + 1..][..32]
+        .try_into()
+        .unwrap();
+    assert_eq!(device, seal::public_key(&[2; 32]));
+    // And the old keys cannot come back without the new device's consent.
+    assert!(refused(Some(dir), &input(1, 1)).contains("rebind_sig"));
+}
+
 #[test]
 fn plays_a_match_with_keys_on_disk() {
     let tmp = TempDir::new("match");
@@ -691,10 +769,12 @@ fn plays_a_match_with_keys_on_disk() {
     let t2_ms = start_ms + 60_000;
     let (hb2, _) = phones[hunter].batch(&box_pk, t2_ms - 1_000, Vec::new(), 2);
     sent.push(hb2.clone());
+    refuse_moved_receipt(dir, match_id, &t1, &hb2, &v);
+    // Passed twice, it is logged once (check_log counts).
     let t2 = call(
         dir,
         &json!({ "cmd": "tick", "match_id": b64(&match_id), "state": t1["state"], "last_seq": t1["seq"],
-                 "now_ms": t2_ms, "batches": [hb2], "receipts": [v["receipt"]] }),
+                 "now_ms": t2_ms, "batches": [hb2], "receipts": [v["receipt"], v["receipt"]] }),
     );
     kept.take(&t2);
     let cp = verdict(&t2["verdicts"][0]);
