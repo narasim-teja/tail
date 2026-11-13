@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { MAX_HUD_SOCKETS_PER_ACCOUNT } from "../src/hub.ts";
+import { Buckets, proxyHeaderWarning } from "../src/limits.ts";
 import { MAX_REPLAY_CHALLENGES_PER_PLAYER } from "../src/routes/replay.ts";
 import { MAX_BODY } from "../src/routes/util.ts";
 import { DAILY_TOPUP_CAP, MAX_TOPUP, TOPUP_WINDOW_MS } from "../src/topup.ts";
@@ -142,5 +143,25 @@ describe("replay challenges", () => {
       expect((await ask(m.b.account)).status).toBe(200);
     expect((await ask(m.b.account)).status).toBe(429);
     expect((await ask(m.c.account)).status).toBe(200);
+  });
+});
+
+describe("client buckets", () => {
+  test("a refunded token can be taken again, never past the burst", () => {
+    const b = new Buckets({ burst: 1, everyMs: 1e9 }, () => 0);
+    expect(b.take("a")).toBe(true);
+    expect(b.take("a")).toBe(false);
+    b.refund("a");
+    b.refund("a");
+    expect(b.take("a")).toBe(true);
+    expect(b.take("a")).toBe(false);
+  });
+
+  test("startup warns when no proxy header is set and the relay listens beyond loopback", () => {
+    expect(proxyHeaderWarning(undefined, "0.0.0.0")).toContain("RELAY_CLIENT_IP_HEADER");
+    expect(proxyHeaderWarning(undefined, "192.168.1.5")).not.toBeNull();
+    for (const host of ["localhost", "127.0.0.1", "::1", "[::1]"])
+      expect(proxyHeaderWarning(undefined, host)).toBeNull();
+    expect(proxyHeaderWarning("cf-connecting-ip", "0.0.0.0")).toBeNull();
   });
 });

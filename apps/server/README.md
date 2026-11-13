@@ -80,16 +80,19 @@ relay's NEAR, or starting a lobby they do not host. `src/auth.ts` has both sides
 
 Routes anyone can call without a key are limited per client address, with a global cap behind
 each (`src/limits.ts`): enrolment and refresh challenges (10 at once, then one per 30 s; at most
-1000 open in all and 3 per handle), HUD sockets (30 at once, then one per 2 s; at most 1024 in
+1000 open in all and 3 per handle and client, past which that client's oldest for the handle
+goes, so a stranger cannot lock a handle's owner out), HUD sockets (30 at once, then one per 2 s; at most 1024 in
 their 10 s auth window in all) and replay challenges (10 at once, then one per 10 s; at most 1000
 open in all, 4 per player). Over a limit the answer is 429. The client is the TCP peer, or with
 `RELAY_CLIENT_IP_HEADER` set, the last entry of that header: set it only behind a proxy you run
 that overwrites it, because a client can send any header. A carried request counts against the
 phone that posted the envelope. The per-client buckets live in memory; a restart empties them.
+When the header is unset and the relay listens beyond loopback, it warns at startup: behind a
+proxy or tunnel every phone would share the proxy's one bucket.
 
 New phone enrolments are capped at `RELAY_ENROLS_PER_IP_PER_DAY` (default 3) per client address
 and `RELAY_ENROLS_PER_DAY` (default 100) in all, over a rolling 24 h; each costs the relay about
-0.1 NEAR. App Attest proves that a genuine iPhone running this app made the key. It does not
+0.1 NEAR. An enrolment the referee or the chain turns down does not count. App Attest proves that a genuine iPhone running this app made the key. It does not
 prove a new person: one iPhone can make any number of App Attest keys, and so any number of
 accounts, so these caps are what bounds that. A phone with many addresses (mobile data, Wi-Fi,
 VPNs) still gets more than one network's share; the daily cap is the backstop. Test players
@@ -209,6 +212,15 @@ listed phone refreshes:
 5. `POST /enroll/refresh {challenge, key_id, attestation, player_box_pk, rebind_sig}` (signed) →
    `{account_id}` once the referee accepted. On a refusal the relay keeps the old keys and
    receipt; ask for a new challenge to try again.
+
+While the account plays in a match being started or running, steps 2 and 5 answer 409
+`{code: "in_match"}`: the match keeps the device the referee held at its start, so new keys
+would lock the phone out of it. Refresh once it ends.
+
+An enrolment that fails after the referee stored the device (the account could not be made)
+frees the handle on the relay, but the referee keeps its record under that `near_pk`. Retry
+with the same NEAR key: the same App Attest and box keys go straight through, new ones need
+`rebind_sig` (step 4) by that key. A retry under another NEAR key is refused by that referee.
 
 Signed means the v2 request signature above, by the account's NEAR key, so only the phone that
 holds the account can refresh it. A test player is registered again by the relay itself at Start.
@@ -374,6 +386,13 @@ a refused early strike, a template Handler line, a carried batch, a resent batch
 a simulated fix rejected, a Tag, Checkpoints, End and declassify. The replay must then pass the web
 verifier (`apps/web/src/verify`) against that chain, and every leaf's inclusion proof and every
 pair of anchored roots' consistency proof from the relay must verify. No network.
+
+Dossiers: registration mints each player's dossier, but accounts registered before the contract
+had dossiers hold none, and their function-call keys cannot attach `mint_dossier`'s deposit. At
+every start the relay, as their parent, mints each missing one and pays `dossier_deposit`
+(`src/dossiers.ts`): one transaction at a time, 1 s apart, at most 100 per run; it checks each
+account first, so a second run mints nothing, and it does nothing on a contract without
+dossiers. `bun apps/server/scripts/backfill-dossiers.ts` runs the same pass on demand.
 
 `scripts/ghost-match.ts` runs the relay in-process with a fresh database, enrols three ghosts,
 opens a 5-minute lobby, tops them up, has them join, starts, and plays `CLEAN_TAG`: the hunter

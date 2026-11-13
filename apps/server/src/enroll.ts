@@ -36,9 +36,10 @@ import { type EnrollInput, type Referee, RefereeError, type RefereeKeys } from "
 
 export const CHALLENGE_TTL_MS = 5 * 60_000;
 /**
- * Unanswered enrolment and refresh challenges the relay keeps, in all and per handle. Asking
- * costs nothing, so the table is capped; per-client buckets (limits.ts) stop one client from
- * taking the whole cap.
+ * Unanswered enrolment and refresh challenges the relay keeps, in all and per handle and client
+ * (past that, the client's oldest for the handle goes: db.ts putEnrolChallenge). Asking costs
+ * nothing, so the table is capped; per-client buckets (limits.ts) stop one client from taking
+ * the whole cap.
  */
 export const MAX_OPEN_CHALLENGES = 1_000;
 export const MAX_OPEN_CHALLENGES_PER_HANDLE = 3;
@@ -135,11 +136,11 @@ export class Enrolment {
     if (this.d.store.device(accountId)) throw new HttpError(409, "that handle is taken");
   }
 
-  private issueChallenge(accountId: string) {
+  private issueChallenge(accountId: string, client: string) {
     const challenge = crypto.getRandomValues(new Uint8Array(32));
     const now = this.now();
     const expires = now + CHALLENGE_TTL_MS;
-    const stored = this.d.store.putEnrolChallenge(challenge, accountId, expires, now, {
+    const stored = this.d.store.putEnrolChallenge(challenge, accountId, client, expires, now, {
       total: MAX_OPEN_CHALLENGES,
       perAccount: MAX_OPEN_CHALLENGES_PER_HANDLE,
     });
@@ -147,18 +148,37 @@ export class Enrolment {
     return { challenge: b64(challenge), account_id: accountId, expires_ms: expires };
   }
 
-  async challenge(handle: string): Promise<{ challenge: string; account_id: string; expires_ms: number }> {
+  async challenge(
+    handle: string,
+    client: string,
+  ): Promise<{ challenge: string; account_id: string; expires_ms: number }> {
     const accountId = this.accountFor(handle, false);
     this.ensureFree(accountId);
-    return this.issueChallenge(accountId);
+    return this.issueChallenge(accountId, client);
   }
 
   /** A challenge for refreshing `accountId`, which the caller proved it holds (a signed request). */
   async refreshChallenge(
     accountId: string,
+    client: string,
   ): Promise<{ challenge: string; account_id: string; expires_ms: number }> {
     if (this.d.store.device(accountId)?.kind !== "phone") throw new HttpError(400, "only a phone refreshes");
-    return this.issueChallenge(accountId);
+    await this.refuseInMatch(accountId);
+    return this.issueChallenge(accountId, client);
+  }
+
+  /**
+   * A match keeps the copy of each device the referee took at its start, so a refresh mid-match
+   * would leave the phone signing with keys its match does not know: refused until it ends.
+   */
+  private async refuseInMatch(accountId: string) {
+    if (this.d.store.runningMatchesOf(accountId).length === 0) {
+      // A match being started has no stored players yet; its lobby on chain names them.
+      const starting = this.d.store.matchesIn(["starting"]);
+      const lobbies = await Promise.all(starting.map((id) => this.d.chain.getMatch(id)));
+      if (!lobbies.some((m) => m?.players.some((p) => p.account_id === accountId))) return;
+    }
+    throw new HttpError(409, "you are in a match; refresh once it ends", { code: "in_match" });
   }
 
   /** Takes the challenge (single use) and checks the attestation over it; returns its App Attest key. */
@@ -234,6 +254,12 @@ export class Enrolment {
       throw new HttpError(409, "this device is already enrolled");
     }
     const now = this.now();
+    // The per-address share counts enrolments that happened: any refusal below gives it back.
+    let took = false;
+    const refund = () => {
+      if (took && client !== null) this.perIp.refund(client);
+      took = false;
+    };
     const row: DeviceRow = {
       account_id: accountId,
       kind,
@@ -251,14 +277,21 @@ export class Enrolment {
     };
     try {
       if (kind === "phone") {
-        if (client !== null && !this.perIp.take(client)) {
-          throw new HttpError(429, "this network has enrolled its share of new players today; try tomorrow");
+        if (client !== null) {
+          if (!this.perIp.take(client)) {
+            throw new HttpError(
+              429,
+              "this network has enrolled its share of new players today; try tomorrow",
+            );
+          }
+          took = true;
         }
         if (!this.d.store.putPhoneWithin(row, now - DAY_MS, this.caps.perDay)) {
           throw new HttpError(429, "the relay has enrolled its share of new players today; try tomorrow");
         }
       } else this.d.store.putDevice(row);
     } catch (e) {
+      refund();
       // Two enrolments of one device at once both passed the check above; the index stops one.
       if (/UNIQUE constraint/.test((e as Error).message)) {
         throw new HttpError(409, "this device is already enrolled");
@@ -281,8 +314,12 @@ export class Enrolment {
         throw e;
       }
     } catch (e) {
-      // Nothing half-done stays: the handle is free for the next attempt. The referee may keep a
-      // record for the account; the phone's retry replaces it with a rebind_sig by its own key.
+      // Nothing half-done stays here: the handle is free on the relay again. The referee keeps
+      // any record it stored, binding the account to this near_pk: a retry with the same keys
+      // gets that record back, and one with a new App Attest or box key is admitted only with a
+      // rebind_sig by this near_pk. A retry under another NEAR key is refused by this referee,
+      // so the phone must keep its NEAR key until it is enrolled.
+      refund();
       this.d.store.deleteDevice(accountId);
       this.d.log.warn({ accountId, kind, err: (e as Error).message }, "enrolment undone");
       throw e;
@@ -303,11 +340,15 @@ export class Enrolment {
     if (i.challenge.length !== 32 || i.playerBoxPk.length !== 32 || i.rebindSig?.length !== 64) {
       throw new HttpError(400, "challenge and player_box_pk are 32 bytes, rebind_sig 64");
     }
+    await this.refuseInMatch(accountId);
     const { appAttestPk } = await this.attested(i, accountId, dev.near_pk);
     const owner = this.d.store.appAttestKeyOwner(appAttestPk);
     if (owner !== undefined && owner !== accountId)
       throw new HttpError(409, "this device is already enrolled");
     await this.once(accountId, async () => {
+      // Again, now that no Start can read this device between the check and the referee call:
+      // ensureWithReferee waits for this registration before it lets a match start.
+      await this.refuseInMatch(accountId);
       const r = await this.callReferee({
         accountId,
         appAttestPk,
@@ -347,6 +388,8 @@ export class Enrolment {
     const stale: string[] = [];
     await Promise.all(
       accountIds.map(async (a) => {
+        // A refresh in flight lands (or fails) first, so Start sees the device the referee holds.
+        await this.idle(a);
         const dev = this.d.store.device(a);
         if (!dev || (await this.withReferee(dev))) return;
         if (dev.kind === "ghost" || (dev.attestation && dev.challenge)) {
@@ -397,8 +440,16 @@ export class Enrolment {
     return true;
   }
 
+  /** Waits until no registration for the account is in flight. */
+  private async idle(accountId: string): Promise<void> {
+    for (let running = this.inFlight.get(accountId); running; running = this.inFlight.get(accountId)) {
+      await running.catch(() => {});
+    }
+  }
+
   /** One registration per account at a time: a second caller waits for the first and then goes. */
   private async once(accountId: string, f: () => Promise<void>): Promise<void> {
+    // Not `await this.idle()`: the extra await would let two callers both find no one running.
     for (let running = this.inFlight.get(accountId); running; running = this.inFlight.get(accountId)) {
       await running.catch(() => {});
     }

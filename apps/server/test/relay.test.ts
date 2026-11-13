@@ -16,6 +16,7 @@ import {
   openSignedVoiceLine,
   type ReplayBundle,
   type ReplayBundleV2,
+  rebindDigest,
   sha256,
   toHex,
 } from "@tail/protocol";
@@ -135,20 +136,31 @@ describe("enrolment", () => {
     ).toThrow("UNIQUE");
   });
 
-  test("unanswered challenges are capped per handle; another handle still gets one", async () => {
-    const env = setup();
-    for (let i = 0; i < MAX_OPEN_CHALLENGES_PER_HANDLE; i++)
-      expect((await req(env, "POST", "/enroll/challenge", { handle: "dana" })).status).toBe(200);
-    const over = await req(env, "POST", "/enroll/challenge", { handle: "dana" });
-    expect(over.status).toBe(429);
-    expect((await req(env, "POST", "/enroll/challenge", { handle: "eli" })).status).toBe(200);
+  test("a handle's open challenges are kept per client: a stranger asking for it cannot lock its owner out", async () => {
+    const env = setup({ clientIpHeader: "x-client" });
+    const ask = async (ip: string) => {
+      const r = await env.app.request("/enroll/challenge", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-client": ip },
+        body: JSON.stringify({ handle: "dana" }),
+      });
+      expect(r.status).toBe(200);
+      return new Uint8Array(Buffer.from(((await r.json()) as { challenge: string }).challenge, "base64"));
+    };
+    const owner = await ask("10.0.0.1");
+    // Past its slots, the stranger's own oldest goes; nobody is refused.
+    const stranger: Uint8Array[] = [];
+    for (let i = 0; i <= MAX_OPEN_CHALLENGES_PER_HANDLE; i++) stranger.push(await ask("10.0.0.2"));
+    expect(env.store.takeEnrolChallenge(stranger[0] as Uint8Array)).toBeUndefined();
+    expect(env.store.takeEnrolChallenge(stranger.at(-1) as Uint8Array)?.account_id).toBe(`dana.${PARENT}`);
+    expect(env.store.takeEnrolChallenge(owner)?.account_id).toBe(`dana.${PARENT}`);
   });
 
   test("unanswered challenges are capped in all", () => {
     const env = setup();
     const caps = { total: 2, perAccount: 5 };
     const put = (n: number, now: number) =>
-      env.store.putEnrolChallenge(new Uint8Array(32).fill(n), `h${n}`, now + 100, now, caps);
+      env.store.putEnrolChallenge(new Uint8Array(32).fill(n), `h${n}`, "c", now + 100, now, caps);
     expect(put(1, 0)).toBe(true);
     expect(put(2, 0)).toBe(true);
     expect(put(3, 0)).toBe(false);
@@ -188,6 +200,60 @@ describe("enrolment", () => {
     expect(env.store.device(`dana.${PARENT}`)).toBeUndefined();
     expect(env.chain.accounts.size).toBe(0);
     expect((await attemptIn(env)).r.status).toBe(200);
+  });
+
+  test("a phone whose account was not made gets the handle with a new App Attest key and its own NEAR key's consent", async () => {
+    const box = new Uint8Array(32).fill(1);
+    const [k1, k2] = [new Uint8Array(65).fill(1), new Uint8Array(65).fill(2)];
+    let attested = 0;
+    const env = setup({ verifyAttestation: async () => (attested++ === 0 ? k1 : k2) });
+    const account = `dana.${PARENT}`;
+    const seed = ed25519.utils.randomSecretKey();
+    const near = ed25519.getPublicKey(seed);
+    const consent = (signer: Uint8Array) =>
+      Buffer.from(
+        ed25519.sign(rebindDigest(account, k2, box, ed25519.getPublicKey(signer)), signer),
+      ).toString("base64");
+    const create = env.chain.createPlayerAccount.bind(env.chain);
+    env.chain.createPlayerAccount = async () => {
+      throw new Error("rpc down");
+    };
+    expect((await attemptIn(env, "dana", near)).r.status).toBe(500);
+    // The relay freed the handle; the referee keeps the record it stored, under this NEAR key.
+    expect(env.store.device(account)).toBeUndefined();
+    expect(env.referee.devices.get(account)?.appAttestPk).toEqual(k1);
+    env.chain.createPlayerAccount = create;
+    // App Attest attests a key once, so the retry brings K2: without consent the referee refuses,
+    const bare = await attemptIn(env, "dana", near);
+    expect(String(bare.r.json["error"])).toContain("rebind_sig");
+    // and another NEAR key cannot consent for the one the referee holds.
+    const other = ed25519.utils.randomSecretKey();
+    const stranger = await attemptIn(env, "dana", ed25519.getPublicKey(other), {
+      rebind_sig: consent(other),
+    });
+    expect(String(stranger.r.json["error"])).toContain("not the enrolled device's signature");
+    expect(env.store.device(account)).toBeUndefined();
+    const ok = await attemptIn(env, "dana", near, { rebind_sig: consent(seed) });
+    expect(ok.r.status).toBe(200);
+    expect(env.store.device(account)?.app_attest_pk).toEqual(k2);
+    expect(env.referee.devices.get(account)?.appAttestPk).toEqual(k2);
+    expect(env.chain.accounts.get(account)).toEqual(near);
+  });
+
+  test("an enrolment that fails gives the address back its share", async () => {
+    const env = setup({ enrolCaps: { perDay: 10, perIpPerDay: 1 } });
+    env.referee.refuseEnrolls = 1;
+    expect((await attemptIn(env)).r.status).toBe(502);
+    const create = env.chain.createPlayerAccount.bind(env.chain);
+    env.chain.createPlayerAccount = async () => {
+      throw new Error("rpc down");
+    };
+    expect((await attemptIn(env)).r.status).toBe(500);
+    env.chain.createPlayerAccount = create;
+    // (Another handle: the referee now holds dana under the failed attempt's NEAR key.)
+    expect((await attemptIn(env, "fay")).r.status).toBe(200);
+    // The one that went through counts.
+    expect((await attemptIn(env, "eli")).r.status).toBe(429);
   });
 
   test("a handle taken on chain frees the row again", async () => {
@@ -346,6 +412,59 @@ describe("after the contract pins another referee", () => {
       b,
     );
     expect(stolen.status).toBe(401);
+  });
+
+  test("a refresh needs a 64-byte rebind_sig, checked before the challenge or the referee", async () => {
+    const env = setup();
+    const a = player(env, "ana");
+    const ch = await env.enrolment.refreshChallenge(a.account, "c");
+    const base = {
+      challenge: new Uint8Array(Buffer.from(ch.challenge, "base64")),
+      keyId: new Uint8Array(32),
+      attestation: new Uint8Array(1),
+      playerBoxPk: new Uint8Array(32),
+    };
+    for (const rebindSig of [undefined, new Uint8Array(63), new Uint8Array(65)]) {
+      const r = env.enrolment.refresh(a.account, { ...base, rebindSig });
+      await expect(r).rejects.toMatchObject({ status: 400 });
+    }
+    expect(env.referee.enrolls.length).toBe(0);
+    // The challenge is still there for a well-formed refresh.
+    expect(env.store.takeEnrolChallenge(base.challenge)?.account_id).toBe(a.account);
+  });
+
+  test("no refresh while the account plays in a match being started or running", async () => {
+    const env = setup();
+    const l = await lobby(env);
+    const dan = player(env, "dan");
+    const refused = async (p: Player) => {
+      const ch = await req(env, "POST", "/enroll/refresh/challenge", {}, p);
+      const r = await req(
+        env,
+        "POST",
+        "/enroll/refresh",
+        {
+          challenge: Buffer.alloc(32, 1).toString("base64"),
+          key_id: Buffer.alloc(32, 3).toString("base64"),
+          attestation: Buffer.from("fresh attestation").toString("base64"),
+          player_box_pk: Buffer.alloc(32, 2).toString("base64"),
+          rebind_sig: Buffer.alloc(64, 6).toString("base64"),
+        },
+        p,
+      );
+      return [ch, r].every((x) => x.status === 409 && x.json["code"] === "in_match");
+    };
+    // Starting: the lobby on chain names the players before the relay stores them.
+    expect(env.store.claimPhase(l.id, "lobby", "starting")).toBe(true);
+    expect(await refused(l.b)).toBe(true);
+    expect(await refused(dan)).toBe(false);
+    env.store.setPhase(l.id, "lobby");
+    expect(await refused(l.b)).toBe(false);
+    expect((await req(env, "POST", `/matches/${l.id}/start`, {}, l.a)).status).toBe(200);
+    expect(await refused(l.c)).toBe(true);
+    expect(env.referee.enrolls.length).toBe(0);
+    await ended(env, l.id);
+    expect((await req(env, "POST", "/enroll/refresh/challenge", {}, l.c)).status).toBe(200);
   });
 
   test("a receipt from before the relay kept its referee counts when its signature is this referee's", async () => {

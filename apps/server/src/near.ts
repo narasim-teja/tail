@@ -41,6 +41,11 @@ export interface ContractConfig {
   match_storage_deposit: string;
   /** Exact deposit `register_for` needs (payout record plus a balance per token). */
   registration_deposit: string;
+  /**
+   * Exact deposit `mint_dossier` needs. Absent on a contract from before dossiers, which has no
+   * `mint_dossier` or `get_dossier` either.
+   */
+  dossier_deposit?: string;
   min_players: number;
   max_players: number;
   max_duration_ms: number;
@@ -120,6 +125,13 @@ export interface Chain {
    * for any other existing account.
    */
   createPlayerAccount(accountId: string, nearPk: Uint8Array): Promise<void>;
+  /**
+   * Whether the account holds its dossier, lacks one (registered before dossiers existed), or is
+   * not registered in the contract. Only on a contract with dossiers (`dossier_deposit` set).
+   */
+  dossierStatus(accountId: string): Promise<"held" | "missing" | "unregistered">;
+  /** `mint_dossier` for one of the relay's sub-accounts, the relay paying `deposit`. */
+  mintDossier(accountId: string, deposit: bigint): Promise<void>;
   createMatch(cfg: MatchCfg): Promise<string>;
   /** Freezes joins and leaves; the referee `start` follows. Host (relay) only. */
   lockLobby(matchId: string): Promise<void>;
@@ -261,6 +273,21 @@ export class NearChain implements Chain {
       args: { account_id: accountId, payout_account: accountId },
       gas: teraToGas("30"),
       deposit: BigInt(deposit),
+    });
+  }
+
+  async dossierStatus(accountId: string) {
+    if (!(await this.view<string | null>("get_payout", { account_id: accountId }))) return "unregistered";
+    return (await this.view<unknown>("get_dossier", { account_id: accountId })) ? "held" : "missing";
+  }
+
+  async mintDossier(accountId: string, deposit: bigint) {
+    await this.relay.callFunction({
+      contractId: this.o.contract,
+      methodName: "mint_dossier",
+      args: { account_id: accountId },
+      gas: teraToGas("30"),
+      deposit,
     });
   }
 

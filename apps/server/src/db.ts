@@ -34,7 +34,8 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS enroll_challenges (
   challenge BLOB PRIMARY KEY,
   account_id TEXT NOT NULL,
-  expires_ms INTEGER NOT NULL
+  expires_ms INTEGER NOT NULL,
+  client TEXT
 );
 CREATE TABLE IF NOT EXISTS replay_challenges (
   nonce BLOB PRIMARY KEY,
@@ -393,6 +394,8 @@ export class Store {
     // The App ID a match's assertions were checked against, for its replay; the relay's own
     // setting may change after the match.
     this.addColumn("matches", "app_id", "TEXT");
+    // Who asked for each enrolment challenge: a handle's slots are kept per client (putEnrolChallenge).
+    this.addColumn("enroll_challenges", "client", "TEXT");
     this.uniqueDeviceKeys();
     this.splitChallenges();
   }
@@ -487,27 +490,37 @@ export class Store {
   // ── Challenges ───────────────────────────────────────────────────────────────────
 
   /**
-   * Stores an enrolment challenge unless too many are outstanding, in all (`total`) or for this
-   * account (`perAccount`). Expired ones are dropped first. False when a cap is reached.
+   * Stores an enrolment challenge unless too many are outstanding in all (`total`). Expired ones
+   * are dropped first. Slots per account are kept per client: past `perAccount` for this
+   * (account, client), the client's own oldest goes, so a stranger asking for a free handle can
+   * neither lock its owner out nor void the owner's challenge. False when `total` is reached.
    */
   putEnrolChallenge(
     challenge: Uint8Array,
     accountId: string,
+    client: string,
     expiresMs: number,
     nowMs: number,
     caps: { total: number; perAccount: number },
   ): boolean {
     return this.tx(() => {
       this.db.query("DELETE FROM enroll_challenges WHERE expires_ms < ?").run(nowMs);
-      const n = this.db
-        .query<{ total: number; mine: number }, [string]>(
-          "SELECT COUNT(*) AS total, COALESCE(SUM(account_id = ?), 0) AS mine FROM enroll_challenges",
+      const total =
+        this.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM enroll_challenges").get()?.n ?? 0;
+      const mine = this.db
+        .query<{ challenge: Uint8Array }, [string, string]>(
+          "SELECT challenge FROM enroll_challenges WHERE account_id = ? AND client IS ? ORDER BY expires_ms DESC, rowid DESC",
         )
-        .get(accountId);
-      if ((n?.total ?? 0) >= caps.total || (n?.mine ?? 0) >= caps.perAccount) return false;
+        .all(accountId, client);
+      const evict = mine.slice(Math.max(0, caps.perAccount - 1));
+      if (total - evict.length >= caps.total) return false;
+      const drop = this.db.query("DELETE FROM enroll_challenges WHERE challenge = ?");
+      for (const r of evict) drop.run(r.challenge);
       this.db
-        .query("INSERT INTO enroll_challenges (challenge, account_id, expires_ms) VALUES (?, ?, ?)")
-        .run(challenge, accountId, expiresMs);
+        .query(
+          "INSERT INTO enroll_challenges (challenge, account_id, client, expires_ms) VALUES (?, ?, ?, ?)",
+        )
+        .run(challenge, accountId, client, expiresMs);
       return true;
     });
   }
@@ -674,6 +687,14 @@ export class Store {
     });
   }
 
+  /** Every account enrolled here, oldest first. */
+  deviceAccounts(): string[] {
+    return this.db
+      .query<{ account_id: string }, []>("SELECT account_id FROM devices ORDER BY created_ms, account_id")
+      .all()
+      .map((r) => r.account_id);
+  }
+
   /** A receipt from before referee_pk was kept, found to be signed by this key. */
   setDeviceRefereePk(accountId: string, refereePk: Uint8Array) {
     this.db.query("UPDATE devices SET referee_pk = ? WHERE account_id = ?").run(refereePk, accountId);
@@ -756,6 +777,17 @@ export class Store {
     return this.db
       .query<{ match_id: string }, string[]>(q)
       .all(...phases)
+      .map((r) => r.match_id);
+  }
+
+  /** Running matches whose players (stored at Start) include `accountId`. */
+  runningMatchesOf(accountId: string): string[] {
+    return this.db
+      .query<{ match_id: string }, [string]>(
+        `SELECT match_id FROM matches WHERE phase = 'running' AND players IS NOT NULL
+           AND EXISTS (SELECT 1 FROM json_each(matches.players) WHERE value = ?)`,
+      )
+      .all(accountId)
       .map((r) => r.match_id);
   }
 

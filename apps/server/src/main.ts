@@ -8,6 +8,8 @@ import { createRelay } from "./app.ts";
 import { loadCarryKeys } from "./carry.ts";
 import { type Config, ConfigError, describeConfig, loadConfig, loadRepoEnv } from "./config.ts";
 import { Store } from "./db.ts";
+import { DossierBackfill } from "./dossiers.ts";
+import { proxyHeaderWarning } from "./limits.ts";
 import { NearChain } from "./near.ts";
 import { GuardedReferee, makeReferee } from "./referee.ts";
 import { MAX_BODY } from "./routes/util.ts";
@@ -49,6 +51,12 @@ export function startRelay(config: Config) {
   });
   relay.matches.resume();
   relay.retention.start();
+  // Accounts registered before the contract had dossiers get theirs; a no-op on older contracts.
+  void new DossierBackfill({ store, chain, log, parentAccount: config.relayAccount })
+    .run()
+    .catch((e: unknown) =>
+      log.warn({ err: (e as Error).message }, "dossier backfill failed; it runs again on the next start"),
+    );
   // Bun refuses a larger body before the app sees it; routes/util.ts caps the streamed read too.
   const server = Bun.serve({
     port: config.port,
@@ -57,6 +65,8 @@ export function startRelay(config: Config) {
     maxRequestBodySize: MAX_BODY,
   });
   log.info({ ...describeConfig(config), url: server.url.href }, "relay listening");
+  const shared = proxyHeaderWarning(config.clientIpHeader, server.hostname);
+  if (shared) log.warn({ hostname: server.hostname }, shared);
   if (config.allowGhosts) log.warn("test players are on (testnet testing door, no App Attest)");
   return {
     ...relay,

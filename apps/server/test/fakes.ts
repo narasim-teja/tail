@@ -32,6 +32,7 @@ import {
   open,
   Reader,
   readLogEntry,
+  rebindDigest,
   SealContext,
   seal,
   sealSignedHud,
@@ -96,6 +97,15 @@ export class FakeChain implements Chain {
   /** Internal contract balances of the one test token, by account. */
   balances = new Map<string, bigint>();
   topUps: { accountId: string; amount: bigint }[] = [];
+  /**
+   * What `mint_dossier` costs; null for a contract from before dossiers, whose get_config has no
+   * dossier_deposit and which has no dossier methods.
+   */
+  dossierDeposit: string | null = null;
+  /** Accounts holding their dossier. Registration mints one once the contract has dossiers. */
+  dossiers = new Set<string>();
+  /** Each mint_dossier call that landed, in order. */
+  minted: string[] = [];
   /** Per match, as the contract keeps it: the last verdict's digest and the last anchored log. */
   private chainTip = new Map<string, { digest: Uint8Array; size: number; root: Uint8Array }>();
   private roots = new Map<string, ChainRoots>();
@@ -112,6 +122,7 @@ export class FakeChain implements Chain {
       min_players: 3,
       max_players: 12,
       max_duration_ms: 3_600_000,
+      ...(this.dossierDeposit === null ? {} : { dossier_deposit: this.dossierDeposit }),
     };
   }
   async accountExists(id: string) {
@@ -119,6 +130,29 @@ export class FakeChain implements Chain {
   }
   async createPlayerAccount(id: string, nearPk: Uint8Array) {
     this.accounts.set(id, nearPk);
+    // As register_for on a contract with dossiers.
+    if (this.dossierDeposit !== null) this.dossiers.add(id);
+  }
+  private dossierMethod(name: string) {
+    if (this.dossierDeposit === null) throw new Error(`MethodNotFound: ${name}`);
+    return BigInt(this.dossierDeposit);
+  }
+  async dossierStatus(id: string) {
+    this.dossierMethod("get_dossier");
+    if (!this.accounts.has(id)) return "unregistered" as const;
+    return this.dossiers.has(id) ? ("held" as const) : ("missing" as const);
+  }
+  /** As the contract's mint_dossier, called by the relay (owner "relay.testnet"). */
+  async mintDossier(id: string, deposit: bigint) {
+    if (deposit !== this.dossierMethod("mint_dossier"))
+      throw new Error("attach exactly dossier_deposit (see get_config)");
+    const handle = id.endsWith(".relay.testnet") ? id.slice(0, -".relay.testnet".length) : "";
+    if (!handle || handle.includes("."))
+      throw new Error("only the account or its parent can mint its dossier");
+    if (!this.accounts.has(id)) throw new Error("account not registered");
+    if (this.dossiers.has(id)) throw new Error("this account already has a dossier");
+    this.dossiers.add(id);
+    this.minted.push(id);
   }
   async createMatch(cfg: MatchCfg) {
     const id = (++this.n).toString(16).padStart(32, "0");
@@ -267,6 +301,15 @@ const FAKE_HINT = "fake-referee/hint";
 /** What the fake referee charges for any hint, and shows on every HUD's price board. */
 const FAKE_HINT_PRICE = 100n;
 
+/** The device record the referee keeps per account (crates/referee-wasi records.rs `Device`). */
+export interface FakeDevice {
+  appAttestPk: Uint8Array;
+  playerBoxPk: Uint8Array;
+  nearPk: Uint8Array;
+  attested: boolean;
+  receipt: Uint8Array;
+}
+
 interface FakeMatch {
   matchId: Uint8Array;
   players: string[];
@@ -325,6 +368,13 @@ export class FakeReferee implements Referee {
   hintAtTick = 2;
   /** Tick number that anchors a Checkpoint (0: none). */
   checkpointAtTick = 0;
+  /**
+   * The device each account is enrolled with here. `enroll` admits by the referee's rule
+   * (crates/referee-wasi cmd/enroll.rs `admit`): with no record, the new one is stored and a
+   * rebind_sig is ignored; the same keys get the stored record back (replaced only when now
+   * attested); other keys need a rebind_sig by the stored near_pk over the new keys.
+   */
+  devices = new Map<string, FakeDevice>();
   private matches = new Map<string, FakeMatch>();
   /** Set when this call handed out a bad proof, so the tick is undone like a lying one. */
   private lied = false;
@@ -417,16 +467,51 @@ export class FakeReferee implements Referee {
       this.refuseEnrolls--;
       throw new RefereeError("enroll", "attestation refused: certificate expired", true);
     }
-    const receipt = crypto.getRandomValues(new Uint8Array(8));
+    const d = this.admit(i);
+    this.devices.set(i.accountId, d);
     return {
       callId: "call-enroll",
       refereePk: this.pk,
+      appAttestPk: d.appAttestPk,
+      receipt: d.receipt,
+      sig: this.signReceipt(d.receipt),
+      attested: d.attested,
+    };
+  }
+  private admit(i: EnrollInput): FakeDevice {
+    const fresh: FakeDevice = {
       appAttestPk: i.appAttestPk,
-      receipt,
-      sig: this.signReceipt(receipt),
+      playerBoxPk: i.playerBoxPk,
+      nearPk: i.nearPk,
       // As the referee: attested when it got an attestation to check.
       attested: i.attestation !== undefined,
+      receipt: crypto.getRandomValues(new Uint8Array(8)),
     };
+    const old = this.devices.get(i.accountId);
+    if (!old) return fresh;
+    if (
+      equal(old.appAttestPk, fresh.appAttestPk) &&
+      equal(old.playerBoxPk, fresh.playerBoxPk) &&
+      equal(old.nearPk, fresh.nearPk)
+    ) {
+      return fresh.attested && !old.attested ? fresh : old;
+    }
+    if (!i.rebindSig) {
+      throw new RefereeError(
+        "enroll",
+        `${i.accountId} is enrolled with another device: moving it takes rebind_sig from that device's NEAR key`,
+        true,
+      );
+    }
+    const digest = rebindDigest(i.accountId, fresh.appAttestPk, fresh.playerBoxPk, fresh.nearPk);
+    if (!ed25519.verify(i.rebindSig, digest, old.nearPk)) {
+      throw new RefereeError(
+        "enroll",
+        "rebind_sig is not the enrolled device's signature over these keys",
+        true,
+      );
+    }
+    return fresh;
   }
   async start(i: StartInput): Promise<StartResult> {
     this.calls.push("start");
@@ -744,11 +829,19 @@ export function seedDevice(
   boxPk: Uint8Array = x25519.getPublicKey(x25519.utils.randomSecretKey()),
 ) {
   const receipt = crypto.getRandomValues(new Uint8Array(8));
+  // Each device its own App Attest key, as the store requires.
+  const appAttestPk = crypto.getRandomValues(new Uint8Array(65));
+  referee?.devices.set(accountId, {
+    appAttestPk,
+    playerBoxPk: boxPk,
+    nearPk,
+    attested: kind === "phone",
+    receipt,
+  });
   store.putDevice({
     account_id: accountId,
     kind,
-    // Each device its own App Attest key, as the store requires.
-    app_attest_pk: crypto.getRandomValues(new Uint8Array(65)),
+    app_attest_pk: appAttestPk,
     player_box_pk: boxPk,
     near_pk: nearPk,
     receipt: referee ? receipt : null,

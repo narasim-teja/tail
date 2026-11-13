@@ -16,7 +16,7 @@ export function enrollRoutes(
   app.post("/enroll/challenge", async (c) => {
     d.challenges.takeOrRefuse(d.clients.ip(c), "enrolment requests");
     const b = await jsonBody(c);
-    return c.json(await d.enrolment.challenge(field.str(b, "handle", 64)));
+    return c.json(await d.enrolment.challenge(field.str(b, "handle", 64), d.clients.ip(c)));
   });
 
   // {challenge, key_id, attestation, player_box_pk, near_pk, rebind_sig?} → {account_id}, once the
@@ -43,11 +43,12 @@ export function enrollRoutes(
     return c.json(await d.enrolment.status(account));
   });
 
-  // Signed by the account. {} → {challenge, account_id, expires_ms}
+  // Signed by the account. {} → {challenge, account_id, expires_ms}; 409 {code: "in_match"} while
+  // the account plays in a match being started or running.
   app.post("/enroll/refresh/challenge", async (c) => {
     const { account } = await d.auth.signed(c);
     d.challenges.takeOrRefuse(d.clients.ip(c), "enrolment requests");
-    return c.json(await d.enrolment.refreshChallenge(account));
+    return c.json(await d.enrolment.refreshChallenge(account, d.clients.ip(c)));
   });
 
   // Signed by the account. {challenge, key_id, attestation, player_box_pk, rebind_sig} →

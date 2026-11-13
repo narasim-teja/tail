@@ -7,6 +7,8 @@
 // proxy, so RELAY_CLIENT_IP_HEADER names the header the proxy sets (cf-connecting-ip,
 // x-forwarded-for, …). Only then is a header read: a client can write any header it likes, so
 // trusting one without a proxy that overwrites it would let each request pick its own bucket.
+// Without the header behind a proxy or tunnel, every phone shares the proxy's one bucket; main.ts
+// warns at startup when the header is unset and the relay listens beyond loopback.
 
 import type { Context } from "hono";
 import { HttpError } from "./errors.ts";
@@ -72,6 +74,12 @@ export class Buckets {
     return true;
   }
 
+  /** Gives back a token `take` handed out for something that then did not happen. */
+  refund(client: string) {
+    const b = this.clients.get(client);
+    if (b) b.tokens = Math.min(this.rate.burst, b.tokens + 1);
+  }
+
   /** As take, but refuses with a 429 the phone can show. */
   takeOrRefuse(client: string, what: string) {
     if (!this.take(client))
@@ -110,4 +118,16 @@ export class Clients {
       return "unknown";
     }
   }
+}
+
+/**
+ * What to warn at startup when the relay listens beyond loopback with no proxy header set: if a
+ * proxy or tunnel does front it, every phone arrives from the proxy's address and shares one
+ * bucket (3 new players a day for everyone). Null when there is nothing to warn about.
+ */
+export function proxyHeaderWarning(clientIpHeader: string | undefined, hostname: string | undefined) {
+  if (clientIpHeader) return null;
+  const host = (hostname ?? "").replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host === "::1" || /^127\./.test(host)) return null;
+  return "RELAY_CLIENT_IP_HEADER is unset: behind a proxy or tunnel every phone shares one rate-limit bucket";
 }
