@@ -1,10 +1,10 @@
 {
   "version": 1,
   "tool": "scripts/verify-nearai.ts",
-  "checkedAt": "2026-11-13T06:07:43.862Z",
+  "checkedAt": "2026-11-13T07:38:03.591Z",
   "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
-  "nonce": "3cc745970be087ec7cb008c78bc4564ffe076178529d2d4a2f0740d4b6b7636d",
-  "report": "https://cloud-api.near.ai/v1/attestation/report?model=deepseek-ai%2FDeepSeek-V4.1-Flash-1017&signing_algo=ecdsa&nonce=3cc745970be087ec7cb008c78bc4564ffe076178529d2d4a2f0740d4b6b7636d",
+  "nonce": "af8c73310bd198335ed8ccc7c60a7aba2080c0cba01b9cba603b596abefe69b3",
+  "report": "https://cloud-api.near.ai/v1/attestation/report?model=deepseek-ai%2FDeepSeek-V4.1-Flash-1017&signing_algo=ecdsa&nonce=af8c73310bd198335ed8ccc7c60a7aba2080c0cba01b9cba603b596abefe69b3",
   "nodes": [
     {
       "signingAddress": "0xfe0071895500a9755c18044948ab4f4e1a7f337e",
@@ -14,7 +14,7 @@
           "id": "tdx",
           "ok": true,
           "by": "local",
-          "detail": "Signed by an Intel TDX CPU; dcap-qvl checked the chain to Intel's root and the TCB level (UpToDate)."
+          "detail": "Signed by an Intel TDX CPU that Intel rates UpToDate, TD not in debug mode; dcap-qvl checked the chain to Intel's root. Its MRTD df4d77c857de… and RTMRs are not compared with anything: NEAR AI publishes no expected values."
         },
         {
           "id": "address",
@@ -26,19 +26,19 @@
           "id": "nonce",
           "ok": true,
           "by": "local",
-          "detail": "The quote's report data carries the fresh nonce 3cc745970be0…, so it was made for this check."
+          "detail": "The quote's report data carries the fresh nonce af8c73310bd1…, so it was made for this check."
         },
         {
           "id": "compose",
           "ok": true,
           "by": "local",
-          "detail": "The container manifest NEAR AI publishes hashes to the quote's mr_config_id (c53e254e8b70…)."
+          "detail": "The container manifest sent with the report hashes to the quote's mr_config_id (448683dd83e5…). Nothing pins which manifest NEAR AI should run."
         },
         {
           "id": "gpu",
           "ok": true,
           "by": "nvidia",
-          "detail": "NVIDIA's attestation service passed 8 GH100 GPUs in confidential mode (secure boot on, debug off, measurements matched) for the same nonce; its tokens verify against NVIDIA's published keys."
+          "detail": "NVIDIA's attestation service passed 8 GH100 GPUs in confidential mode (secure boot on, debug off, measurements matched) for the same nonce as the TDX quote; its tokens verify against NVIDIA's published keys. Only that nonce ties these GPUs to the TD."
         }
       ]
     }

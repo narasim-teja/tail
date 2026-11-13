@@ -29,7 +29,7 @@ input     App Attest keys of 3 of 3 players from the bundle's devices[]; re-exec
 input     players, start and end times from the bundle's match, bound by Start's signed players_hash and times
 input     each Enrolled entry's attested flag is the referee's own record: Apple's attestation is not in the bundle
 input     stake 1000000, zone and 0 safehouses from the bundle's match; not compared with NEAR
-warning   the bundle's app id SIMTEAM.dev.tail.sim is not the expected LKABS9RZAC.com.lkabs9rzac.tail (--app-id): App Attest assertions were checked against the bundle's
+warning   the bundle's app id SIMTEAM.dev.tail.sim is not the production LKABS9RZAC.com.lkabs9rzac.tail: App Attest assertions were checked against the bundle's (pass --app-id to pin one)
 checked   7 verdict signatures verify against referee_pk d04ab232742b
 checked   VRF signature verifies over alpha; the ring and the action coin derive from it
 checked   re-executed 134 log entries and 7 verdicts: all identical; final root 83d7706b…
@@ -64,20 +64,20 @@ released the fields below.
 ring, and prints its bundle (`--summary` prints what happened instead); it is the web replay's
 `boston-common-economy` fixture, and `tail-verify` passes it with nothing trusted.
 
-| Flag               | Effect                                                                                                                                   |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `--referee-pk HEX` | The bundle's `referee.refereePk` must be this key, or the run fails (`pins`).                                                            |
-| `--vrf-pk HEX`     | The bundle's `referee.vrfPk` must be this key, or the run fails (`pins`).                                                                |
-| `--app-id ID`      | The App ID expected. Used when the bundle names none; a bundle naming another one gets a `warning` line. Default: the production App ID. |
-| `--allow-trusted`  | Exit 0 even when something was taken from the log (`trusted` lines).                                                                     |
-| `--strict`         | The default; accepted for older callers.                                                                                                 |
+| Flag               | Effect                                                                                                                                                                                                         |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--referee-pk HEX` | The bundle's `referee.refereePk` must be this key, or the run fails (`pins`).                                                                                                                                  |
+| `--vrf-pk HEX`     | The bundle's `referee.vrfPk` must be this key, or the run fails (`pins`).                                                                                                                                      |
+| `--app-id ID`      | The bundle's `match.appId` must be this one, or the run fails (`pins`); a bundle naming none is checked against it. Without it, a bundle naming an App ID other than the production one gets a `warning` line. |
+| `--allow-trusted`  | Exit 0 even when something was taken from the log (`trusted` lines).                                                                                                                                           |
+| `--strict`         | The default; accepted for older callers.                                                                                                                                                                       |
 
-| Exit | Meaning                                                                                                        |
-| ---- | -------------------------------------------------------------------------------------------------------------- |
-| 0    | The re-execution matches, and nothing was trusted (or `--allow-trusted` accepted it).                          |
-| 1    | A check failed, a pinned key differs, or the re-execution diverged. The report names the first tick and entry. |
-| 2    | The input is not a v2 bundle, or the arguments are wrong.                                                      |
-| 3    | The re-execution matches, but only with items taken from the log; each is printed as a `trusted` line.         |
+| Exit | Meaning                                                                                                                  |
+| ---- | ------------------------------------------------------------------------------------------------------------------------ |
+| 0    | The re-execution matches, and nothing was trusted (or `--allow-trusted` accepted it).                                    |
+| 1    | A check failed, a pinned key or App ID differs, or the re-execution diverged. The report names the first tick and entry. |
+| 2    | The input is not a v2 bundle, or the arguments are wrong.                                                                |
+| 3    | The re-execution matches, but only with items taken from the log; each is printed as a `trusted` line.                   |
 
 ## What it checks
 
@@ -107,12 +107,12 @@ The relay's bundle (`packages/protocol` `ReplayBundleV2`) has the log, the accep
 `K_m` and the VRF reveal, and since these optional fields were added, everything else the engine
 read. Bundles from before lack them, and then:
 
-| Field                   | What it is                                                                                              | Without it                                                                                                                      |
-| ----------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `devices[].appAttestPk` | The key the referee enrolled (`declassify`), hex. It must hash to the `Enrolled` key hash.              | The key hash comes from the log, and that player's assertions cannot be checked.                                                |
-| `assertions[]` (b64)    | Parallel to `batches`, as `declassify_batches` returns them.                                            | App Attest outcomes come from the log (`ASSERTION` refusals). Every other check still runs.                                     |
-| `rejected[]`            | `{ batch, assertion }` for each refused envelope that is not already in `batches`.                      | A `Rejected` entry with no released batch is taken as given (`Withheld`). For a validity refusal, the chain must still advance. |
-| `match.appId`           | The App ID the relay gave `start`. A value other than `--app-id` (default: production) is warned about. | `--app-id`, or the production App ID by default.                                                                                |
+| Field                   | What it is                                                                                                                           | Without it                                                                                                                      |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `devices[].appAttestPk` | The key the referee enrolled (`declassify`), hex. It must hash to the `Enrolled` key hash.                                           | The key hash comes from the log, and that player's assertions cannot be checked.                                                |
+| `assertions[]` (b64)    | Parallel to `batches`, as `declassify_batches` returns them.                                                                         | App Attest outcomes come from the log (`ASSERTION` refusals). Every other check still runs.                                     |
+| `rejected[]`            | `{ batch, assertion }` for each refused envelope that is not already in `batches`.                                                   | A `Rejected` entry with no released batch is taken as given (`Withheld`). For a validity refusal, the chain must still advance. |
+| `match.appId`           | The App ID the relay gave `start`. Must equal `--app-id` when given (`pins`); without it, one other than production is warned about. | `--app-id`, or the production App ID by default.                                                                                |
 
 A refused batch is found by hash like an accepted one; the relay keeps them apart because the
 web replay draws `batches` as trails. A batch that never opened, or opened as another match's,

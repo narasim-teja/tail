@@ -13,6 +13,8 @@
 //            report data (key + nonce), container manifest hash, NRAS token signatures and claims,
 //            HintReceipt address match;
 //   NVIDIA   the GPU evidence itself is judged by NVIDIA's attestation service (NRAS).
+// Nothing pins NEAR AI's expected image: NEAR AI publishes no MRTD, RTMRs or manifest to compare
+// with, so a pass shows a genuine, non-debug TDX VM holds the key, not which code it runs.
 // NEARAI_API_KEY comes from .env.local (or the environment). It is sent to NEAR AI only and never
 // printed or saved.
 
@@ -99,11 +101,11 @@ async function receipts(
 const mark = (ok: boolean) => (ok ? "PASS" : "FAIL");
 const by = (c: Check) => (c.by === "nvidia" ? "NVIDIA NRAS" : "local");
 const NAMES: Record<Check["id"], string> = {
-  tdx: "Intel TDX quote valid",
-  address: "signing address bound in report data",
-  nonce: "fresh nonce bound in report data",
-  compose: "container manifest = mr_config_id",
-  gpu: "NVIDIA GPU attestation",
+  tdx: "Intel TDX quote is genuine and up to date (TD not in debug mode)",
+  address: "the quote names the signing key",
+  nonce: "the quote carries our fresh nonce",
+  compose: "the quote measures the report's container manifest (not pinned to an expected one)",
+  gpu: "GPUs attested by NVIDIA for the same nonce",
   signer: "HintReceipt signer is attested",
 };
 const print = (c: Check) => console.log(`  ${mark(c.ok)}  ${NAMES[c.id]} [${by(c)}]\n        ${c.detail}`);
@@ -134,12 +136,8 @@ const jwks = await json(await fetch(NRAS_JWKS_URL), "NVIDIA JWKS");
 const nodes: SavedResult["nodes"] = [];
 for (const a of atts) {
   console.log(`\nnode ${a.signingAddress}`);
-  const echo = a.requestNonce === nonce;
-  console.log(`  ${mark(echo)}  report echoes our nonce [local]`);
   const now = BigInt(Math.floor(Date.now() / 1000));
   const node = checkNode(a, nonce, verify, await collateral(INTEL_PCS, a.quote), now);
-  if (!echo)
-    node.checks.push({ id: "nonce", ok: false, by: "local", detail: "The report answers another nonce." });
   if (a.nvidiaPayload) {
     const nras = await json(
       await fetch(NRAS_URL, {

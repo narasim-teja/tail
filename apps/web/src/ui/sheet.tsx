@@ -64,7 +64,9 @@ export function ProofLine({
             ? "Failed"
             : check === "pending"
               ? "Checking"
-              : "Not checked"
+              : check === "earlier"
+                ? "Checked earlier by script"
+                : "Not checked"
       }
       className="size-[1.125rem]"
     />

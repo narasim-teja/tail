@@ -441,7 +441,11 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   (`apps/web/src/verify/checks.ts`, `checkHandler`).
 - **Check.** The Handler entries in the replay, and their "Verified" panel.
   `bun scripts/verify-nearai.ts` prints each check (it needs `NEARAI_API_KEY`, never printed).
-- **Limit.** The attestation is of NEAR AI's key at the time you check, not at the time of the
+- **Limit.** NEAR AI publishes no expected MRTD, RTMR or manifest hash, so nothing pins which
+  image runs: the check shows a genuine, up-to-date (TCB UpToDate, not debug) TDX machine that
+  measures the manifest it reports holds the key, not that it runs NEAR AI's published stack.
+  The GPUs are tied to that quote only by the shared nonce. The attestation is of NEAR AI's key
+  at the time you check, not at the time of the
   hint, so it binds a line only while NEAR AI keeps that key. NRAS refuses browsers, so the
   panel's GPU row is the script's saved result (`apps/web/public/nearai-attestation.json`,
   2026-11-13) and says so; the browser's TDX check needs NEAR AI's API to answer it. The response
@@ -557,7 +561,7 @@ account today, `tail-dev-a38d13.testnet`. That account is us.
 | Relay (`apps/server`)       | Liveness: forwarding, ticking on time, paying gas                 | Secrets, positions, verdicts, money                    | Sealing (12), signed verdicts (8), the contract's checks, the phones' receipts and log monitor (9, 10). A stalled match refunds every stake by `abort` after 15 min. It runs on the same machine and account as the local test referee today.                          |
 | Referee                     | The rules, the secrecy of the ring and the trails, honest entries | Money (the contract checks order, chain, ring, proofs) | Code identity through the per-call attestation record (14). After End, re-execution from the released inputs (15). With the local test referee pinned now, during play: nothing but the machine's operator.                                                            |
 | Contract (`contracts/tail`) | Custody and settlement                                            | —                                                      | Public code and state. Its full-access key (ours) can redeploy it, and the owner key (the relay's account) can pin a different referee or VRF key for matches created afterwards. `get_match` shows each match's own keys, and the replay compares them with its pins. |
-| NEAR AI Cloud               | Flavour text                                                      | Facts, money                                           | The model sees one coarse fact (13). The signature shows which key signed; NEAR AI's attestation report shows that key is held in Intel TDX with attested NVIDIA GPUs, as of when you check.                                                                           |
+| NEAR AI Cloud               | Flavour text                                                      | Facts, money                                           | The model sees one coarse fact (13). The signature shows which key signed; NEAR AI's attestation report shows that key is held in a genuine Intel TDX machine (no image pinned), with NVIDIA GPUs attested for the same nonce, as of when you check.                   |
 | OutLayer                    | Running the published wasm in TDX, guarding the verdict key       | —                                                      | The attestation record per call. Its own governance is early: operator-held keys (their `NON_CUSTODIAL.md`).                                                                                                                                                           |
 
 ## Threat model

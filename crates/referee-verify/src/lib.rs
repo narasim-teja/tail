@@ -183,26 +183,18 @@ impl Outcome {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Options {
-    /// The App ID the caller expects. Assertions are checked against it when the bundle names
-    /// none; a bundle that names another one is warned about.
-    pub app_id: String,
+    /// The App ID pinned by `--app-id`: a bundle naming another one fails at [`Stage::Pins`],
+    /// and one naming none is checked against it. Without it, assertions are checked against
+    /// the bundle's App ID (warned about when it is not [`DEFAULT_APP_ID`]), or the default
+    /// when the bundle names none.
+    pub app_id: Option<String>,
     /// The verdict key the match must use (the contract's `get_match` `referee_pk`). Without
     /// it, signatures are checked against the bundle's own key.
     pub referee_pk: Option<[u8; 32]>,
     /// The VRF key the match must use (`get_match` `vrf_pk`).
     pub vrf_pk: Option<[u8; 32]>,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            app_id: DEFAULT_APP_ID.into(),
-            referee_pk: None,
-            vrf_pk: None,
-        }
-    }
 }
 
 pub fn verify_json(json: &str, opts: &Options) -> Outcome {
@@ -249,19 +241,28 @@ fn provenance(b: &Bundle, d: &Decoded, opts: &Options, o: &mut Outcome) {
     o.inputs.push(key("vrf_pk", &d.vrf_pk, opts.vrf_pk, "--vrf-pk"));
     match &b.game.app_id {
         Some(id) => {
+            let pinned = if opts.app_id.is_some() {
+                ", pinned by --app-id"
+            } else {
+                ""
+            };
             o.inputs
-                .push(format!("app id {id} from the bundle's match.appId"));
-            if *id != opts.app_id {
+                .push(format!("app id {id} from the bundle's match.appId{pinned}"));
+            if opts.app_id.is_none() && id != DEFAULT_APP_ID {
                 o.warnings.push(format!(
-                    "the bundle's app id {id} is not the expected {} (--app-id): App Attest \
-                     assertions were checked against the bundle's",
-                    opts.app_id
+                    "the bundle's app id {id} is not the production {DEFAULT_APP_ID}: App Attest \
+                     assertions were checked against the bundle's (pass --app-id to pin one)"
                 ));
             }
         }
         None => o.inputs.push(format!(
-            "app id {} from --app-id or the default: the bundle names none",
-            d.cfg.app_id
+            "app id {} from {}: the bundle names none",
+            d.cfg.app_id,
+            if opts.app_id.is_some() {
+                "--app-id"
+            } else {
+                "the default"
+            }
         )),
     }
     let keys = d.keys.iter().filter(|k| k.is_some()).count();
@@ -287,9 +288,18 @@ fn provenance(b: &Bundle, d: &Decoded, opts: &Options, o: &mut Outcome) {
     ));
 }
 
-/// The bundle's keys must be the pinned ones: a match signed under any other key re-executes
-/// just as cleanly.
+/// The bundle's keys and App ID must be the pinned ones: a match signed under any other key, or
+/// played by phones of another app, re-executes just as cleanly.
 fn pins(d: &Decoded, opts: &Options) -> Result<(), Failure> {
+    if let Some(want) = opts.app_id.as_ref().filter(|w| **w != d.cfg.app_id) {
+        return Err(fail(
+            Stage::Pins,
+            format!(
+                "the bundle's app id is {}, the pinned one (--app-id) is {want}",
+                d.cfg.app_id
+            ),
+        ));
+    }
     for (name, have, pin) in [
         ("referee_pk", d.referee_pk, opts.referee_pk),
         ("vrf_pk", d.vrf_pk, opts.vrf_pk),
@@ -383,7 +393,11 @@ fn decode(b: &Bundle, opts: &Options) -> Result<Decoded, String> {
     players.sort();
     let cfg = MatchConfig {
         match_id,
-        app_id: g.app_id.clone().unwrap_or_else(|| opts.app_id.clone()),
+        app_id: g
+            .app_id
+            .clone()
+            .or_else(|| opts.app_id.clone())
+            .unwrap_or_else(|| DEFAULT_APP_ID.into()),
         stake,
         duration_ms,
         zone: circle(g.zone),

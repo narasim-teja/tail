@@ -19,6 +19,7 @@ import {
   modelAttestations,
   nodeOk,
   parseSaved,
+  type QuoteVerifier,
 } from "../src/verify/nearai.ts";
 import rec from "./data/nearai-attestation.json";
 
@@ -27,16 +28,24 @@ const now = BigInt(rec.recordedAt);
 const [att] = modelAttestations(rec.report, rec.model) as [ModelAttestation];
 const ADDRESS = "0xfe0071895500a9755c18044948ab4f4e1a7f337e";
 
+const obj = (v: unknown) => v as Record<string, unknown>;
 const b64url = (b: Uint8Array) => Buffer.from(b).toString("base64url");
 
-/** An NRAS-shaped answer, its tokens signed by a fresh P-384 key, and that key's JWKS. */
-async function nras(edit: (c: typeof rec.nrasClaims) => void = () => {}) {
+/**
+ * An NRAS-shaped answer, its tokens signed by a fresh P-384 key, and that key's JWKS. `alg` is the
+ * header every token claims; `swap` names a GPU whose token is re-signed (another jti) after the
+ * overall token's submods digest was taken from the first one.
+ */
+async function nras(
+  edit: (c: typeof rec.nrasClaims) => void = () => {},
+  { alg = "ES384", swap }: { alg?: string; swap?: string } = {},
+) {
   const claims = structuredClone(rec.nrasClaims);
   edit(claims);
   const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign"]);
   const kid = "test-key";
   const sign = async (body: object) => {
-    const head = `${b64url(utf8(JSON.stringify({ kid, alg: "ES384" })))}.${b64url(utf8(JSON.stringify(body)))}`;
+    const head = `${b64url(utf8(JSON.stringify({ kid, alg })))}.${b64url(utf8(JSON.stringify(body)))}`;
     const sig = await crypto.subtle.sign(
       { name: "ECDSA", hash: "SHA-384" },
       pair.privateKey,
@@ -49,6 +58,7 @@ async function nras(edit: (c: typeof rec.nrasClaims) => void = () => {}) {
   const submods = Object.fromEntries(
     Object.entries(gpus).map(([name, t]) => [name, ["DIGEST", ["SHA-256", toHex(sha256(utf8(t)))]]]),
   );
+  if (swap) gpus[swap] = await sign({ ...(claims.gpus as Record<string, object>)[swap], jti: "another" });
   const answer = [["JWT", await sign({ ...claims.overall, submods })], gpus];
   const jwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
   return { answer, jwks: { keys: [{ ...jwk, kid }] } };
@@ -87,6 +97,13 @@ describe("fails", () => {
     expect(nodeOk(node)).toBe(false);
   });
 
+  test("a report that doesn't echo our nonce: one nonce row, and it fails", () => {
+    const node = checkNode({ ...att, requestNonce: "00".repeat(32) }, rec.nonce, verify, rec.collateral, now);
+    const nonce = node.checks.filter((c) => c.id === "nonce");
+    expect(nonce.map((c) => [c.ok, c.detail])).toEqual([[false, "The report answers another nonce."]]);
+    expect(nodeOk(node)).toBe(false);
+  });
+
   test("a different signing address", () => {
     const tdx = checkTdx(verify, att.quote, rec.collateral, now);
     const [address] = checkReportData(tdx.reportData, `0x${"11".repeat(20)}`, rec.nonce);
@@ -104,6 +121,30 @@ describe("fails", () => {
       ["nonce", false],
       ["compose", false],
     ]);
+  });
+
+  test("any TCB level but UpToDate, and a TD in debug mode", () => {
+    const real = obj(verify(att.quote, rec.collateral, now));
+    const td = obj(obj(real["report"])["TD10"]);
+    const stub =
+      (status: string, attrs: unknown = td["td_attributes"]): QuoteVerifier =>
+      () => ({ ...real, status, report: { TD10: { ...td, td_attributes: attrs } } });
+    const run = (v: QuoteVerifier) => checkTdx(v, att.quote, rec.collateral, now);
+    expect(run(stub("UpToDate")).check.ok).toBe(true);
+    for (const status of ["OutOfDate", "SWHardeningNeeded", "ConfigurationNeeded", "Revoked"]) {
+      const tdx = run(stub(status));
+      expect([status, tdx.check.ok, tdx.reportData]).toEqual([status, false, null]);
+      expect(tdx.check.detail).toContain(`rates this platform ${status}`);
+    }
+    // TD_ATTRIBUTES is little-endian: bit 0 of the first byte is DEBUG.
+    expect(td["td_attributes"]).toBe("0000001000000000");
+    const debug = run(stub("UpToDate", "0100001000000000"));
+    expect([debug.check.ok, debug.reportData]).toEqual([false, null]);
+    expect(debug.check.detail).toContain("debug mode");
+    expect(
+      checkNode(att, rec.nonce, stub("UpToDate", "0100001000000000"), rec.collateral, now).checks,
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ id: "address", ok: false })]));
+    expect(run(stub("UpToDate", null)).check.ok).toBe(false);
   });
 
   test("a quote checked after its collateral expired", () => {
@@ -134,6 +175,44 @@ describe("fails", () => {
     expect(await gpu(verdict.answer, verdict.jwks)).toBe(false);
     // Signed by one key, checked against another key's JWKS.
     expect(await gpu(good.answer, (await nras()).jwks)).toBe(false);
+  });
+
+  test("GPU: each claim the check names, one at a time", async () => {
+    const why = async (n: Awaited<ReturnType<typeof nras>>) => {
+      const c = await checkGpu(n.answer, att.nvidiaPayload, rec.nonce, n.jwks, rec.recordedAt);
+      return c.ok ? "passed" : c.detail;
+    };
+    expect(await why(await nras())).toBe("passed");
+    const cases: [string, Awaited<ReturnType<typeof nras>>][] = [
+      // Signed correctly with the P-384 key, but the header claims another algorithm.
+      ["NVIDIA's overall token is unreadable", await nras(undefined, { alg: "ES256" })],
+      [
+        "has secure boot off",
+        await nras((c) => {
+          c.gpus["GPU-2"].secboot = false;
+        }),
+      ],
+      [
+        "another issuer",
+        await nras((c) => {
+          c.gpus["GPU-1"].iss = "https://nras.example.com";
+        }),
+      ],
+      [
+        "GPU-5 answers another nonce",
+        await nras((c) => {
+          c.gpus["GPU-5"].eat_nonce = "00".repeat(32);
+        }),
+      ],
+      [
+        "NVIDIA's verdict is for another nonce",
+        await nras((c) => {
+          c.overall.eat_nonce = "00".repeat(32);
+        }),
+      ],
+      ["GPU-4's token isn't the one the overall verdict names", await nras(undefined, { swap: "GPU-4" })],
+    ];
+    for (const [want, n] of cases) expect(await why(n)).toContain(want);
   });
 });
 

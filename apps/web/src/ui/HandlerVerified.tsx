@@ -52,12 +52,14 @@ function SignatureLine({ check }: { check: HandlerCheck }) {
   );
 }
 
+// Each title says exactly what its check shows. None of them pins the image NEAR AI should run:
+// NEAR AI publishes no expected MRTD, RTMRs or manifest (see verify/nearai.ts).
 const TITLES: Record<Exclude<CheckId, "signer">, string> = {
-  tdx: "Intel TDX quote is genuine",
+  tdx: "Intel TDX quote is genuine and up to date",
   address: "The quote names the signing key",
   nonce: "The quote is fresh",
-  compose: "The measured container manifest",
-  gpu: "NVIDIA GPU attestation",
+  compose: "The quote measures this container manifest",
+  gpu: "GPUs attested by NVIDIA for the same nonce",
 };
 const ORDER = ["tdx", "address", "nonce", "compose", "gpu"] as const;
 
@@ -104,9 +106,13 @@ function AttestationLines({ signer, model }: { signer: string; model: string }) 
     .find((n) => n.signingAddress === node.signingAddress)
     ?.checks.find((c) => c.id === "gpu");
 
+  // A row the script checked, not this page: the GPUs always (NVIDIA refuses browsers), and every
+  // row when NEAR AI's report couldn't be fetched here.
+  const fromSaved = (id: (typeof ORDER)[number]) => !here || id === "gpu";
   const row = (id: (typeof ORDER)[number]) => {
-    const c: AttestationCheck | undefined =
-      id === "gpu" && here ? gpuSaved : node.checks.find((x) => x.id === id);
+    const pool = id === "gpu" && here ? (gpuSaved ? [gpuSaved] : []) : node.checks.filter((x) => x.id === id);
+    // The worst of a row's checks, so a failing one is never hidden behind a passing one.
+    const c: AttestationCheck | undefined = pool.find((x) => !x.ok) ?? pool[0];
     if (!c)
       return (
         <ProofLine
@@ -117,7 +123,7 @@ function AttestationLines({ signer, model }: { signer: string; model: string }) 
           {TITLES[id]}
         </ProofLine>
       );
-    const glyph: Check = !c.ok ? "fail" : forThisKey ? "pass" : "info";
+    const glyph: Check = !c.ok ? "fail" : !forThisKey ? "info" : fromSaved(id) ? "earlier" : "pass";
     const key = forThisKey
       ? ""
       : `For NEAR AI's current key ${short(node.signingAddress, 6)}, not this line's: `;
@@ -132,7 +138,7 @@ function AttestationLines({ signer, model }: { signer: string; model: string }) 
 
   return (
     <>
-      <ProofLine check={signerCheck.ok ? "pass" : "info"} detail={signerCheck.detail}>
+      <ProofLine check={!signerCheck.ok ? "info" : here ? "pass" : "earlier"} detail={signerCheck.detail}>
         {signerCheck.ok
           ? "The signing key is NEAR AI's attested key"
           : "The signing key isn't in NEAR AI's report"}
@@ -141,7 +147,10 @@ function AttestationLines({ signer, model }: { signer: string; model: string }) 
       <li className="pt-2 text-[0.75rem] leading-snug text-text-3">
         {here
           ? `Checked in your browser at ${when(here.at)}, against a report NEAR AI made for the fresh nonce ${short(here.nonce, 6)}: the TDX quote with dcap-qvl and Intel-signed collateral (fetched through Phala's cache), the key and nonce in its report data, and the manifest. ${savedAt ? `NVIDIA's service doesn't answer browsers, so the GPU row was checked by scripts/verify-nearai.ts at ${savedAt}.` : ""}`
-          : `NEAR AI's report couldn't be fetched here (${live.kind === "unreachable" ? live.reason : ""}). Checked by scripts/verify-nearai.ts at ${savedAt}, with the nonce ${short(saved?.nonce ?? "", 6)}.`}
+          : `NEAR AI's report couldn't be fetched here (${live.kind === "unreachable" ? live.reason : ""}). Checked by scripts/verify-nearai.ts at ${savedAt}, with the nonce ${short(saved?.nonce ?? "", 6)}.`}{" "}
+        Nothing here pins the image NEAR AI should run: it publishes no expected measurements, so a pass shows
+        a genuine Intel TDX machine, not in debug mode, holds the key, not which code it runs. The GPUs are
+        tied to it only by the shared nonce.
       </li>
     </>
   );

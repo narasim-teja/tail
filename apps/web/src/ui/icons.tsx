@@ -62,6 +62,12 @@ export function GlyphIcon({ glyph, className, label }: { glyph: Glyph; className
     >
       {glyph === "tick" ? (
         <path d="M6.5 12.5 L10.2 16.2 L17.5 8.2" />
+      ) : glyph === "earlier" ? (
+        <>
+          <path d="M3.5 13.5 L7 17 L13 10.5" />
+          <circle cx="17.5" cy="7.5" r="4" />
+          <path d="M17.5 5.5 V7.5 L19 8.5" />
+        </>
       ) : (
         <circle cx="12" cy="12" r="9" strokeDasharray={glyph === "dashed" ? "2 3.2" : undefined} />
       )}

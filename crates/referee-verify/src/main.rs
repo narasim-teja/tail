@@ -1,8 +1,8 @@
 //! `tail-verify <bundle.json | -> [--referee-pk HEX] [--vrf-pk HEX] [--app-id ID] [--allow-trusted]`
 //!
 //! Exit status: 0 the re-execution reproduced every verdict and log entry and nothing was taken
-//! from the log; 1 a check failed, a pinned key differs, or the re-execution diverged (the report
-//! names the first tick and entry); 2 the file is not a v2 replay bundle, or the arguments are
+//! from the log; 1 a check failed, a pinned key or App ID differs, or the re-execution diverged
+//! (the report names the first tick and entry); 2 the file is not a v2 replay bundle, or the arguments are
 //! wrong; 3 it reproduced everything but had to take something from the log, unless
 //! `--allow-trusted` accepts that. `--strict` is the default and is accepted for older callers.
 
@@ -23,7 +23,7 @@ fn main() -> ExitCode {
             "--strict" => {}
             "--allow-trusted" => allow_trusted = true,
             "--app-id" => match args.next() {
-                Some(id) => opts.app_id = id,
+                Some(id) => opts.app_id = Some(id),
                 None => return usage(),
             },
             "--referee-pk" => match args.next().as_deref().and_then(key) {

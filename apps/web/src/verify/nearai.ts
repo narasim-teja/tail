@@ -2,13 +2,19 @@
 // A Handler line is signed by an Ethereum key (checks.ts recovers it). This file shows that key is
 // one NEAR AI's sealed hardware holds:
 //
-//   tdx      the Intel TDX quote verifies (dcap-qvl, against Intel-signed collateral);
+//   tdx      the Intel TDX quote verifies (dcap-qvl, against Intel-signed collateral), Intel
+//            rates the platform UpToDate, and the TD is not in debug mode;
 //   address  the quote's report_data[0..32] is that key, zero-padded;
 //   nonce    report_data[32..64] is the fresh nonce we sent, so the quote is not a replay;
-//   compose  mr_config_id is 0x01 ‖ sha256(app_compose): the container manifest that ran;
+//   compose  mr_config_id is 0x01 ‖ sha256(app_compose), app_compose as the same report sends it;
 //   gpu      NVIDIA's attestation service (NRAS) passed the GPUs for the same nonce, and its
 //            ES384 tokens verify against NVIDIA's published keys;
 //   signer   the line's signer is one of the attested keys.
+//
+// What this does not show: NEAR AI publishes no expected MRTD, RTMRs or manifest, so nothing here
+// pins which image the TD runs. Any genuine, non-debug TDX VM that puts a key and our nonce in its
+// report data passes tdx, address, nonce and compose. The GPUs are tied to that TD only by the
+// shared nonce, which the TD chose to hand them.
 //
 // The checks are pure: the quote verifier and the network are passed in, so the same code runs in
 // scripts/verify-nearai.ts (Bun) and in the replay (browser), and the tests run it offline.
@@ -109,10 +115,14 @@ function safeJson(s: string): unknown {
 export type QuoteVerifier = (quote: Uint8Array, collateral: unknown, now: bigint) => unknown;
 
 /**
- * Intel's TCB levels the reference verifier (nearai-cloud-verifier) accepts: OutOfDate means the
- * platform is behind Intel's latest advisory baseline, not that the quote is forged.
+ * The only TCB level that passes. NEAR AI's reference verifier also accepts OutOfDate (the
+ * platform is behind Intel's latest security fixes), but then the TD's isolation rests on
+ * microcode Intel has superseded, so here it fails and says so.
  */
-const TDX_OK = new Set(["UpToDate", "OutOfDate"]);
+const TDX_OK = new Set(["UpToDate"]);
+
+/** TD_ATTRIBUTES bit 0: the host can read and change the TD's memory. */
+const TD_DEBUG = 0x01;
 
 export interface Tdx {
   check: Check;
@@ -136,16 +146,22 @@ export function checkTdx(verify: QuoteVerifier, quote: Uint8Array, collateral: u
   const td = obj(report["TD10"] ?? report["TD15"]);
   const rd = str(td["report_data"]) ?? "";
   const mr = str(td["mr_config_id"]);
-  if (!HEX.test(rd) || rd.length !== 128)
+  const attrs = str(td["td_attributes"]) ?? "";
+  if (!HEX.test(rd) || rd.length !== 128 || !HEX.test(attrs) || attrs.length !== 16)
     return { check: tdxCheck(false, "The quote is not a TDX quote."), status, ...none };
-  const ok = status !== null && TDX_OK.has(status);
+  const debug = ((fromHex(attrs)[0] ?? 0) & TD_DEBUG) !== 0;
+  const upToDate = status !== null && TDX_OK.has(status);
+  const ok = upToDate && !debug;
   const adv = Array.isArray(r["advisory_ids"]) && r["advisory_ids"].length > 0;
+  const mrTd = str(td["mr_td"]) ?? "";
   return {
     check: tdxCheck(
       ok,
-      ok
-        ? `Signed by an Intel TDX CPU; dcap-qvl checked the chain to Intel's root and the TCB level (${status}${adv ? ", with advisories" : ""}).`
-        : `The quote verified, but Intel rates this platform ${status ?? "unknown"}.`,
+      debug
+        ? "The quote verified, but the TD runs in debug mode: its host can read and change its memory."
+        : !upToDate
+          ? `The quote verified, but Intel rates this platform ${status ?? "unknown"}, not UpToDate.`
+          : `Signed by an Intel TDX CPU that Intel rates UpToDate${adv ? " (with advisories)" : ""}, TD not in debug mode; dcap-qvl checked the chain to Intel's root. Its MRTD ${mrTd.slice(0, 12)}… and RTMRs are not compared with anything: NEAR AI publishes no expected values.`,
     ),
     status,
     reportData: ok ? fromHex(rd) : null,
@@ -187,7 +203,11 @@ export function checkReportData(reportData: Uint8Array | null, address: string, 
   ];
 }
 
-/** mr_config_id = 0x01 ‖ sha256(app_compose) ‖ zero padding (dstack). */
+/**
+ * mr_config_id = 0x01 ‖ sha256(app_compose) ‖ zero padding (dstack). app_compose comes from the
+ * same report as the quote, so this shows which manifest the quote measures, not that it is the
+ * one NEAR AI should be running.
+ */
 export function checkCompose(appCompose: string | null, mrConfigId: string | null): Check {
   const hash = appCompose === null ? null : toHex(sha256(utf8(appCompose)));
   const ok = hash !== null && mrConfigId?.toLowerCase().startsWith(`01${hash}`) === true;
@@ -196,8 +216,8 @@ export function checkCompose(appCompose: string | null, mrConfigId: string | nul
     ok,
     by: "local",
     detail: ok
-      ? `The container manifest NEAR AI publishes hashes to the quote's mr_config_id (${(hash ?? "").slice(0, 12)}…).`
-      : "The published container manifest does not match the quote's mr_config_id.",
+      ? `The container manifest sent with the report hashes to the quote's mr_config_id (${(hash ?? "").slice(0, 12)}…). Nothing pins which manifest NEAR AI should run.`
+      : "The container manifest sent with the report does not match the quote's mr_config_id.",
   };
 }
 
@@ -331,7 +351,7 @@ export async function checkGpu(
     id: "gpu",
     ok: true,
     by: "nvidia",
-    detail: `NVIDIA's attestation service passed ${gpus.length} ${model} GPU${gpus.length === 1 ? "" : "s"} in confidential mode (secure boot on, debug off, measurements matched) for the same nonce; its tokens verify against NVIDIA's published keys.`,
+    detail: `NVIDIA's attestation service passed ${gpus.length} ${model} GPU${gpus.length === 1 ? "" : "s"} in confidential mode (secure boot on, debug off, measurements matched) for the same nonce as the TDX quote; its tokens verify against NVIDIA's published keys. Only that nonce ties these GPUs to the TD.`,
   };
 }
 
@@ -358,7 +378,10 @@ export interface NodeResult {
   checks: Check[];
 }
 
-/** tdx, address, nonce and compose for one model TEE (the parts that need no NVIDIA call). */
+/**
+ * tdx, address, nonce and compose for one model TEE (the parts that need no NVIDIA call). The
+ * nonce check also needs the report to echo our nonce, so there is one nonce row, not two.
+ */
 export function checkNode(
   a: ModelAttestation,
   nonce: string,
@@ -367,12 +390,15 @@ export function checkNode(
   now: bigint,
 ): NodeResult {
   const tdx = checkTdx(verify, a.quote, collateral, now);
+  const [address, fresh] = checkReportData(tdx.reportData, a.signingAddress, nonce) as [Check, Check];
+  const echoed = a.requestNonce === nonce.toLowerCase();
   return {
     signingAddress: a.signingAddress,
     tdxStatus: tdx.status,
     checks: [
       tdx.check,
-      ...checkReportData(tdx.reportData, a.signingAddress, nonce),
+      address,
+      fresh.ok && !echoed ? { ...fresh, ok: false, detail: "The report answers another nonce." } : fresh,
       checkCompose(a.appCompose, tdx.mrConfigId),
     ],
   };
@@ -436,6 +462,20 @@ function parseReceipt(v: unknown): SavedReceipt[] {
   ];
 }
 
+/** Node results as JSON stored them (the saved file, or the browser's short-lived cache). */
+export function parseNodes(v: unknown): NodeResult[] {
+  if (!Array.isArray(v)) return [];
+  return v.flatMap((n) => {
+    const o = obj(n);
+    const addr = str(o["signingAddress"]);
+    const checks = Array.isArray(o["checks"]) ? o["checks"].map(parseCheck) : [];
+    if (!addr || checks.some((c) => c === null)) return [];
+    return [
+      { signingAddress: addr.toLowerCase(), tdxStatus: str(o["tdxStatus"]), checks: checks as Check[] },
+    ];
+  });
+}
+
 export function parseSaved(json: unknown): SavedResult | null {
   const r = obj(json);
   if (r["version"] !== 1 || r["tool"] !== "scripts/verify-nearai.ts") return null;
@@ -443,21 +483,7 @@ export function parseSaved(json: unknown): SavedResult | null {
   const model = str(r["model"]);
   const nonce = str(r["nonce"]);
   if (!checkedAt || Number.isNaN(Date.parse(checkedAt)) || !model || !nonce) return null;
-  const nodes = Array.isArray(r["nodes"])
-    ? r["nodes"].flatMap((n) => {
-        const o = obj(n);
-        const addr = str(o["signingAddress"]);
-        const checks = Array.isArray(o["checks"]) ? o["checks"].map(parseCheck) : [];
-        if (!addr || checks.some((c) => c === null)) return [];
-        return [
-          {
-            signingAddress: addr.toLowerCase(),
-            tdxStatus: str(o["tdxStatus"]),
-            checks: checks as Check[],
-          },
-        ];
-      })
-    : [];
+  const nodes = parseNodes(r["nodes"]);
   return {
     version: 1,
     tool: "scripts/verify-nearai.ts",

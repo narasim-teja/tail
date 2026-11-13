@@ -43,7 +43,7 @@ describe("verification marks", () => {
   });
 
   test("a proof row shows the ringed check only when it compares with NEAR and passes", () => {
-    const checks: Check[] = ["pass", "fail", "pending", "info"];
+    const checks: Check[] = ["pass", "fail", "pending", "info", "earlier"];
     for (const c of checks) {
       expect(proofGlyph(c, false)).not.toBe("check");
       const out = renderToStaticMarkup(<GlyphIcon glyph={proofGlyph(c, false)} />);
@@ -51,6 +51,15 @@ describe("verification marks", () => {
     }
     expect(proofGlyph("pass", true)).toBe("check");
     expect(proofGlyph("info", true)).toBe("hollow");
+  });
+
+  test("a check a script ran earlier has its own glyph, never a tick", () => {
+    expect(
+      new Set(["pass", "fail", "pending", "info", "earlier"].map((c) => proofGlyph(c as Check))).size,
+    ).toBe(5);
+    expect(renderToStaticMarkup(<GlyphIcon glyph={proofGlyph("earlier")} />)).toContain(
+      'data-glyph="earlier"',
+    );
   });
 
   test("the header's overall state: a fixture (not on NEAR) is hollow, never checked", () => {

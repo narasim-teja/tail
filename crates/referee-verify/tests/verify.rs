@@ -363,7 +363,7 @@ fn pinned_keys_must_be_the_bundles_and_every_input_says_where_it_came_from() {
     let referee = game.referee.verifying_key().to_bytes();
     let vrf = game.vrf.verifying_key().to_bytes();
     let pinned = Options {
-        app_id: APP_ID.into(),
+        app_id: Some(APP_ID.into()),
         referee_pk: Some(referee),
         vrf_pk: Some(vrf),
     };
@@ -375,7 +375,7 @@ fn pinned_keys_must_be_the_bundles_and_every_input_says_where_it_came_from() {
         "referee_pk",
         "pinned by --referee-pk",
         "pinned by --vrf-pk",
-        "app id SIMTEAM.dev.tail.sim from the bundle",
+        "app id SIMTEAM.dev.tail.sim from the bundle's match.appId, pinned by --app-id",
         "App Attest keys of 3 of 3 players",
         "stake 1000000",
         "zone",
@@ -393,12 +393,29 @@ fn pinned_keys_must_be_the_bundles_and_every_input_says_where_it_came_from() {
             vrf_pk: Some(other),
             ..pinned.clone()
         },
+        Options {
+            app_id: Some(DEFAULT_APP_ID.into()),
+            ..pinned.clone()
+        },
     ] {
         let f = verify(&b, &opts)
             .failure
-            .expect("a key that is not the pinned one");
+            .expect("a key or App ID that is not the pinned one");
         assert_eq!(f.stage, Stage::Pins, "{f:?}");
     }
+
+    // A bundle that names no App ID is checked against the pinned one.
+    let mut unnamed = b.clone();
+    unnamed.game.app_id = None;
+    let o = verify(&unnamed, &pinned);
+    assert!(o.passed(), "{:?}", o.failure);
+    assert!(
+        o.inputs
+            .iter()
+            .any(|i| i.contains("app id SIMTEAM.dev.tail.sim from --app-id")),
+        "{:?}",
+        o.inputs
+    );
 
     // Unpinned, the keys are the bundle's own, and an App ID other than the expected one is said.
     let o = verify(&b, &Options::default());
@@ -456,6 +473,10 @@ fn the_binary_exits_0_clean_1_forged_or_unpinned_2_bad_args_and_3_when_it_had_to
     let (code, out) = run(&bundle(game, FULL), &["--referee-pk", &other]);
     assert_eq!(code, Some(1), "{out}");
     assert!(out.contains("FAIL      pins"), "{out}");
+    // An App ID named on the command line is a pin, not a hint.
+    let (code, out) = run(&bundle(game, FULL), &["--app-id", DEFAULT_APP_ID]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("FAIL      pins: the bundle's app id"), "{out}");
     assert_eq!(run(&bundle(game, FULL), &["--vrf-pk", "abcd"]).0, Some(2));
 
     // An older relay's bundle needs the log's word: exit 3, unless that is accepted.

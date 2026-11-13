@@ -10,8 +10,9 @@ import type { MatchProblem, Summary, VerdictStatus } from "../verify/report.ts";
  * hollow: a plain ring, signed and logged but not on NEAR (or NEAR unreachable).
  * bar: a ring with a bar through it, in ink, "Fails a check" ("Doesn't match NEAR" when NEAR differs).
  * dashed: a dashed ring, not checked yet.
+ * earlier: a tick beside a clock, a check that held when a script ran it earlier, not on this page.
  */
-export type Glyph = "check" | "tick" | "hollow" | "bar" | "dashed";
+export type Glyph = "check" | "tick" | "hollow" | "bar" | "dashed" | "earlier";
 
 export const STATUS_GLYPH: Record<VerdictStatus, Glyph> = {
   verified: "check",
@@ -20,7 +21,8 @@ export const STATUS_GLYPH: Record<VerdictStatus, Glyph> = {
   pending: "dashed",
 };
 
-export type Check = "pass" | "fail" | "pending" | "info";
+/** earlier: passed when scripts/verify-nearai.ts ran (its saved result), not re-run here. */
+export type Check = "pass" | "fail" | "pending" | "info" | "earlier";
 
 /** A proof row's glyph. Only the row that compares with NEAR may show the ringed check. */
 export function proofGlyph(check: Check, comparesWithNear = false): Glyph {
@@ -33,6 +35,8 @@ export function proofGlyph(check: Check, comparesWithNear = false): Glyph {
       return "dashed";
     case "info":
       return "hollow";
+    case "earlier":
+      return "earlier";
   }
 }
 

@@ -78,9 +78,13 @@ Entered: Games, Privacy, Open, NFTs.
   one coarse fact, never coordinates. `scripts/verify-nearai.ts` and the replay's Handler panel
   (in the browser, when NEAR AI's API answers it) fetch NEAR AI's attestation report for a fresh
   nonce and check the Intel TDX quote back to Intel's root, that the quote binds the nonce and
-  the signing address, and the container manifest. NVIDIA's GPU attestation is judged by NVIDIA's service (NRAS), which only the script
-  can reach, and the panel shows the script's saved result for it. No v2 match has a model line
-  yet: the local test referee has no network and uses templates.
+  the signing address, and which container manifest the quote measures (a debug-mode enclave or a
+  TCB level other than UpToDate fails). NVIDIA's GPU attestation is judged by NVIDIA's service
+  (NRAS), which only the script can reach; the GPUs are tied to the quote only by the shared
+  nonce, and the panel shows the script's saved result for them. NEAR AI publishes no expected
+  image measurements, so nothing pins _which_ code runs: this proves a genuine, up-to-date TDX
+  machine holds the signing key, not that it runs NEAR AI's published stack. No v2 match has a
+  model line yet: the local test referee has no network and uses templates.
 - **Retention.** A private match's sealed batches, trails, log, zone and Handler lines are purged
   24 h after End (`apps/server/src/retention.ts`, `apps/server/scripts/purge.ts`).
 
@@ -331,7 +335,7 @@ capability, and the relay running where the phones can reach it. Build and insta
 | `env::sha256` in the contract              | Verifies RFC 9162 consistency proofs and, in the `verify_inclusion` view, Merkle audit paths (after the upgrade)                                                                                                                    | `contracts/tail`, `crates/tail-protocol`                       |
 | NEP-171 / 177 / 181 on the same contract   | One soulbound Dossier per player, its SVG drawn on-chain, gating who may join a match (after the upgrade)                                                                                                                           | `contracts/tail/src/dossier.rs`, `art.rs`                      |
 | OutLayer (Intel TDX) on `outlayer.testnet` | The referee: sealed match state, the verdict signing key, VRF, the Handler call. v1 build deployed; not running calls since 2026-11-12                                                                                              | `crates/referee-wasi`, `crates/referee-core`                   |
-| NEAR AI Cloud                              | The Handler's lines from an open-weight model; the chat signature is logged and re-checked, and the signing key's TDX and GPU attestation is verified                                                                               | `crates/referee-wasi/src/voice.rs`, `scripts/verify-nearai.ts` |
+| NEAR AI Cloud                              | The Handler's lines from an open-weight model; the chat signature is logged and re-checked, and the signing key is shown held in a genuine Intel TDX machine (no image pinned)                                                      | `crates/referee-wasi/src/voice.rs`, `scripts/verify-nearai.ts` |
 | Named sub-accounts with function-call keys | Each player's account holds only a key that can join, leave and withdraw; it is also the Dossier's token id                                                                                                                         | `apps/server/src/near.ts`                                      |
 | NEP-141 token (`usdc.fakes.testnet`)       | Stakes, heads and payouts                                                                                                                                                                                                           | `contracts/tail`                                               |
 | Merkle roots on-chain                      | Checkpoints every minute and at End; the replay, the phones' receipts, the phones' log monitor and presence proofs check against them                                                                                               | `contracts/tail`, `apps/web/src/verify`                        |
