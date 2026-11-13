@@ -11,12 +11,6 @@ export const RPC: Record<string, string> = {
   mainnet: import.meta.env.VITE_NEAR_RPC_MAINNET || "https://free.rpc.fastnear.com",
 };
 
-export function explorerTx(network: string, hash: string) {
-  return network === "mainnet"
-    ? `https://nearblocks.io/txns/${hash}`
-    : `https://testnet.nearblocks.io/txns/${hash}`;
-}
-
 export interface TokenMeta {
   symbol: string;
   decimals: number;

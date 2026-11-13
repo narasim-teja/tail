@@ -33,7 +33,7 @@ const tick = (page: Page, nth: number) => page.locator("ol[aria-label='Events'] 
 
 const STATES: Record<string, { query: string; steps: Step; reduced?: boolean }> = {
   verifying: {
-    query: "",
+    query: "?fixture=boston-common",
     steps: async (page) => {
       await settled(page);
       await wait(1_900);
@@ -48,7 +48,7 @@ const STATES: Record<string, { query: string; steps: Step; reduced?: boolean }> 
     },
   },
   "paused-inspector": {
-    query: "",
+    query: "?fixture=boston-common",
     steps: async (page) => {
       await settled(page);
       await tick(page, 1).click();
@@ -96,7 +96,7 @@ const STATES: Record<string, { query: string; steps: Step; reduced?: boolean }> 
     },
   },
   "reduced-motion": {
-    query: "",
+    query: "?fixture=boston-common",
     reduced: true,
     steps: async (page) => {
       await settled(page);

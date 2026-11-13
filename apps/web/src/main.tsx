@@ -1,14 +1,15 @@
 import { colors, markSvg } from "@tail/brand";
 import appleTouchIcon from "@tail/brand/assets/apple-touch-icon.png";
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
-import { takeSignIn } from "./replay/load.ts";
-import { App } from "./ui/App.tsx";
-import "./styles.css";
+import { signInFromHash, takeSignIn } from "./replay/load.ts";
+import { routeOf } from "./route.ts";
+
+const route = routeOf(location.pathname, location.search, import.meta.env.BASE_URL);
 
 // First, before any request or render: a private replay's sign-in leaves the address bar, so a
-// copied or shared address carries no signature.
-const signIn = takeSignIn(location, history);
+// copied or shared address carries no signature. On the front page a fragment is a section
+// (`#proof`) and stays, unless it is a sign-in, which goes all the same.
+const signIn =
+  route.kind !== "landing" || signInFromHash(location.hash) !== null ? takeSignIn(location, history) : null;
 
 // Brand colours are the single source; CSS derives every other token from these in OKLCH.
 const root = document.documentElement.style;
@@ -16,6 +17,10 @@ root.setProperty("--persimmon", colors.persimmon);
 root.setProperty("--dusk", colors.dusk);
 root.setProperty("--dusk-ink", colors.duskInk);
 root.setProperty("--ink", colors.ink);
+
+// The replay is dusk throughout; the front page sets its own as the visitor scrolls.
+if (route.kind !== "landing")
+  document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute("content", colors.dusk);
 
 for (const [rel, href, type] of [
   ["icon", `data:image/svg+xml,${encodeURIComponent(markSvg({ size: 64 }))}`, "image/svg+xml"],
@@ -28,13 +33,10 @@ for (const [rel, href, type] of [
   document.head.append(link);
 }
 
-// The deck.gl text atlas is drawn with the web font, so load it before the first frame.
-void document.fonts.load('700 16px "Archivo Variable"').finally(() => {
-  const el = document.getElementById("root");
-  if (el)
-    createRoot(el).render(
-      <StrictMode>
-        <App signIn={signIn} />
-      </StrictMode>,
-    );
-});
+// Each page loads only its own code: the front page never pulls the replay's map, deck.gl or
+// verifier, and the replay never waits on the front page.
+const el = document.getElementById("root");
+if (el) {
+  if (route.kind === "landing") void import("./landing/mount.tsx").then((m) => m.mount(el));
+  else void import("./replay/mount.tsx").then((m) => m.mount(el, signIn));
+}

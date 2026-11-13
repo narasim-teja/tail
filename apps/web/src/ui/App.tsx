@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { TooltipProvider } from "../components/ui/tooltip.tsx";
 import { type PagePhase, pageState } from "../replay/copy.ts";
 import { type Loaded, loadBundle, resolveSource, type SignIn, type Source } from "../replay/load.ts";
+import { routeOf } from "../route.ts";
 import { BundleError, type DecodedBundle, decodeBundle } from "../verify/bundle.ts";
 import { nearReader } from "../verify/chain.ts";
 import { type Prepared, prepare } from "../verify/index.ts";
@@ -21,15 +22,13 @@ type Phase =
 
 /** `signIn`: a player's one-time sign-in for a private replay, taken from the address (main.tsx). */
 export function App({ signIn }: { signIn: SignIn | null }) {
-  // `/dossier/<account>` is a player's dossier.
-  const dossier = /^\/dossier\/([^/]+)\/?$/.exec(location.pathname)?.[1];
-  if (dossier) return <DossierPage account={decodeURIComponent(dossier)} />;
+  const route = routeOf(location.pathname, location.search, import.meta.env.BASE_URL);
+  if (route.kind === "dossier") return <DossierPage account={route.account} />;
   // `?presence=<proof>` (or a bare `?presence` to paste one) is the presence proof page.
-  const presence = new URLSearchParams(location.search).get("presence");
-  if (presence !== null)
+  if (route.kind === "presence")
     return (
       <TooltipProvider>
-        <PresencePage initial={presence} />
+        <PresencePage initial={route.initial} />
       </TooltipProvider>
     );
   return <ReplayApp signIn={signIn} />;
