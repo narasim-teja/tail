@@ -11,7 +11,7 @@ import { BundleError, type DecodedBundle, decodeBundle } from "../verify/bundle.
 import { nearReader } from "../verify/chain.ts";
 import { type BatchCheck, checkBatches, checkHandler } from "../verify/checks.ts";
 import { Stage } from "./Stage.tsx";
-import { PageState, ProgressLine, Retry } from "./States.tsx";
+import { Loading, PageState, ProgressLine, Retry } from "./States.tsx";
 
 type Phase =
   | { kind: "loading" }
@@ -78,9 +78,7 @@ export function App() {
       {phase.kind === "loading" && (
         <>
           <ProgressLine value={0.15} />
-          <main className="min-h-dvh bg-dusk" aria-busy="true">
-            <p className="sr-only">Loading the match</p>
-          </main>
+          <Loading />
         </>
       )}
       {phase.kind === "ready" && (
