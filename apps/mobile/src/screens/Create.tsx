@@ -1,4 +1,5 @@
-// New match: stake, length, players, zone size (centred on you), public replay. Picked with
+// New match: stake, length, players, zone size (centred on you), public replay (off unless the
+// host turns it on). Picked with
 // the thumb, not typed: a few sensible choices each, and the zone drawn live on the map around
 // you so the host sees the playing field before anyone stakes.
 import { useEffect, useState } from "react";
@@ -51,7 +52,9 @@ export function CreateView({
   const [minutes, setMinutes] = useState(30);
   const [players, setPlayers] = useState(3);
   const [radiusM, setRadius] = useState(400);
-  const [publicReplay, setPublicReplay] = useState(true);
+  // Private unless the host chooses otherwise: a replay shows every player's location trail, so
+  // publishing it is a choice the host makes, not the default.
+  const [publicReplay, setPublicReplay] = useState(false);
   const here = m.here;
   const open = m.openLobby;
   return (
@@ -107,7 +110,11 @@ export function CreateView({
       />
       <Caption muted>{`Up to ${PLAYERS.max} can join.`}</Caption>
       <ToggleRow label="Public replay" value={publicReplay} onChange={setPublicReplay} />
-      <Caption muted>{publicReplay ? "Anyone with the link can watch." : "Only players can watch."}</Caption>
+      <Caption muted>
+        {publicReplay
+          ? "Anyone with the link sees every player's trail on the map."
+          : "Only this match's players can watch the replay."}
+      </Caption>
       {open ? (
         <>
           <Notice
