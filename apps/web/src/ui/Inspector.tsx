@@ -9,7 +9,7 @@ import { Button } from "../components/ui/button.tsx";
 import { clock, money, short } from "../lib/format.ts";
 import { useStore } from "../lib/store.ts";
 import { lockAt, type MatchEvent, snapshotAt, walked } from "../model/match.ts";
-import { eventLine, list, statusLabel } from "../replay/copy.ts";
+import { drawSource, eventLine, list, signerOf, statusLabel } from "../replay/copy.ts";
 import type { Selection } from "../replay/state.ts";
 import { type Attestation, attestationUrl, fetchAttestation } from "../verify/attestation.ts";
 import { explorerTx } from "../verify/chain.ts";
@@ -218,8 +218,10 @@ function SignedAndSettled({ index }: { index: number }) {
   const anchor = useStore(verify, (s) => s.anchors[index]);
   const chain = useStore(verify, (s) => s.chainSummary);
   const v = decoded.verdicts[index];
-  const fixture = source.kind === "fixture";
-  const url = v?.v && !fixture ? attestationUrl(decoded.raw.referee.api, v.v.callId) : null;
+  const by = signerOf(source, decoded.raw);
+  const fixture = by === "fixture";
+  // Only the enclave leaves an attestation record to fetch.
+  const url = v?.v && by === "enclave" ? attestationUrl(decoded.raw.referee.api, v.v.callId) : null;
   const att = useAttestation(url);
 
   const signed: Check = !local
@@ -233,15 +235,17 @@ function SignedAndSettled({ index }: { index: number }) {
 
   const attDetail = fixture
     ? "This fixture is signed with a public test key, not by an enclave."
-    : att === null
-      ? "Looking up the enclave's record…"
-      : att.kind === "found"
-        ? att.wasmSha256
-          ? `Enclave record found: it ran code ${short(att.wasmSha256, 8)}.`
-          : "Enclave record found."
-        : att.kind === "missing"
-          ? "No enclave record was found for this call."
-          : "The enclave's record couldn't be read from here; open it to check.";
+    : by === "local"
+      ? "Signed by the local test referee on the relay's computer, not by an enclave."
+      : att === null
+        ? "Looking up the enclave's record…"
+        : att.kind === "found"
+          ? att.wasmSha256
+            ? `Enclave record found: it ran code ${short(att.wasmSha256, 8)}.`
+            : "Enclave record found."
+          : att.kind === "missing"
+            ? "No enclave record was found for this call."
+            : "The enclave's record couldn't be read from here; open it to check.";
 
   return (
     <>
@@ -251,7 +255,7 @@ function SignedAndSettled({ index }: { index: number }) {
         href={url}
         linkLabel="Attestation record"
       >
-        {fixture ? "Signed by the test referee" : "Signed by the referee in a sealed enclave"}
+        {by === "enclave" ? "Signed by the referee in a sealed enclave" : "Signed by the test referee"}
       </ProofLine>
       <ProofLine
         check={logged}
@@ -289,7 +293,7 @@ function SignedAndSettled({ index }: { index: number }) {
 // ── Event ─────────────────────────────────────────────────────────────────────────
 
 function EventBody({ index }: { index: number }) {
-  const { match, decoded, verify, seek } = useReplay();
+  const { match, decoded, verify, seek, source } = useReplay();
   const ev = match.events.find((e) => e.index === index);
   const status = useStore(verify, (s) => s.statuses[index] ?? "pending");
   const local = useStore(verify, (s) => s.local[index]);
@@ -390,7 +394,7 @@ function EventBody({ index }: { index: number }) {
               detail={
                 ev.kind === "start"
                   ? "The player list and the sealed draw are the ones the referee signed."
-                  : "The draw revealed at the end is the one sealed at the start, and it comes from the enclave's random source."
+                  : `The draw revealed at the end is the one sealed at the start, and it comes from ${drawSource(signerOf(source, decoded.raw))}.`
               }
             >
               {ev.kind === "start" ? "The draw was sealed" : "The draw was fair"}
@@ -715,6 +719,13 @@ function SummaryBody() {
       <Meta>
         In your browser, from the {decoded.log.length.toLocaleString()}-entry match log and {n} verdicts.
       </Meta>
+      {signerOf(source, decoded.raw) === "local" && (
+        <p className="mt-5 rounded-2xl bg-surface-2 px-4 py-3 text-[0.875rem] leading-snug text-text-2">
+          This match was judged by the local test referee: the same referee code, run on the relay's computer
+          instead of in an enclave. Its signatures and NEAR settlement are checked here as usual, but no
+          enclave vouches for the code that signed.
+        </p>
+      )}
       {source.kind === "fixture" && (
         <p className="mt-5 rounded-2xl bg-surface-2 px-4 py-3 text-[0.875rem] leading-snug text-text-2">
           This is a fixture: a generated match on real Boston Common paths, signed with a public test key. It
@@ -770,7 +781,7 @@ function SummaryBody() {
           {ring && (
             <ProofLine
               check={Object.values(ring).every(Boolean) ? "pass" : "fail"}
-              detail="The secret draw revealed at the end was sealed at the start and signed by the enclave's random source."
+              detail={`The secret draw revealed at the end was sealed at the start and signed by ${drawSource(signerOf(source, decoded.raw))}.`}
             >
               The draw was fair
             </ProofLine>

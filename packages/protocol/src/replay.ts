@@ -36,6 +36,11 @@ export interface ReplayBundle {
     refereePk: string;
     /** OutLayer VRF key, hex. */
     vrfPk: string;
+    /**
+     * Which referee judged. `local` is the test referee run on the relay's machine (not an
+     * enclave), used while OutLayer is unavailable; absent means OutLayer, as before this field.
+     */
+    kind?: "outlayer" | "local";
   };
   /** Every signed verdict in seq order, with the NEAR transaction that applied it. */
   verdicts: { signed: string; txHash: string | null }[];
