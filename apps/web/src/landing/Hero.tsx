@@ -49,10 +49,10 @@ export function Hero({
           </a>
         </div>
       </div>
-      <figure className="l-hunt" aria-label={story ? `${label}. ${story}` : label}>
+      <figure className="l-hunt">
         {scene ? <Hunt scene={scene} map={map} reduced={reduced} /> : <div className="l-hunt-map" />}
         <figcaption className="l-hunt-caption">
-          <span className="l-hunt-label">{label}</span>
+          <span className="l-hunt-label">{story ? `${label}.` : label}</span>
           {story && <span> {story}</span>}
         </figcaption>
       </figure>

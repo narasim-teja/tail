@@ -733,10 +733,18 @@
     grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr);
   }
 }
+/* On a phone the arc sits centred, as on the takeover screen. */
+.l-strike-lock {
+  justify-self: center;
+}
 .l-strike-lock .l-lock {
-  width: min(100%, 220px);
+  width: 232px;
+  max-width: 100%;
 }
 @media (min-width: 960px) {
+  .l-strike-lock {
+    justify-self: start;
+  }
   .l-strike-lock .l-lock {
     width: 300px;
   }
