@@ -6,7 +6,7 @@ Location games get spoofed, because anyone can fake GPS. In TAIL a tag only coun
 iPhones heard each other over Bluetooth. A referee judges that from both phones' sealed,
 signed reports, signs the result, and a NEAR contract settles the money. The referee is built to
 run in a hardware enclave (Intel TDX, on OutLayer). There, the relay that runs the game sees no
-positions and holds no key that signs a verdict. Two things qualify that today:
+positions and holds no key that signs a verdict. Three things qualify that today:
 
 - **The live contract pins a local test referee, not the enclave.** It is the same referee code,
   run on our machine, the one that also runs the relay. We pinned it when OutLayer testnet stopped
