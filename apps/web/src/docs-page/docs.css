@@ -1,0 +1,388 @@
+/*
+ * The docs: long-form reading on the app's paper, in the front page's type and tokens
+ * (landing.css). One column of 68 characters, with the section list beside it on a wide screen
+ * and above it on a phone.
+ */
+
+.d-page {
+  background: var(--g-day);
+}
+.d-layout {
+  max-width: calc(var(--max) + 2 * var(--gutter));
+  margin: 0 auto;
+  padding: var(--xxl) var(--gutter) var(--x5);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "header" "toc" "main";
+  gap: var(--xxl);
+}
+@media (min-width: 1100px) {
+  .d-layout {
+    grid-template-columns: 15rem minmax(0, 44rem);
+    grid-template-areas: ". header" "toc main";
+    column-gap: var(--x4);
+    padding-top: var(--x4);
+  }
+}
+.d-header {
+  grid-area: header;
+}
+.d-h1 {
+  font-size: clamp(2.5rem, 1.8rem + 2.6vw, 4rem);
+  line-height: 1.04;
+  font-weight: 900;
+  letter-spacing: -0.033em;
+  text-wrap: balance;
+}
+.d-lede {
+  margin-top: var(--l);
+  max-width: 36rem;
+  font-size: clamp(1.125rem, 1rem + 0.4vw, 1.3125rem);
+  line-height: 1.45;
+  color: var(--t-inkSoft);
+  text-wrap: pretty;
+}
+
+/* The section list: a sand panel on a phone, a quiet column that stays in view on a wide screen. */
+.d-toc {
+  grid-area: toc;
+  align-self: start;
+  background: var(--g-sand);
+  border-radius: var(--r-l);
+  padding: var(--l) var(--l) var(--s);
+}
+.d-toc ol {
+  margin-top: var(--s);
+  display: grid;
+}
+.d-toc a {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 var(--s);
+  margin: 0 calc(-1 * var(--s));
+  border-radius: var(--r-s);
+  font-weight: 600;
+  font-size: 0.9375rem;
+  text-decoration: none;
+  transition: background-color var(--dur) var(--ease);
+}
+.d-toc a:hover {
+  background: var(--g-sandHover);
+}
+@media (min-width: 1100px) {
+  .d-toc {
+    position: sticky;
+    top: var(--xl);
+    background: none;
+    padding: 0;
+  }
+  .d-toc a:hover {
+    background: var(--g-sand);
+  }
+}
+
+.d-main {
+  grid-area: main;
+  min-width: 0;
+}
+.d-section {
+  padding-top: var(--x3);
+  scroll-margin-top: var(--l);
+}
+.d-section:first-child {
+  padding-top: 0;
+}
+.d-section + .d-section {
+  margin-top: var(--x3);
+  border-top: 1px solid var(--line-day);
+}
+.d-section:focus {
+  outline: none;
+}
+.d-h2 {
+  font-size: clamp(2rem, 1.6rem + 1.4vw, 2.75rem);
+  line-height: 1.1;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+  margin-bottom: var(--xl);
+}
+.d-anchor {
+  text-decoration: none;
+}
+.d-anchor:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 3px;
+  text-underline-offset: 0.15em;
+}
+.d-h3 {
+  font-size: 1.5rem;
+  line-height: 1.25;
+  font-weight: 700;
+  letter-spacing: -0.008em;
+}
+.d-main p,
+.d-main li,
+.d-main dd {
+  max-width: 68ch;
+  text-wrap: pretty;
+}
+.d-main p + p {
+  margin-top: var(--m);
+}
+.d-rule + .d-rule {
+  margin-top: var(--xxl);
+}
+.d-rule .d-h3 {
+  margin-bottom: var(--s);
+}
+.d-main code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.875em;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--g-sand);
+}
+.d-code {
+  margin: var(--l) 0;
+  padding: var(--l);
+  border-radius: var(--r-m);
+  background: var(--g-sand);
+  overflow-x: auto;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+.d-code code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+}
+.d-caption {
+  font-size: 0.9375rem;
+  color: var(--t-inkSoft);
+}
+
+/* Lock and heat, the same moment from both sides. */
+.d-figure {
+  margin: var(--xl) 0 var(--m);
+  padding: var(--xl);
+  border-radius: var(--r-l);
+  background: var(--g-sand);
+  display: grid;
+  gap: var(--xl);
+  align-items: center;
+}
+.d-figure-lock {
+  width: min(100%, 200px);
+  justify-self: center;
+}
+@media (min-width: 600px) {
+  .d-figure {
+    grid-template-columns: 200px minmax(0, 1fr);
+    gap: var(--xxl);
+  }
+}
+.d-sheet {
+  margin-top: var(--xl);
+}
+.d-sheet .l-sheet {
+  justify-self: start;
+  width: min(100%, 480px);
+}
+
+/* The worked hunt. */
+.d-ledger {
+  margin-top: var(--xl);
+}
+.d-ledger table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.d-ledger th,
+.d-ledger td {
+  padding: var(--m) 0 var(--m) var(--m);
+  text-align: right;
+  vertical-align: baseline;
+}
+.d-ledger thead th {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1167em;
+  text-transform: uppercase;
+  color: var(--t-inkSoft);
+}
+.d-ledger thead th:first-child {
+  text-align: left;
+  padding-left: 0;
+}
+.d-ledger tbody tr {
+  border-top: 1px solid var(--line-day);
+}
+.d-ledger tbody th {
+  text-align: left;
+  padding-left: 0;
+  font-weight: 500;
+  font-size: 0.9375rem;
+  line-height: 1.4;
+}
+.d-ledger td {
+  font-size: 1.25rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.d-ledger td.d-total {
+  font-weight: 900;
+}
+.d-out {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1167em;
+  text-transform: uppercase;
+  color: var(--t-inkSoft);
+}
+.d-ledger figcaption {
+  margin-top: var(--m);
+  font-size: 0.9375rem;
+  color: var(--t-inkSoft);
+}
+@media (max-width: 640px) {
+  .d-ledger thead {
+    display: none;
+  }
+  .d-ledger tbody tr {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding: var(--m) 0;
+  }
+  .d-ledger tbody th {
+    grid-column: 1 / -1;
+    padding: 0 0 var(--s);
+  }
+  .d-ledger td {
+    padding: 0;
+    text-align: left;
+    font-size: 1.0625rem;
+  }
+  .d-ledger td::before {
+    content: attr(data-k);
+    display: block;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--t-inkSoft);
+  }
+}
+
+/* What a tag proves: numbered steps on a dotted trail, each with where to check it. */
+.d-steps {
+  margin-top: var(--xl);
+  display: grid;
+}
+.d-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: var(--l);
+  padding-bottom: var(--xxl);
+}
+.d-step::before {
+  content: "";
+  position: absolute;
+  left: 14.5px;
+  top: 40px;
+  bottom: var(--s);
+  width: 3px;
+  background: var(--t-ink);
+  opacity: 0.45;
+  mask: radial-gradient(circle, #000 1.25px, transparent 1.6px) 0 0 / 3px 10px repeat-y;
+}
+.d-step:last-child::before {
+  display: none;
+}
+.d-step-no {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--t-ink);
+  color: var(--g-day);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.d-step .d-h3 {
+  margin-bottom: var(--xs);
+}
+.d-main .d-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--s);
+  margin-top: var(--xs);
+}
+.d-check .l-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+
+.d-limits {
+  display: grid;
+}
+.d-limits li {
+  padding: var(--l) 0;
+  border-top: 1px solid var(--line-day);
+}
+.d-limits li:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.d-limits .d-h3 {
+  font-size: 1.1875rem;
+  margin-bottom: var(--xs);
+}
+.d-list {
+  display: grid;
+  gap: var(--s);
+}
+.d-list li {
+  position: relative;
+  padding-left: var(--xl);
+}
+.d-list li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 0.62em;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--t-ink);
+}
+.d-built {
+  display: grid;
+  margin-bottom: var(--xl);
+}
+.d-built > div {
+  display: grid;
+  gap: var(--xs);
+  padding: var(--l) 0;
+  border-top: 1px solid var(--line-day);
+}
+.d-built > div:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.d-built dt {
+  font-weight: 700;
+  font-size: 1.1875rem;
+}
+@media (min-width: 720px) {
+  .d-built > div {
+    grid-template-columns: 12rem minmax(0, 1fr);
+    gap: var(--xl);
+  }
+}

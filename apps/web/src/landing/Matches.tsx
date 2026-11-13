@@ -5,15 +5,14 @@
 import { useEffect, useRef, useState } from "react";
 import { day } from "../lib/format.ts";
 import type { PublishedMatch } from "../lib/published.ts";
-import { say } from "./Beats.tsx";
 import type { Demo } from "./demos.ts";
 import { ROW_WORDS, type RowState, readRows } from "./near.ts";
+import { capital, say } from "./rules.ts";
 
 const base = import.meta.env.BASE_URL;
 export const matchHref = (id: string) => `${base}?match=${id}`;
 export const demoHref = (d: Pick<Demo, "name" | "query">) => `${base}?fixture=${d.name}${d.query}`;
 
-const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const ending = (survivors: number | undefined, players: number) =>
   survivors === undefined
     ? null

@@ -3,6 +3,7 @@
 // the replay's page.
 //
 //   /                              the landing page
+//   /docs                          the docs (a fragment such as #proof is a section)
 //   /dossier/<account>             a player's dossier
 //   /?presence=<proof>, /?presence the presence proof page
 //   /?match=…, /?fixture=…, and any address with a replay option (relay, t, gl, view), or any
@@ -14,6 +15,7 @@
 
 export type Route =
   | { kind: "landing" }
+  | { kind: "docs" }
   | { kind: "dossier"; account: string }
   | { kind: "presence"; initial: string }
   | { kind: "replay" };
@@ -36,6 +38,7 @@ export function routeOf(pathname: string, search: string, base = "/"): Route {
   const presence = q.get("presence");
   if (presence !== null) return { kind: "presence", initial: presence };
   const root = base.endsWith("/") ? base : `${base}/`;
+  if (pathname === `${root}docs` || pathname === `${root}docs/`) return { kind: "docs" };
   const atRoot = pathname === root || pathname === root.slice(0, -1) || pathname === `${root}index.html`;
   if (atRoot && !REPLAY_PARAMS.some((p) => q.has(p))) return { kind: "landing" };
   return { kind: "replay" };
