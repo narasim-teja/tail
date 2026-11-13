@@ -12,6 +12,7 @@ import {
   decodeSignedHud,
   derivePlayerKey,
   deriveTagKey,
+  equal,
   HintKind,
   type Hud,
   merkleRoot,
@@ -26,7 +27,7 @@ import {
 import type { RadioSighting } from "../../modules/tail-radio";
 import { fakeTime } from "../../test/fake-time";
 import { hudOf, refereePk, sealedHud } from "../../test/referee";
-import { genesis } from "./batch";
+import { type Assert, genesis } from "./batch";
 import { unconfirmed } from "./chain";
 import {
   ANCHOR_POLL_MS,
@@ -70,7 +71,9 @@ const genesisRecord = (): ProximityRecord => ({
 
 const noLog: LogPort = { consistency: async () => [], anchors: async () => [] };
 
-function rig(record: ProximityRecord = genesisRecord(), log: LogPort = noLog) {
+const quickAssert: Assert = async (cdh) => cdh.slice(0, 4);
+
+function rig(record: ProximityRecord = genesisRecord(), log: LogPort = noLog, assert = quickAssert) {
   const t = fakeTime(START);
   const calls: string[] = [];
   const tokens: string[] = [];
@@ -108,7 +111,7 @@ function rig(record: ProximityRecord = genesisRecord(), log: LogPort = noLog) {
     refereePk,
     record,
     radio,
-    assert: async (cdh) => cdh.slice(0, 4),
+    assert,
     batchRequest: async (sealed) => ({
       method: "POST",
       path: "/batch",
@@ -207,6 +210,45 @@ describe("proximity client", () => {
     expect(frames).toEqual(["refused"]);
     expect(r.client.status().over).toBe(true);
     expect(r.calls.slice(-4)).toEqual(["stopScan", "stopBeacon", "stopLocation", "pocket:false"]);
+  });
+
+  test("a chain rebuild while a build awaits its assertion drops that batch with the rest, and the loop goes on", async () => {
+    let hold: (() => void) | null = null;
+    let slow = false;
+    const r = rig(genesisRecord(), noLog, async (cdh) => {
+      if (slow) await new Promise<void>((done) => (hold = done));
+      return cdh.slice(0, 4);
+    });
+    const notices: ProximityNotice[] = [];
+    r.client.onNotice((n) => notices.push(n));
+    r.client.start(keys);
+    for (let i = 0; i < 4; i++) {
+      r.t.advance(BATCH_MS);
+      await flush();
+    }
+    expect(r.client.status().seq).toBe(4);
+    // Seq 4 waits on its assertion while a signed HUD says the chains parted at seq 2.
+    slow = true;
+    r.t.advance(BATCH_MS);
+    await flush();
+    const tip = new Uint8Array(32).fill(9);
+    r.hud({ tick: 1, nextSeq: 2, chainTip: tip });
+    await flush();
+    slow = false;
+    (hold as (() => void) | null)?.();
+    await flush();
+    for (let i = 0; i < 3; i++) {
+      r.t.advance(BATCH_MS);
+      await flush();
+    }
+    expect(notices.filter((n) => n.kind === "build-failed")).toEqual([]);
+    // The batch that was being signed committed first, so the rebuild dropped it with the rest.
+    expect(notices.find((n) => n.kind === "rebuilt")).toMatchObject({ dropped: 5, fromSeq: 2 });
+    const sent = r.batches();
+    const after = sent.slice(sent.findIndex((b) => equal(b.prev, tip)));
+    expect(after.map((b) => b.seq)).toEqual([2, 3, 4]);
+    expect(r.client.status()).toMatchObject({ seq: 5, queued: 0 });
+    expect(r.saved.at(-1)?.outbox.map((it) => it.seq)).toEqual([2, 3, 4]);
   });
 
   test("one client is for one match", () => {

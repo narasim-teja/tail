@@ -737,14 +737,36 @@ export class ProximityClient {
     this.on.notice.emit({ kind: "rejected", seq: r.seq, code: r.code });
   }
 
-  /** Applies what the HUD says about this player's chain (chain.ts). */
+  /**
+   * Applies what the HUD says about this player's chain (chain.ts). The plan is made and carried
+   * out between two builds, so it sees every batch committed so far and no build commits while
+   * the outbox is rebuilt.
+   */
   private async mendChain(hud: Hud): Promise<void> {
     const k = this.k;
     if (!this.reporting || !k) return;
+    const done = await k.builder.between(() => this.applyChainPlan(k.builder, hud));
+    this.save();
+    if (done.kind !== "confirm") this.uploader.restart();
+    if (done.kind === "rebuild" && done.dropped.length > 0)
+      this.on.notice.emit({
+        kind: "rebuilt",
+        dropped: done.dropped.length,
+        fromSeq: done.fromSeq,
+        lost: done.dropped.flatMap((it) => it.actions),
+      });
+    this.refresh();
+  }
+
+  /** Carries out the chain plan for this HUD; says what it did, and what a rebuild dropped. */
+  private applyChainPlan(
+    builder: BatchBuilder,
+    hud: Hud,
+  ): { kind: "confirm" | "resend" } | { kind: "rebuild"; dropped: OutboxItem[]; fromSeq: number } {
     const plan = planChain({
       items: this.outbox.all(),
       confirmed: this.confirmed,
-      builderSeq: k.builder.chain.seq,
+      builderSeq: builder.chain.seq,
       hud,
       handled: this.handled,
       nowMs: this.now(),
@@ -755,11 +777,8 @@ export class ProximityClient {
       if (plan.kind === "resend") {
         for (const it of this.outbox.all()) if (it.seq >= plan.from) this.dropEnvelope(it.hash);
         this.outbox.resendFrom(plan.from);
-        this.uploader.restart();
       }
-      this.save();
-      this.refresh();
-      return;
+      return { kind: plan.kind };
     }
     if (plan.why === "refused" && hud.rejected) this.handled = hud.rejected;
     // Below next_seq the referee took what this phone sent, unless the chains parted there.
@@ -767,17 +786,8 @@ export class ProximityClient {
     const dropped = this.outbox.clear();
     for (const it of dropped) this.dropEnvelope(it.hash);
     this.confirmed = { nextSeq: plan.chain.seq, tip: plan.chain.prev };
-    await k.builder.rebase(plan.chain);
-    this.save();
-    this.uploader.restart();
-    if (dropped.length > 0)
-      this.on.notice.emit({
-        kind: "rebuilt",
-        dropped: dropped.length,
-        fromSeq: plan.chain.seq,
-        lost: dropped.flatMap((it) => it.actions),
-      });
-    this.refresh();
+    builder.rebase(plan.chain);
+    return { kind: "rebuild", dropped, fromSeq: plan.chain.seq };
   }
 
   private updateBlocked(): void {

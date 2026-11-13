@@ -4,7 +4,7 @@
 // open it. The referee accepts a player's batches only with contiguous seqs and matching
 // `prev`, so a seq is consumed only once its sealed batch is safely in the outbox. When the
 // referee's chain and the phone's part (chain.ts), the builder is moved to the referee's
-// position with `rebase`.
+// position with `rebase`, between two builds (`between`).
 
 import {
   type Action,
@@ -86,6 +86,7 @@ export interface BuilderDeps {
 export class BatchBuilder {
   chain: ChainState;
   private busy: Promise<OutboxItem | null> = Promise.resolve(null);
+  private settling = false;
   // What a failed build took from the collectors; the next build sends it with the new data.
   private carry: BatchParts = { fixes: [], sightings: [], actions: [] };
   private readonly now: () => number;
@@ -106,20 +107,37 @@ export class BatchBuilder {
   }
 
   /**
-   * Continues the chain from `chain` (the referee's next seq and tip) once any build in flight
-   * has committed, so no batch is ever built on the abandoned position.
+   * Runs `fn` with no build in flight and none starting until it returns. A rebuild reads the
+   * chain and the outbox, empties the outbox and rebases in one step here: a build that was
+   * awaiting its assertion has committed by then and is dropped with the rest, and no build of
+   * the abandoned chain can commit after the outbox was emptied.
    */
-  rebase(chain: ChainState): Promise<void> {
+  between<T>(fn: () => T): Promise<T> {
     const run = this.busy.then(
-      () => {
-        this.chain = chain;
-      },
-      () => {
-        this.chain = chain;
-      },
+      () => this.exclusive(fn),
+      () => this.exclusive(fn),
     );
-    this.busy = run.then(() => null);
+    this.busy = run.then(
+      () => null,
+      () => null,
+    );
     return run;
+  }
+
+  /** Continues the chain from `chain` (the referee's next seq and tip). Only inside `between`. */
+  rebase(chain: ChainState): void {
+    if (!this.settling)
+      throw new Error("rebase outside between: a build in flight would commit on the old chain");
+    this.chain = chain;
+  }
+
+  private exclusive<T>(fn: () => T): T {
+    this.settling = true;
+    try {
+      return fn();
+    } finally {
+      this.settling = false;
+    }
   }
 
   private async buildOnce(): Promise<OutboxItem> {
