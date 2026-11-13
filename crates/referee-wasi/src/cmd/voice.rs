@@ -16,7 +16,7 @@ use crate::voice::{self, ChatSignature, Fact};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tail_protocol::digest::{sha256, voice_sig_digest};
-use tail_protocol::{merkle, LogEntry, MatchId, SignedVoiceLine, VoiceLine};
+use tail_protocol::{MatchId, SignedVoiceLine, VoiceLine};
 
 const AUTHORITY: &str = "cloud-api.near.ai";
 const DEFAULT_MODEL: &str = "deepseek-ai/DeepSeek-V4.1-Flash-1017";
@@ -37,8 +37,16 @@ struct Input {
     blob: String,
 }
 
-/// The hint and the asker's box key, from the blob and the state.
-fn open_hint(i: &Input) -> Result<(HintBlob, [u8; 32], [u8; 32]), String> {
+struct Opened {
+    hint: HintBlob,
+    asker_pk: [u8; 32],
+    box_sk: [u8; 32],
+    /// `voice::request_nonce` for this hint.
+    nonce: String,
+}
+
+/// The hint, the asker's box key and the request nonce, from the blob and the state.
+fn open_hint(i: &Input) -> Result<Opened, String> {
     let blob = from_b64("blob", &i.blob)?;
     if blob.len() < 16 {
         return Err("blob is too short to name a match".into());
@@ -55,7 +63,13 @@ fn open_hint(i: &Input) -> Result<(HintBlob, [u8; 32], [u8; 32]), String> {
         .box_pks
         .get(usize::from(hint.player))
         .ok_or("hint blob names an unknown player")?;
-    Ok((hint, asker, st.box_sk))
+    let nonce = voice::request_nonce(st.core.log_key(), hint.hint_id);
+    Ok(Opened {
+        hint,
+        asker_pk: asker,
+        box_sk: st.box_sk,
+        nonce,
+    })
 }
 
 struct Completion {
@@ -120,7 +134,12 @@ fn fetch_signature(key: &str, model: &str, c: &Completion) -> Result<ChatSignatu
 
 pub fn run(input: Value) -> Result<Value, String> {
     let i: Input = parse(input)?;
-    let (hint, asker_pk, box_sk) = open_hint(&i)?;
+    let Opened {
+        hint,
+        asker_pk,
+        box_sk,
+        nonce,
+    } = open_hint(&i)?;
     let fact = Fact::new(hint.hint, hint.value)?;
     let question = hint.question.as_deref().map(voice::clean_question).transpose()?;
     // A missing key or a refused model is a broken deployment, not a slow model: say so
@@ -135,7 +154,7 @@ pub fn run(input: Value) -> Result<Value, String> {
     let model = host::author_secret("NEARAI_MODEL").unwrap_or_else(|| DEFAULT_MODEL.to_owned());
     voice::check_model(&model)?;
 
-    let request = voice::request_body(&model, fact, question.as_deref());
+    let request = voice::request_body(&model, fact, question.as_deref(), &nonce);
     let t0 = host::now_ms();
     let completion = match &key {
         Ok(key) => complete(key, &request).map(|c| (key, c)),
@@ -182,16 +201,9 @@ pub fn run(input: Value) -> Result<Value, String> {
         &to_borsh(&SignedVoiceLine { line, sig }),
         tail_protocol::domain::VOICE,
     )?;
-    // The leaf the receipt's log entry will have. Voice changes no state and appends nothing:
-    // the entry joins the log in the tick (or `end`) that takes `log_sealed` as a receipt, and
-    // shows up in that call's own `leaves` and `log_sealed`.
-    let leaf = merkle::leaf(&LogEntry::HintReceipt {
-        hint_id: receipt.hint_id,
-        chat_id: receipt.chat_id.clone(),
-        text_hash: receipt.text_hash,
-        signature: receipt.signature.clone(),
-        signing_address: receipt.signing_address.clone(),
-    });
+    // Voice changes no state and appends nothing: the receipt joins the log in the tick (or
+    // `end`) that takes it, salted for the index it lands at, and shows up in that call's own
+    // `leaves` and `log_sealed`.
     let receipt = vault::seal(
         &box_sk,
         Purpose::Receipt,
@@ -202,14 +214,14 @@ pub fn run(input: Value) -> Result<Value, String> {
 
     // Nothing here names the fact or the words. `signed_text` is what NEAR AI signed
     // (`model:sha256(request):sha256(response)`); the replay needs it to check the signature
-    // that the receipt carries into the log.
+    // that the receipt carries into the log. The request's nonce keeps its hash unguessable.
+    // `hint_id` is public already: the Hint verdict on chain carries it.
     Ok(json!({
         "player": hint.player,
         "hint_id": hint.hint_id,
         "sealed": b64(&sealed),
         "signed_text": signature.as_ref().map(|s| s.text.clone()),
-        "leaves": [b64(&leaf)],
-        "log_sealed": b64(&receipt),
+        "receipt": b64(&receipt),
         "source": if chat.is_some() { "model" } else { "template" },
         "model": model,
         "latency_ms": latency_ms,

@@ -27,8 +27,9 @@ finish(state: State, alpha: String, vrf_signature: &[u8; 64], call_id: CallId,
   9162 proof from the log size the previous Checkpoint anchored (0 for the first) to that
   verdict's `log_size`. The contract checks it before it anchors the new root.
 - HUDs come out unsigned; the wrapper signs them with `hud_sig_digest`.
-- `State` is borsh. It holds `K_tag`, every `K_p`, the VRF signature and recent positions, so it
-  must only leave the enclave sealed. Its `Debug` prints none of that. A `TickError` changes
+- `State` is borsh. It holds `K_tag`, every `K_p`, `K_log`, the VRF signature and recent
+  positions, so it must only leave the enclave sealed. `State::log_key()` hands `K_log` to the
+  wrapper for its own derivations (the voice request nonce). Its `Debug` prints none of that. A `TickError` changes
   nothing: retry with the same sealed blob.
 - The engine keeps the log as a Merkle frontier, not the log itself: the peaks at the last
   anchored size plus the leaf hashes appended since, which every Checkpoint clears. That is
@@ -60,9 +61,14 @@ finish(state: State, alpha: String, vrf_signature: &[u8; 64], call_id: CallId,
   `Rejected` for one refused at validity; then new contacts (by epoch, a, b); then verdicts.
   A Tag's `Verdict` entry comes right after its `Evidence`.
 - `Rejected { player, seq, hash, code }` is written for every batch the engine refuses, with
-  `hash = batch_hash` and `code = Reject::code()` (protocol `reject_code`). `TooOld` has no code
-  of its own yet and is logged as `CLOCK_SKEW`.
-- `Evidence { hunter, target, strike_seq, strike_epoch, epochs }`: `strike_seq` is the batch
+  `hash = batch_hash` and `code = Reject::code()` (protocol `reject_code`; `TooOld` is
+  `TOO_OLD`). An action refused in a valid batch is not logged; `TickOutput.refused` carries it,
+  and `Refuse::code()` is its protocol `refuse_code`, the number the wrapper hands the relay.
+- `Contact`, `HintReceipt` and `Evidence` end in `salt = log_salt(K_log, index)`, with
+  `K_log = derive_log_key(K_m)` and `index` the entry's leaf index. The relay holds the leaf
+  hashes during play, and these entries have few possible values; the salt stops it from
+  hashing guesses. A receipt's salt is set when the tick logs it, not when `voice` makes it.
+- `Evidence { hunter, target, strike_seq, strike_epoch, epochs, salt }`: `strike_seq` is the batch
   that carried the strike, `strike_epoch` the epoch of that batch's `t_ms`, and `epochs` exactly
   the contact epochs that make up the lock at that epoch (ascending; see the lock rule below):
   at least `LOCK_EPOCHS`, all ≥ `lock_from`, one of them the strike epoch or the one before.

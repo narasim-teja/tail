@@ -29,7 +29,9 @@ bun run --cwd packages/protocol vectors            # regenerate (only on a delib
 
 Everything that is signed, hashed or sealed is [borsh](https://borsh.io): little-endian
 integers, `u32` length prefixes, `u8` enum tags in declaration order. Enum variants are only
-ever appended, so a v1 log entry decodes unchanged. Decoders reject trailing bytes.
+ever appended. A v1 log does not decode here: v2 added a salt to `Contact` and `HintReceipt`, and
+the web replay reads v1 logs with its own decoder (`apps/web/src/verify/v1.ts`). Decoders reject
+trailing bytes.
 
 ## Keys and the beacon
 
@@ -38,11 +40,14 @@ ever appended, so a v1 log entry decodes unchanged. Decoders reject trailing byt
 | `K_m`     | 32 random bytes per match, generated in the enclave                                                                       |
 | `K_tag`   | `HKDF-SHA256(salt = ∅, ikm = K_m, info = "tail/tag")`                                                                     |
 | `K_p[i]`  | `HKDF-SHA256(salt = ∅, ikm = K_m, info = "tail/beacon" ‖ u16le(i))`                                                       |
+| `K_log`   | `HKDF-SHA256(salt = ∅, ikm = K_m, info = "tail/log")`                                                                     |
+| log salt  | `HMAC(K_log, "tail/log-salt" ‖ u64le(leaf index))[0..16]`                                                                 |
 | epoch `e` | `floor((now_ms − start_ms) / 15000)`                                                                                      |
 | token     | `HMAC(K_tag, "tag" ‖ u32le(e))[0..4] ‖ HMAC(K_p[i], "tok" ‖ u32le(e))[0..12]`, advertised as one 128-bit BLE service UUID |
 
 Phones keep only tokens whose first 4 bytes match this match's tag for `e−1`, `e` or `e+1`.
-Only the enclave, which holds every `K_p[i]`, can tell whose token it is.
+Only the enclave, which holds every `K_p[i]`, can tell whose token it is. `K_m` stays in the
+enclave until `declassify` releases it with the log after End.
 
 ## Messages
 
@@ -55,7 +60,7 @@ Only the enclave, which holds every `K_p[i]`, can tell whose token it is.
 | `BatchEnvelope`  | `batch, assertion Vec<u8>` (App Attest assertion)                                                                                                                                                                                 |
 | `Verdict`        | `Start`, `Hint { from, to, amount u128, hint_id u32, hint u8 }`, `Tag`, `Forfeit`, `Checkpoint`, `End`                                                                                                                            |
 | `SignedVerdict`  | `match_id, seq u32, prev [u8;32], call_id [u8;16], body Verdict, sig [u8;64]`                                                                                                                                                     |
-| `LogEntry`       | `Batch`, `Contact`, `Verdict`, `HintReceipt` (v1, tags 0–3) · `Tick`, `Rejected`, `Evidence`, `Enrolled` (v2, tags 4–7)                                                                                                           |
+| `LogEntry`       | `Batch`, `Contact`, `Verdict`, `HintReceipt` (tags 0–3) · `Tick`, `Rejected`, `Evidence`, `Enrolled` (v2, tags 4–7)                                                                                                               |
 | `PresenceProof`  | `match_id, contract String, entry LogEntry, index u64, size u64, path Vec<[u8;32]>, accounts [String;2]`                                                                                                                          |
 | `PlayerKeys`     | `match_id, player, start_ms, end_ms, k_tag, k_player, target String`                                                                                                                                                              |
 | `Hud`            | `match_id, player u16, tick, epoch, lock, heat, head u128, status, target, leak?, hint_fact?, tagged_by?, next_seq u32, chain_tip [u8;32], dark_ms u32, tags u8, log_size u64, root [u8;32], rejected Option<(seq u32, code u8)>` |
@@ -64,14 +69,39 @@ Only the enclave, which holds every `K_p[i]`, can tell whose token it is.
 | `CarryRequest`   | `account String, time_ms u64, method String, path String, body Vec<u8>, sig [u8;64]` (TypeScript only)                                                                                                                            |
 | `CarryAck`       | `status u16, received_ms u64, sig [u8;64]` (TypeScript only)                                                                                                                                                                      |
 
-The v2 log entries:
+The log entries:
 
-| Entry      | Fields                                                                      | Written                                                           |
-| ---------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `Tick`     | `tick_no u32, now_ms u64, call_id [u8;16]`                                  | every referee tick                                                |
-| `Rejected` | `player u16, seq u32, hash [u8;32], code u8`                                | for each refused batch (`code`: `RejectCode`/`reject_code`)       |
-| `Evidence` | `hunter u16, target u16, strike_seq u32, strike_epoch u32, epochs Vec<u32>` | just before a Tag's `Verdict` entry: the contact epochs behind it |
-| `Enrolled` | `player u16, account String, key_hash [u8;32], attested bool`               | at start, one per player                                          |
+| Entry         | Fields                                                                                                    | Written                                                           |
+| ------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `Batch`       | `player u16, seq u32, hash [u8;32]`                                                                       | for each accepted batch                                           |
+| `Contact`     | `a u16, b u16, epoch u32, salt [u8;16]`                                                                   | when two players' contact in an epoch is established              |
+| `Verdict`     | `seq u32, digest [u8;32]`                                                                                 | for each verdict                                                  |
+| `HintReceipt` | `hint_id u32, chat_id String, text_hash [u8;32], signature Vec<u8>, signing_address String, salt [u8;16]` | when a Handler line's receipt comes back                          |
+| `Tick`        | `tick_no u32, now_ms u64, call_id [u8;16]`                                                                | every referee tick                                                |
+| `Rejected`    | `player u16, seq u32, hash [u8;32], code u8`                                                              | for each refused batch (`code`: `RejectCode`/`reject_code`)       |
+| `Evidence`    | `hunter u16, target u16, strike_seq u32, strike_epoch u32, epochs Vec<u32>, salt [u8;16]`                 | just before a Tag's `Verdict` entry: the contact epochs behind it |
+| `Enrolled`    | `player u16, account String, key_hash [u8;32], attested bool`                                             | at start, one per player                                          |
+
+**Salts.** During play the relay holds every leaf hash, and the entries it could guess are few:
+`Contact { a, b, epoch }` has about 16,000 values in a 12-player hour, so without a salt the
+relay could hash each one and read the whole contact graph off the leaves, and a template
+`HintReceipt` or an `Evidence` would give its facts away the same way. Those three end in
+`salt = logSalt(K_log, index)` / `log_salt`, bound to the entry's position, so the referee has
+no choice of salt either. After End anyone with the released `K_m` checks every salt:
+`badLogSalts(K_m, log)` returns the indexes that fail, `check_log_salts` the first. The leaf
+rule is unchanged, so the contract's `verify_inclusion` takes salted entries as they are.
+
+**Refusal codes.** Why the referee refused a batch (`Rejected.code`, `Hud.rejected`) and why it
+took no action on a valid batch's Strike or Hint (the tick's `refused[].reason`):
+
+| `RejectCode` / `reject_code` |                | `RefuseCode` / `refuse_code` |                 |
+| ---------------------------- | -------------- | ---------------------------- | --------------- |
+| 1 `UnknownPlayer`            | 7 `ClockSkew`  | 1 `PlayerOut`                | 6 `UnknownHint` |
+| 2 `WrongMatch`               | 8 `FixFlags`   | 2 `TimeUp`                   | 7 `TextTooLong` |
+| 3 `PlayerOut`                | 9 `FixOrder`   | 3 `MatchOver`                | 8 `Cooldown`    |
+| 4 `Seq`                      | 10 `Teleport`  | 4 `Lock`                     | 9 `Funds`       |
+| 5 `Prev`                     | 11 `TimeOrder` | 5 `NoContact`                | 10 `NoFix`      |
+| 6 `Assertion`                | 12 `TooOld`    |                              |                 |
 
 ## Hashes and signatures
 
@@ -129,7 +159,8 @@ A `PresenceProof` says "these two phones were near each other". It is a `Contact
 its index, the log size of a root the contract anchored (a `Checkpoint` or `End`), the audit
 path and the two account ids. `verifyPresence(proof, roots, players)` / `verify_presence`
 recomputes the leaf, checks the path against the anchored root of that size, and maps the
-entry's player indexes to accounts through the contract's player list. The caller reads
+entry's player indexes to accounts through the contract's player list (the entry's salt is
+part of the leaf, so a proof carries it). The caller reads
 `roots` and `players` from `proof.contract` for `proof.match_id`. There is no new signature: the
 proof is as strong as the referee's signature on that root. `presenceProof(...)` builds one
 from the log.

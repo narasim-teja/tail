@@ -83,6 +83,33 @@ export const RejectCode = {
   Teleport: 10,
   /** `t_ms` went backwards against an earlier batch of the same player. */
   TimeOrder: 11,
+  /** Dated before the evidence the referee still keeps, so nothing in it could count. */
+  TooOld: 12,
+} as const;
+
+/**
+ * Why the referee took no action on a valid batch's Strike or Hint: the `reason` of a tick's
+ * `refused` list. The amounts some refusals carry (a lock count, a head) stay with the referee;
+ * the player sees them in the signed HUD.
+ */
+export const RefuseCode = {
+  PlayerOut: 1,
+  TimeUp: 2,
+  /** Only one player is left. */
+  MatchOver: 3,
+  /** Strike: the lock was not full. */
+  Lock: 4,
+  /** Strike: no contact with the target in the strike's epoch or the one before. */
+  NoContact: 5,
+  UnknownHint: 6,
+  /** Hint: the question is over HINT_TEXT_MAX characters. */
+  TextTooLong: 7,
+  /** Hint: too soon after the last one. */
+  Cooldown: 8,
+  /** Hint: the asker's head cannot pay for it. */
+  Funds: 9,
+  /** Hint: no usable fix for the asker or the target. */
+  NoFix: 10,
 } as const;
 
 /** Domain strings. Every hash or MAC input starts with one, so no two contexts collide. */
@@ -104,6 +131,10 @@ export const Domain = {
   keys: "tail/keys/v2",
   /** Signature digest of a VoiceLine, and the seal context of a SignedVoiceLine. */
   voice: "tail/voice/v1",
+  /** HKDF info of K_log, the match's log-salt key. */
+  log: "tail/log",
+  /** HMAC prefix of a log entry's salt. */
+  logSalt: "tail/log-salt",
   /** Seal context of a mesh-carried request (phone → relay). */
   carry: "tail/carry/v1",
   /** Signature digest of the relay's receipt for a carried envelope. */

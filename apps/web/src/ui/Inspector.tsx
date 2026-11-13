@@ -13,7 +13,7 @@ import { drawSource, eventLine, list, statusLabel, TEST_PLAYER } from "../replay
 import type { Selection } from "../replay/state.ts";
 import { attestationUrl, isEnclave } from "../verify/attestation.ts";
 import { explorerTx } from "../verify/chain.ts";
-import { enrolments, type HandlerCheck, localOk, ringOk } from "../verify/checks.ts";
+import { checkSalts, enrolments, type HandlerCheck, localOk, ringOk } from "../verify/checks.ts";
 import { tagEvidence } from "../verify/evidence.ts";
 import { PINS } from "../verify/pins.ts";
 import { matchProblem, summarize } from "../verify/report.ts";
@@ -694,6 +694,7 @@ function SummaryBody() {
   const recordsBad = attestations.filter((a) => a?.kind === "found" && a.check.kind !== "published").length;
   const testPlayers = match.players.filter((p) => p.attested === false);
   const enrolledOk = enrolments(decoded).every((e) => e.attested !== null && e.sameAccount === true);
+  const salts = checkSalts(decoded);
 
   return (
     <>
@@ -829,6 +830,20 @@ function SummaryBody() {
               {testPlayers.length === 0
                 ? "Every phone enrolled with Apple's attestation"
                 : "Not every phone has Apple's attestation"}
+            </ProofLine>
+          )}
+          {salts.kind !== "v1" && (
+            <ProofLine
+              check={salts.kind === "no-key" ? "info" : salts.bad.length === 0 ? "pass" : "fail"}
+              detail={
+                salts.kind === "no-key"
+                  ? "This replay doesn't carry the match key, so the log's salts weren't checked."
+                  : salts.bad.length === 0
+                    ? `All ${salts.salted.toLocaleString()} contact, Handler and tag-evidence entries carry the salt the match key gives their place in the log. The referee released that key only after the end, so during play the server couldn't read them by guessing from its hashes.`
+                    : `${salts.bad.length} of ${salts.salted.toLocaleString()} salted entries carry a salt the match key doesn't give them.`
+              }
+            >
+              The log stayed private during play
             </ProofLine>
           )}
           {quoted.length > 0 && (

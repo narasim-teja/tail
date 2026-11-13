@@ -5,10 +5,12 @@
 import { describe, expect, test } from "bun:test";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
+  badLogSalts,
   decodeLogEntry,
   decodeSignedVerdict,
   enrollClientDataHash,
   equal,
+  fromHex,
   merkleLeaf,
   openSignedHud,
   openSignedVoiceLine,
@@ -808,7 +810,19 @@ describe("the replay", () => {
       b.verdicts.map((v) => decodeSignedVerdict(new Uint8Array(Buffer.from(v.signed, "base64"))).body.kind),
     ).toEqual(["Start", "End"]);
     expect(b.verdicts.every((v) => typeof v.txHash === "string")).toBe(true);
-    expect(b.reveal).toEqual({ vrfAlpha: "vrf:1:x:y", vrfSignature: "00".repeat(64), ring: ["a", "b", "c"] });
+    expect(b.reveal).toEqual({
+      vrfAlpha: "vrf:1:x:y",
+      vrfSignature: "00".repeat(64),
+      ring: ["a", "b", "c"],
+      kM: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    // K_m is released with the log, so every salt checks.
+    expect(
+      badLogSalts(
+        fromHex(b.reveal.kM),
+        b.log.map((e) => decodeLogEntry(new Uint8Array(Buffer.from(e, "base64")))),
+      ),
+    ).toEqual([]);
     // Both forwarded batches come back opened; the one the log never held is dropped.
     expect(b.batches).toEqual([sealed(1), sealed(2)]);
   });

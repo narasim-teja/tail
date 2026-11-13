@@ -6,7 +6,7 @@
 // the log's leaf hashes, the plaintext log after End, and for each Handler line only the message
 // its model signature covers (the words were sealed to the asker). v1: matches recorded before
 // protocol v2, decoded read only with their own verdict format (v1.ts); the checks that need v2
-// data say they were not run.
+// data say they were not run. A v1 log is read with its own entry layouts too (no salts).
 
 import {
   type AnyReplayBundle,
@@ -23,7 +23,7 @@ import {
   sha256,
   verdictDigest,
 } from "@tail/protocol";
-import { decodeSignedVerdictV1, verdictDigestV1 } from "./v1.ts";
+import { decodeLogEntryV1, decodeSignedVerdictV1, verdictDigestV1 } from "./v1.ts";
 
 export class BundleError extends Error {
   override name = "BundleError";
@@ -86,7 +86,13 @@ export interface DecodedBundle {
   /** Positions where the bundle's leaf hash is not the hash of the entry it sent. */
   leafConflicts: number[];
   batches: DecodedBatch[];
-  reveal: { alpha: string; vrfSignature: Uint8Array | null; ring: string[] };
+  reveal: {
+    alpha: string;
+    vrfSignature: Uint8Array | null;
+    ring: string[];
+    /** The match key K_m, released with the log (v2); it derives every log salt. */
+    kM: Uint8Array | null;
+  };
   handler: HandlerLine[];
 }
 
@@ -163,9 +169,10 @@ export function decodeBundle(json: unknown): DecodedBundle {
       txHash: typeof x.txHash === "string" && x.txHash.length > 0 ? x.txHash : null,
     };
   });
+  const decodeEntry = version === 2 ? decodeLogEntry : decodeLogEntryV1;
   const log = raw.log.map((s): DecodedLogEntry => {
     const bytes = attempt(() => fromB64(s)) ?? new Uint8Array(0);
-    return { bytes, entry: attempt(() => decodeLogEntry(bytes)) };
+    return { bytes, entry: attempt(() => decodeEntry(bytes)) };
   });
   const sent = version === 2 ? (raw as ReplayBundleV2).leaves.map((s) => attempt(() => hexOrB64(s))) : [];
   const leaves: Uint8Array[] = [];
@@ -186,6 +193,10 @@ export function decodeBundle(json: unknown): DecodedBundle {
   });
   const sig =
     typeof rev["vrfSignature"] === "string" ? attempt(() => hexOrB64(rev["vrfSignature"] as string)) : null;
+  const kM =
+    version === 2 && typeof rev["kM"] === "string" && /^[0-9a-f]{64}$/i.test(rev["kM"])
+      ? fromHex(rev["kM"])
+      : null;
 
   return {
     raw,
@@ -204,6 +215,7 @@ export function decodeBundle(json: unknown): DecodedBundle {
       alpha: typeof rev["vrfAlpha"] === "string" ? rev["vrfAlpha"] : "",
       vrfSignature: sig && sig.length === 64 ? sig : null,
       ring: strings(rev["ring"]) ? rev["ring"] : [],
+      kM,
     },
     handler: (raw.handler as unknown[]).flatMap((h): HandlerLine[] =>
       isObj(h) && typeof h["hintId"] === "number" && (version === 2 || typeof h["text"] === "string")

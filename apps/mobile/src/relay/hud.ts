@@ -18,13 +18,12 @@ export type HudMessage =
   | { type: "hud"; tick: number; sealed: Uint8Array }
   /** A SignedVoiceLine sealed to this player. */
   | { type: "handler"; sealed: Uint8Array }
-  | { type: "refused"; nonce: number | null; action: string; reason: string }
+  /** `reason` is a protocol RefuseCode (null if the relay sent none). */
+  | { type: "refused"; nonce: number | null; action: string; reason: number | null }
   | { type: "over" };
 
 const num = (v: unknown) => (typeof v === "number" && Number.isSafeInteger(v) ? v : null);
 const str = (v: unknown) => (typeof v === "string" ? v : "");
-/** A refusal reason: the referee's text, or a code number from a newer relay. */
-const reason = (v: unknown) => (typeof v === "number" ? `code ${v}` : str(v));
 
 /** One socket frame → a message, or null for anything malformed or unknown. */
 export function parseHudMessage(text: string): HudMessage | null {
@@ -57,7 +56,7 @@ export function parseHudMessage(text: string): HudMessage | null {
           type: "refused",
           nonce: num(detail["nonce"]),
           action: str(detail["action"]),
-          reason: reason(detail["reason"]),
+          reason: num(detail["reason"]),
         };
       case "over":
         return { type: "over" };

@@ -11,7 +11,7 @@
 // sealed and signed for the asker, and every Checkpoint/End verdict comes with the consistency
 // proof the contract checks it against.
 
-import { decodeSignedVerdict, type SignedVerdict } from "@tail/protocol";
+import { decodeSignedVerdict, RefuseCode, RejectCode, type SignedVerdict } from "@tail/protocol";
 import type { Config } from "./config.ts";
 
 export interface Circle {
@@ -105,7 +105,7 @@ export interface TickInput {
   state: Uint8Array;
   lastSeq: number;
   batches: Uint8Array[];
-  /** The `log_sealed` blobs of voice answers since the last tick: the referee logs their receipts. */
+  /** The `receipt` blobs of voice answers since the last tick: the referee logs them. */
   receipts: Uint8Array[];
 }
 /**
@@ -116,8 +116,20 @@ export interface HintIssued {
   player: number;
   blob: Uint8Array;
 }
-/** A batch or action the referee turned down; `reason` is a protocol RejectCode. */
+/**
+ * A batch or action the referee turned down: `reason` is a protocol RejectCode for a batch
+ * (`rejected`), a RefuseCode for an action (`refused`).
+ */
 export type Refusal = Record<string, unknown> & { player: number; reason: number };
+
+const nameOf = (table: Record<string, number>) => {
+  const names = new Map(Object.entries(table).map(([name, code]) => [code, name]));
+  return (code: number) => names.get(code) ?? `code ${code}`;
+};
+/** A RejectCode in plain words, for the relay's logs ("TooOld"). */
+export const rejectName = nameOf(RejectCode);
+/** A RefuseCode in plain words, for the relay's logs ("Cooldown"). */
+export const refuseName = nameOf(RefuseCode);
 export interface TickResult extends LogAppend {
   callId: string;
   tickNo: number;
@@ -147,9 +159,16 @@ export interface VoiceInput {
   state: Uint8Array;
   blob: Uint8Array;
 }
-export interface VoiceResult extends LogAppend {
+export interface VoiceResult {
   /** The asker. */
   player: number;
+  /** The hint this line answers; public already, in the Hint verdict on chain. */
+  hintId: number;
+  /**
+   * The HintReceipt sealed to the referee, for the next tick (or `end`) to log. Its leaf is not
+   * known yet: the entry is salted for the index it lands at.
+   */
+  receipt: Uint8Array;
   /** SignedVoiceLine sealed to the asker's box key. */
   sealed: Uint8Array;
   /**
@@ -566,7 +585,8 @@ export class RefereeClient implements Referee {
       player: s.int(r, "player"),
       sealed: s.bytes(r, "sealed"),
       signedText: text === null ? null : s.str(r, "signed_text"),
-      ...s.appended(r),
+      hintId: s.int(r, "hint_id"),
+      receipt: s.bytes(r, "receipt"),
     };
   }
 

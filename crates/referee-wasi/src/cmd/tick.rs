@@ -46,13 +46,6 @@ pub(super) fn open_batch(box_sk: &[u8; 32], sealed_b64: &str) -> Result<BatchEnv
     borsh::from_slice(&plain).map_err(|e| format!("not a BatchEnvelope ({e})"))
 }
 
-/// The variant name only: the amounts some reasons carry (a lock count, a head) are the
-/// player's to see in their HUD, not the relay's.
-fn variant<T: std::fmt::Debug>(v: &T) -> String {
-    let s = format!("{v:?}");
-    s.split([' ', '(', '{']).next().unwrap_or_default().to_owned()
-}
-
 fn rejected_json(r: &Rejection) -> Value {
     json!({ "player": r.player, "seq": r.seq, "reason": r.reason.code() })
 }
@@ -62,7 +55,9 @@ fn refused_json(r: &Refusal) -> Value {
         ActionKind::Strike => "strike",
         ActionKind::Hint(_) => "hint",
     };
-    json!({ "player": r.player, "nonce": r.nonce, "action": action, "reason": variant(&r.reason) })
+    // The protocol's `refuse_code` only: the amounts some reasons carry (a lock count, a head)
+    // are the player's to see in their HUD, not the relay's.
+    json!({ "player": r.player, "nonce": r.nonce, "action": action, "reason": r.reason.code() })
 }
 
 pub fn run(input: Value) -> Result<Value, String> {
@@ -154,4 +149,25 @@ pub fn run(input: Value) -> Result<Value, String> {
         "rejected": out.rejected.iter().map(rejected_json).collect::<Vec<_>>(),
         "refused": out.refused.iter().map(refused_json).collect::<Vec<_>>(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use referee_core::Refuse;
+    use tail_protocol::refuse_code;
+
+    #[test]
+    fn a_refusal_leaves_as_its_protocol_code_without_the_amounts() {
+        let r = Refusal {
+            player: 1,
+            nonce: 7,
+            action: ActionKind::Hint(0),
+            reason: Refuse::InsufficientHead { head: 5, price: 9 },
+        };
+        assert_eq!(
+            refused_json(&r),
+            json!({ "player": 1, "nonce": 7, "action": "hint", "reason": refuse_code::FUNDS })
+        );
+    }
 }

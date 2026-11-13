@@ -16,6 +16,7 @@ import {
   type BatchCheck,
   checkBatches,
   checkHandler,
+  checkSalts,
   checkVerdict,
   type Enrolment,
   enrolments,
@@ -23,6 +24,7 @@ import {
   type LocalContext,
   type LocalVerdictCheck,
   localContext,
+  type SaltCheck,
 } from "./checks.ts";
 import {
   anchoredRoots,
@@ -45,6 +47,7 @@ export interface Verification {
   verdictChain: VerdictChainCheck;
   consistency: ConsistencyCheck;
   enrolled: Enrolment[];
+  salts: SaltCheck;
 }
 
 /** The history checks against NEAR's view, which counts only for the pinned contract and match. */
@@ -100,5 +103,6 @@ export function verifyAll(d: DecodedBundle, chain: ChainState, expect: Expect): 
     level: levelFor(d, chain, binding),
     ...historyFor(d, chain, binding),
     enrolled: enrolments(d),
+    salts: checkSalts(d),
   };
 }

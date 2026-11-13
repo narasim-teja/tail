@@ -6,7 +6,8 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LocalReferee, OutLayerReferee } from "../src/referee.ts";
+import { RefuseCode, RejectCode } from "@tail/protocol";
+import { LocalReferee, OutLayerReferee, refuseName, rejectName } from "../src/referee.ts";
 
 const ANSWER = {
   ok: true,
@@ -94,5 +95,14 @@ describe("referee enroll", () => {
     expect(sent["attestation"]).toBe(Buffer.from(PHONE.attestation).toString("base64"));
     expect(sent["challenge"]).toBe(Buffer.from(PHONE.challenge).toString("base64"));
     expect(out.attested).toBeNull();
+  });
+});
+
+describe("refusal codes", () => {
+  test("the relay names every protocol code in its logs, and says an unknown one is a code", () => {
+    expect(refuseName(RefuseCode.Funds)).toBe("Funds");
+    expect(rejectName(RejectCode.TooOld)).toBe("TooOld");
+    for (const c of Object.values(RefuseCode)) expect(refuseName(c)).not.toStartWith("code");
+    expect(refuseName(99)).toBe("code 99");
   });
 });

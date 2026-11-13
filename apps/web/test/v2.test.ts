@@ -5,7 +5,6 @@
 import { describe, expect, test } from "bun:test";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
-  decodeLogEntry,
   encodeLogEntry,
   encodePresenceProof,
   encodeSignedVerdict,
@@ -23,7 +22,7 @@ import { buildMatch, type Match, type MatchEvent } from "../src/model/match.ts";
 import type { ChainState, Expect } from "../src/verify/anchor.ts";
 import { type DecodedBundle, decodeBundle, toB64 } from "../src/verify/bundle.ts";
 import { parseHead } from "../src/verify/chain.ts";
-import { checkBatches, checkHandler, enrolments, isTestPlayer } from "../src/verify/checks.ts";
+import { checkBatches, checkHandler, checkSalts, enrolments, isTestPlayer } from "../src/verify/checks.ts";
 import { evidenceCheck, inclusionOf, tagEvidence } from "../src/verify/evidence.ts";
 import { anchoredRoots, checkConsistency, checkVerdictChain } from "../src/verify/history.ts";
 import { verifyAll } from "../src/verify/index.ts";
@@ -36,6 +35,7 @@ import {
   toPresenceJson,
 } from "../src/verify/presence.ts";
 import { matchProblem } from "../src/verify/report.ts";
+import { decodeLogEntryV1 } from "../src/verify/v1.ts";
 import { chainFor } from "./chain.ts";
 
 const fx = makeFixtures();
@@ -242,7 +242,7 @@ describe("the tag's Evidence entry", () => {
   });
 
   test("a v2 Tag without its Evidence entry fails", () => {
-    const d = withEntry(evAt, { kind: "Contact", a: 0, b: 1, epoch: 0 });
+    const d = withEntry(evAt, { kind: "Contact", a: 0, b: 1, epoch: 0, salt: new Uint8Array(16) });
     expect(evidenceCheck(d, modelOf(d).m, inLog, first)).toEqual({ kind: "missing" });
   });
 
@@ -331,6 +331,35 @@ describe("presence proofs", () => {
 
 // ── 6. unattested players ────────────────────────────────────────────────────────
 
+describe("log salts", () => {
+  test("every contact, receipt and evidence entry carries the salt K_m gives its index", () => {
+    const r = checkSalts(good);
+    expect(r).toMatchObject({ kind: "checked", bad: [] });
+    if (r.kind === "checked") expect(r.salted).toBeGreaterThan(20);
+    expect(verifyAll(good, onChain, EXPECT).salts).toEqual(r);
+    // Both tampered fixtures fail for their own reasons; their salts are the referee's.
+    for (const t of [fx.tampered, fx.tamperedLog])
+      expect(checkSalts(decodeBundle(through(t)))).toMatchObject({ bad: [] });
+  });
+
+  test("a salt moved to another index, or checked with another key, fails; no key, no check", () => {
+    const at = good.log.findIndex((e) => e.entry?.kind === "Contact");
+    const e = good.log[at]?.entry as LogEntry & { kind: "Contact" };
+    const next = good.log.findIndex((x, i) => i > at && x.entry?.kind === "Contact");
+    const other = good.log[next]?.entry as typeof e;
+    const swapped = withEntry(at, { ...e, salt: other.salt });
+    expect(checkSalts(swapped)).toMatchObject({ bad: [at] });
+    const b = clone();
+    b.reveal.kM = "00".repeat(32);
+    expect(checkSalts(decodeBundle(b))).toMatchObject({ kind: "checked" });
+    expect((checkSalts(decodeBundle(b)) as { bad: number[] }).bad.length).toBe(
+      (checkSalts(good) as { salted: number }).salted,
+    );
+    const { kM: _k, ...noKey } = clone().reveal;
+    expect(checkSalts(decodeBundle({ ...clone(), reveal: noKey }))).toEqual({ kind: "no-key" });
+  });
+});
+
 describe("devices", () => {
   test("every fixture phone enrolled with an attestation", () => {
     expect(enrolments(good).every((x) => x.attested === true && x.sameAccount === true)).toBe(true);
@@ -389,10 +418,12 @@ describe("a bundle recorded before protocol v2", () => {
     expect(decodeBundle(b).verdicts.every((x) => x.v === null)).toBe(true);
   });
 
-  test("its log entries are only v1 kinds", () => {
-    const kinds = new Set(fx.v1.log.map((s) => decodeLogEntry(unb64(s)).kind));
+  test("its log entries are only v1 kinds, in the v1 layouts (no salts)", () => {
+    const kinds = new Set(fx.v1.log.map((s) => decodeLogEntryV1(unb64(s)).kind));
     expect([...kinds].sort()).toEqual(["Batch", "Contact", "HintReceipt", "Verdict"]);
+    expect(d.log.every((e) => e.entry !== null)).toBe(true);
     expect(toHex(d.matchId)).toBe(good.raw.match.id);
+    expect(checkSalts(d)).toEqual({ kind: "v1" });
   });
 });
 

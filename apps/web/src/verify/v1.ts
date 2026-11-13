@@ -1,9 +1,19 @@
-// Protocol v1 verdicts, for replays recorded before protocol v2 (read only). A v1 verdict has no
-// `prev` link and a Hint without its kind; its digest is SHA256("tail/verdict/v1" ‖ borsh(match_id,
-// seq, call_id, body)). Nothing new is ever signed this way: the encoder exists so the tests can
-// build a v1 bundle.
+// Protocol v1 verdicts and log entries, for replays recorded before protocol v2 (read only). A v1
+// verdict has no `prev` link and a Hint without its kind; its digest is SHA256("tail/verdict/v1" ‖
+// borsh(match_id, seq, call_id, body)). A v1 log has only the first four entry kinds, and its
+// Contact and HintReceipt carry no salt. Nothing new is ever signed or logged this way: the
+// encoders exist so the tests can build a v1 bundle.
 
-import { concat, Reader, type SignedVerdict, sha256, utf8, type Verdict, Writer } from "@tail/protocol";
+import {
+  concat,
+  type LogEntry,
+  Reader,
+  type SignedVerdict,
+  sha256,
+  utf8,
+  type Verdict,
+  Writer,
+} from "@tail/protocol";
 
 const DOMAIN_V1 = "tail/verdict/v1";
 
@@ -87,3 +97,66 @@ export function decodeSignedVerdictV1(bytes: Uint8Array): SignedVerdict {
 
 export const encodeSignedVerdictV1 = (v: Omit<SignedVerdict, "prev">) =>
   payloadV1(v).fixed(v.sig, 64).bytes();
+
+/**
+ * A v1 Contact or HintReceipt has no salt; it decodes with an empty one, which no salt check
+ * accepts. Leaves are hashed from the bytes as sent, never from a re-encoding, so the empty salt
+ * never reaches a root.
+ */
+export const NO_SALT = new Uint8Array(0);
+
+/** The v1 entry layouts (tags 0–3); a later tag is not a v1 entry. */
+export function decodeLogEntryV1(bytes: Uint8Array): LogEntry {
+  const r = new Reader(bytes);
+  const tag = r.u8();
+  let e: LogEntry;
+  switch (tag) {
+    case 0:
+      e = { kind: "Batch", player: r.u16(), seq: r.u32(), hash: r.fixed(32) };
+      break;
+    case 1:
+      e = { kind: "Contact", a: r.u16(), b: r.u16(), epoch: r.u32(), salt: NO_SALT };
+      break;
+    case 2:
+      e = { kind: "Verdict", seq: r.u32(), digest: r.fixed(32) };
+      break;
+    case 3:
+      e = {
+        kind: "HintReceipt",
+        hintId: r.u32(),
+        chatId: r.string(),
+        textHash: r.fixed(32),
+        signature: r.vecU8(),
+        signingAddress: r.string(),
+        salt: NO_SALT,
+      };
+      break;
+    default:
+      throw new Error(`not a v1 LogEntry tag ${tag}`);
+  }
+  r.done();
+  return e;
+}
+
+export function encodeLogEntryV1(e: LogEntry): Uint8Array {
+  const w = new Writer();
+  switch (e.kind) {
+    case "Batch":
+      return w.u8(0).u16(e.player).u32(e.seq).fixed(e.hash, 32).bytes();
+    case "Contact":
+      return w.u8(1).u16(e.a).u16(e.b).u32(e.epoch).bytes();
+    case "Verdict":
+      return w.u8(2).u32(e.seq).fixed(e.digest, 32).bytes();
+    case "HintReceipt":
+      return w
+        .u8(3)
+        .u32(e.hintId)
+        .string(e.chatId)
+        .fixed(e.textHash, 32)
+        .vecU8(e.signature)
+        .string(e.signingAddress)
+        .bytes();
+    default:
+      throw new Error(`a v1 log has no ${e.kind} entry`);
+  }
+}

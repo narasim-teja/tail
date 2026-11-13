@@ -75,6 +75,7 @@ fn print_trace(r: &referee_sim::Report) {
             strike_seq,
             strike_epoch,
             epochs,
+            ..
         } = e
         {
             println!(

@@ -56,10 +56,11 @@
           36,
           38,
           40
-        ]
+        ],
+        "salt": "d89e5a25eb509daf8e85cde7a9c4bbe7"
       },
-      "borsh": "06020000001f00000028000000050000002100000023000000240000002600000028000000",
-      "leaf": "92910ec884c9c6470091f6fb09d58c23e406be797a75a0502525ccf1612fadd4"
+      "borsh": "06020000001f00000028000000050000002100000023000000240000002600000028000000d89e5a25eb509daf8e85cde7a9c4bbe7",
+      "leaf": "ac3b530e5f65281c1d1ca3867c5e78f163c9753dda1f4516f1c0cf94a8fcdeec"
     },
     {
       "entry": {
@@ -68,10 +69,11 @@
         "target": 1,
         "strikeSeq": 0,
         "strikeEpoch": 0,
-        "epochs": []
+        "epochs": [],
+        "salt": "e436bcda2a5590fee81fffcf6b61f7bd"
       },
-      "borsh": "0600000100000000000000000000000000",
-      "leaf": "b14aa05504b9dabbc6c26700c5197815835c9a4e51687f0fe2e311ce87426ef8"
+      "borsh": "0600000100000000000000000000000000e436bcda2a5590fee81fffcf6b61f7bd",
+      "leaf": "b70387c2714a64891a96eb9f2a7cbd18ab0fa151e350a51527ae99bb0ce84885"
     }
   ]
 }

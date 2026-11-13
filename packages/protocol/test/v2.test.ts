@@ -3,7 +3,10 @@
 
 import { describe, expect, test } from "bun:test";
 import { ed25519 } from "@noble/curves/ed25519.js";
+import { hmac } from "@noble/hashes/hmac.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import {
+  badLogSalts,
   boxPublicKey,
   carryAckDigest,
   decodeCarryAck,
@@ -14,12 +17,16 @@ import {
   decodeSignedHud,
   decodeSignedPlayerKeys,
   decodeSignedVoiceLine,
+  deriveLogKey,
   encodeHud,
   encodeLogEntry,
   encodePresenceProof,
   fromHex,
   hudSigDigest,
   keysSigDigest,
+  type LogEntry,
+  logEntrySalt,
+  logSalt,
   merkleLeaf,
   open,
   openCarry,
@@ -48,6 +55,7 @@ import hudV from "../vectors/hud.json";
 import logV from "../vectors/log.json";
 import merkleV from "../vectors/merkle.json";
 import presenceV from "../vectors/presence.json";
+import saltV from "../vectors/salt.json";
 
 const h = fromHex;
 
@@ -63,10 +71,12 @@ describe("log entries", () => {
     expect(decodeLogEntry(h(logV.entries[1]?.borsh as string))).toMatchObject({ attested: false });
   });
 
-  test("v1 entries keep their tags and bytes", () => {
+  test("the original kinds keep their tags; Contact and HintReceipt end in their salt", () => {
     const tags = merkleV.entries.map((e) => e.borsh.slice(0, 2));
     expect(tags).toEqual(["00", "01", "02", "03", "00", "01", "02"]);
     for (const e of merkleV.entries) expect(toHex(encodeLogEntry(decodeLogEntry(h(e.borsh))))).toBe(e.borsh);
+    const contact = decodeLogEntry(h(merkleV.entries[1]?.borsh as string));
+    expect(merkleV.entries[1]?.borsh.endsWith(toHex(logEntrySalt(contact) as Uint8Array))).toBe(true);
   });
 
   test("an unknown tag, or a bool that is not 0 or 1, is refused", () => {
@@ -74,6 +84,32 @@ describe("log entries", () => {
     const enrolled = h(logV.entries[0]?.borsh as string);
     enrolled[enrolled.length - 1] = 2;
     expect(() => decodeLogEntry(enrolled)).toThrow("invalid bool");
+  });
+});
+
+describe("log salts", () => {
+  test("K_log and the salts match the vectors and an independent HMAC", () => {
+    const kLog = deriveLogKey(h(saltV.K_m));
+    expect(toHex(kLog)).toBe(saltV.K_log);
+    for (const { index, salt } of saltV.salts) {
+      expect(toHex(logSalt(kLog, index))).toBe(salt);
+      const msg = new Uint8Array([...new TextEncoder().encode("tail/log-salt"), ...new Uint8Array(8)]);
+      new DataView(msg.buffer).setBigUint64(msg.length - 8, BigInt(index), true);
+      expect(toHex(hmac(sha256, kLog, msg).slice(0, 16))).toBe(salt);
+    }
+  });
+
+  test("every salt in the golden logs checks against K_m; a moved or altered one does not", () => {
+    const km = h(saltV.K_m);
+    const merkle = merkleV.entries.map((e) => decodeLogEntry(h(e.borsh)));
+    const log = logV.entries.map((e) => decodeLogEntry(h(e.borsh)));
+    expect(badLogSalts(km, merkle)).toEqual([]);
+    expect(badLogSalts(km, log)).toEqual([]);
+    // The Contact at 1 moved to 2: its salt is bound to index 1.
+    const moved = [merkle[0], merkle[2], merkle[1]] as LogEntry[];
+    expect(badLogSalts(km, moved)).toEqual([2]);
+    expect(badLogSalts(new Uint8Array(32), merkle)).toEqual([1, 3, 5]);
+    expect(badLogSalts(km, [null, merkle[1] as LogEntry])).toEqual([]);
   });
 });
 
@@ -166,7 +202,7 @@ describe("presence proofs", () => {
     });
     const badPath = { ...proof, path: proof.path.map((p, i) => (i === 0 ? new Uint8Array(32) : p)) };
     expect(verifyPresence(badPath, roots, presenceV.players)).toEqual({ ok: false, why: "bad-path" });
-    const otherEpoch = { ...proof, entry: { kind: "Contact" as const, a: 0, b: 1, epoch: 4_000_001 } };
+    const otherEpoch = { ...proof, entry: { ...proof.entry, epoch: 4_000_001 } as LogEntry };
     expect(verifyPresence(otherEpoch, roots, presenceV.players)).toEqual({ ok: false, why: "bad-path" });
     const swapped = { ...proof, accounts: ["bob.tail.testnet", "alice.tail.testnet"] as [string, string] };
     expect(verifyPresence(swapped, roots, presenceV.players)).toEqual({ ok: false, why: "wrong-accounts" });

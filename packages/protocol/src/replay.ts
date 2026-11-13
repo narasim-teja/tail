@@ -98,7 +98,11 @@ export interface ReplayBundleV2 {
   log: string[];
   /** As in version 1: declassified batches (b64 borsh Batch), each one a logged `Batch` entry. */
   batches: string[];
-  reveal: ReplayBundle["reveal"];
+  /**
+   * The ring reveal from End, and `kM`: the match key K_m (hex), which the referee releases with
+   * the log. K_log = HKDF(K_m, "tail/log") gives every salted entry's salt (badLogSalts).
+   */
+  reveal: ReplayBundle["reveal"] & { kM: string };
   devices: ReplayDevice[];
   /**
    * Hints the Handler answered. The words were sealed to the asker, so the relay never had them;

@@ -235,6 +235,8 @@ struct Sim<'a> {
     anchored: (u64, Hash),
     /// Tags each player has made, by referee index.
     tags: Vec<u8>,
+    /// `derive_log_key(K_m)`, to check every salt as a verifier does after declassify.
+    k_log: Hash,
 }
 
 /// Which call produced a batch of verdicts and log entries.
@@ -338,6 +340,7 @@ pub fn run_seeded(sc: &Scenario, seed: u64) -> Result<Report, String> {
         last_digest: [0; 32],
         anchored: (0, merkle::empty_root()),
         tags: vec![0; n],
+        k_log: tail_protocol::beacon::derive_log_key(&k_m),
     };
     sim.check_enrolled(&started.log)?;
     sim.record(0, Call::Start, &started.verdicts, &[], &started.log)?;
@@ -757,6 +760,12 @@ impl Sim<'_> {
             if let LogEntry::Verdict { seq, digest } = e {
                 by_seq.insert(*seq, (*digest, self.leaves.len()));
             }
+            let index = self.leaves.len() as u64;
+            if e.salt()
+                .is_some_and(|s| *s != tail_protocol::beacon::log_salt(&self.k_log, index))
+            {
+                return Err(format!("log entry {index} has a salt K_log did not give it"));
+            }
             self.leaves.push(merkle::leaf(e));
             self.report.log.push(e.clone());
         }
@@ -835,17 +844,16 @@ impl Sim<'_> {
             strike_seq,
             strike_epoch,
             epochs,
+            ..
         }) = verdict_at.checked_sub(1).map(|i| &log[i])
         else {
             return Err(format!("Tag {hunter} → {target} has no Evidence before it"));
         };
         let pair = (hunter.min(target), hunter.max(target));
         let logged = |epoch: u32| {
-            log[..verdict_at].contains(&LogEntry::Contact {
-                a: pair.0,
-                b: pair.1,
-                epoch,
-            })
+            log[..verdict_at].iter().any(
+                |x| matches!(*x, LogEntry::Contact { a, b, epoch: e, .. } if (a, b) == pair && e == epoch),
+            )
         };
         let justified = (*ev_hunter, *ev_target) == (hunter, target)
             && epochs.len() as u32 >= LOCK_EPOCHS

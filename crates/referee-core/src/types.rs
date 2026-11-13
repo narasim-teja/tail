@@ -3,7 +3,8 @@
 use crate::state::State;
 use borsh::{BorshDeserialize, BorshSerialize};
 use tail_protocol::{
-    reject_code, BatchEnvelope, CallId, Hash, HintFact, Hud, LogEntry, MatchId, PlayerKeys, VerdictPayload,
+    refuse_code, reject_code, BatchEnvelope, CallId, Hash, HintFact, Hud, LogEntry, MatchId, PlayerKeys,
+    VerdictPayload,
 };
 
 /// A circle on the map: the play zone or a safehouse.
@@ -105,8 +106,6 @@ pub enum Reject {
 
 impl Reject {
     /// The protocol's `reject_code` for this reason: what `LogEntry::Rejected` and the HUD carry.
-    /// `TooOld` has no code of its own in the protocol yet; a batch dated before the kept
-    /// evidence is outside the window the referee clock accepts, so it shares `CLOCK_SKEW`.
     pub fn code(&self) -> u8 {
         match self {
             Reject::UnknownPlayer => reject_code::UNKNOWN_PLAYER,
@@ -115,7 +114,8 @@ impl Reject {
             Reject::Seq { .. } => reject_code::SEQ,
             Reject::Prev => reject_code::PREV,
             Reject::Assertion(_) => reject_code::ASSERTION,
-            Reject::ClockSkew { .. } | Reject::TooOld { .. } => reject_code::CLOCK_SKEW,
+            Reject::ClockSkew { .. } => reject_code::CLOCK_SKEW,
+            Reject::TooOld { .. } => reject_code::TOO_OLD,
             Reject::BatchOrder { .. } => reject_code::TIME_ORDER,
             Reject::FixFlags { .. } => reject_code::FIX_FLAGS,
             Reject::FixOrder => reject_code::FIX_ORDER,
@@ -156,6 +156,25 @@ pub enum Refuse {
     },
     /// Hint: the referee has no usable fix for the asker or the target (TREND: also 60 s ago).
     NoFix,
+}
+
+impl Refuse {
+    /// The protocol's `refuse_code` for this reason: what a tick's `refused` list carries. The
+    /// amounts some reasons hold stay inside the referee.
+    pub fn code(&self) -> u8 {
+        match self {
+            Refuse::PlayerOut => refuse_code::PLAYER_OUT,
+            Refuse::TimeUp => refuse_code::TIME_UP,
+            Refuse::MatchOver => refuse_code::MATCH_OVER,
+            Refuse::Lock { .. } => refuse_code::LOCK,
+            Refuse::NoContact => refuse_code::NO_CONTACT,
+            Refuse::UnknownHint => refuse_code::UNKNOWN_HINT,
+            Refuse::TextTooLong => refuse_code::TEXT_TOO_LONG,
+            Refuse::Cooldown { .. } => refuse_code::COOLDOWN,
+            Refuse::InsufficientHead { .. } => refuse_code::FUNDS,
+            Refuse::NoFix => refuse_code::NO_FIX,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

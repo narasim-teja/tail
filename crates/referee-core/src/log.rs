@@ -73,7 +73,12 @@ mod tests {
     use super::*;
 
     fn entry(i: u32) -> LogEntry {
-        LogEntry::Contact { a: 0, b: 1, epoch: i }
+        LogEntry::Contact {
+            a: 0,
+            b: 1,
+            epoch: i,
+            salt: [0; 16],
+        }
     }
 
     #[test]

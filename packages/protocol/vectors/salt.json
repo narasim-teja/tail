@@ -1,0 +1,22 @@
+{
+  "K_m": "f57ecf9ac2a2079a952a32030fcec9d0975e812aa79776ac7afb904e76b50ba9",
+  "K_log": "8bfde1b9a7ac69597612cff918ff443cf4d66bf818ce88660b555a8705a3d29b",
+  "salts": [
+    {
+      "index": 0,
+      "salt": "fb91bc1df22b260360ca19dbeec1b656"
+    },
+    {
+      "index": 1,
+      "salt": "ea8abf556b4f8371e5dd305da38d3a4f"
+    },
+    {
+      "index": 7,
+      "salt": "760a57434332fdfb3a5743aaff3ad977"
+    },
+    {
+      "index": 4294967297,
+      "salt": "d7aa0cc00b1950e2b682b5909b641a22"
+    }
+  ]
+}

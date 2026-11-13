@@ -14,7 +14,6 @@
 
 import {
   decodeLogEntry,
-  fromHex,
   type ReplayBundle,
   type ReplayBundleV2,
   type ReplayDevice,
@@ -159,26 +158,34 @@ export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: R
 }
 
 /**
- * Version 2: the leaves beside the declassified log, and each answered hint by the `hintId` of
- * its receipt. The relay never learnt a hint's id (the hint was sealed to the referee); it finds
- * it by looking up the voice answer's leaf in the declassified log. A line whose receipt the
- * referee did not log (it came too late) has nothing to be checked against, so it is left out.
+ * Version 2: the leaves beside the declassified log, K_m (released with it, so the replay can
+ * check every log salt), and each answered hint by its id, with the text NEAR AI signed. A line
+ * whose receipt the referee did not log (it came too late) has nothing to be checked against,
+ * so it is left out.
  */
 function bundleV2(
   store: Store,
   m: MatchRow,
-  common: Omit<ReplayBundleV2, "version" | "leaves" | "handler">,
+  common: Omit<ReplayBundleV2, "version" | "leaves" | "handler" | "reveal"> & {
+    reveal: ReplayBundle["reveal"];
+  },
 ): ReplayBundleV2 {
-  const leaves = store.leaves(m.match_id);
-  const log = store.log(m.match_id);
-  const handler: ReplayBundleV2["handler"] = [];
-  for (const h of store.voiceHints(m.match_id, "answered")) {
-    for (const leaf of h.leaves ?? []) {
-      const i = store.leafIndex(m.match_id, fromHex(leaf), leaves.length);
-      const e = i === undefined ? undefined : log[i];
-      const entry = e ? decodeLogEntry(e) : undefined;
-      if (entry?.kind === "HintReceipt") handler.push({ hintId: entry.hintId, signedText: h.signed_text });
-    }
-  }
-  return { version: 2, ...common, leaves: leaves.map(toHex), handler };
+  const logged = new Set(
+    store.log(m.match_id).flatMap((e) => {
+      const entry = decodeLogEntry(e);
+      return entry.kind === "HintReceipt" ? [entry.hintId] : [];
+    }),
+  );
+  const handler: ReplayBundleV2["handler"] = store
+    .voiceHints(m.match_id, "answered")
+    .flatMap((h) =>
+      h.hint_id !== null && logged.has(h.hint_id) ? [{ hintId: h.hint_id, signedText: h.signed_text }] : [],
+    );
+  return {
+    version: 2,
+    ...common,
+    reveal: { ...common.reveal, kM: String(m.reveal?.["k_m"] ?? "") },
+    leaves: store.leaves(m.match_id).map(toHex),
+    handler,
+  };
 }

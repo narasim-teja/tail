@@ -8,9 +8,15 @@ import { hkdf } from "@noble/hashes/hkdf.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { Writer } from "./borsh.ts";
-import { concat, equal, fixed, readU64le, toHex, u16le, u32le, utf8 } from "./bytes.ts";
+import { concat, equal, fixed, readU64le, toHex, u16le, u32le, u64le, utf8 } from "./bytes.ts";
 import { Domain, EPOCH_MS } from "./constants.ts";
-import { type Batch, encodeBatch, encodeVerdictPayload, type VerdictPayload } from "./messages.ts";
+import {
+  type Batch,
+  encodeBatch,
+  encodeVerdictPayload,
+  type LogEntry,
+  type VerdictPayload,
+} from "./messages.ts";
 
 export { sha256 };
 
@@ -78,6 +84,39 @@ export function resolveToken(
     if (equal(token, beaconToken(kTag, kPlayers[i] as Uint8Array, epoch))) return i;
   }
   return undefined;
+}
+
+// ── Log salts (4.11) ────────────────────────────────────────────────────────────
+
+/**
+ * K_log: salts the log entries an observer could otherwise guess from their leaf hash. Only the
+ * referee holds it during play; declassify releases K_m after End, so anyone can derive it then.
+ */
+export const deriveLogKey = (km: Uint8Array) => derive(km, utf8(Domain.log));
+
+/**
+ * The salt of the log entry at leaf `index`: HMAC-SHA256(K_log, "tail/log-salt" ‖ u64le(index))
+ * truncated to 16 bytes. Bound to the index, so the referee has no choice of salt.
+ */
+export const logSalt = (kLog: Uint8Array, index: number) =>
+  hmac(sha256, fixed(kLog, 32, "K_log"), concat(utf8(Domain.logSalt), u64le(BigInt(index)))).slice(0, 16);
+
+/** The entry's salt, for the kinds that carry one (Contact, HintReceipt, Evidence). */
+export const logEntrySalt = (e: LogEntry): Uint8Array | null =>
+  e.kind === "Contact" || e.kind === "HintReceipt" || e.kind === "Evidence" ? e.salt : null;
+
+/**
+ * Checks the salt of every salted entry of a match log (index 0 first) against K_m. Returns the
+ * indexes whose salt is not logSalt(K_log, index); `null` entries (undecodable) are skipped.
+ */
+export function badLogSalts(km: Uint8Array, log: readonly (LogEntry | null)[]): number[] {
+  const kLog = deriveLogKey(km);
+  const bad: number[] = [];
+  log.forEach((e, i) => {
+    const salt = e ? logEntrySalt(e) : null;
+    if (salt && !equal(salt, logSalt(kLog, i))) bad.push(i);
+  });
+  return bad;
 }
 
 // ── Batches and App Attest (4.3, 4.4) ───────────────────────────────────────────

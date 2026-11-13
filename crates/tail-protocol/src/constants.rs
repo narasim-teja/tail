@@ -77,6 +77,31 @@ pub mod reject_code {
     pub const TELEPORT: u8 = 10;
     /// `t_ms` went backwards against an earlier batch of the same player.
     pub const TIME_ORDER: u8 = 11;
+    /// Dated before the evidence the referee still keeps, so nothing in it could count.
+    pub const TOO_OLD: u8 = 12;
+}
+
+/// Why the referee took no action on a valid batch's Strike or Hint: the `reason` of a tick's
+/// `refused` list. The amounts some refusals carry (a lock count, a head) stay with the referee;
+/// the player sees them in the signed HUD.
+pub mod refuse_code {
+    pub const PLAYER_OUT: u8 = 1;
+    pub const TIME_UP: u8 = 2;
+    /// Only one player is left.
+    pub const MATCH_OVER: u8 = 3;
+    /// Strike: the lock was not full.
+    pub const LOCK: u8 = 4;
+    /// Strike: no contact with the target in the strike's epoch or the one before.
+    pub const NO_CONTACT: u8 = 5;
+    pub const UNKNOWN_HINT: u8 = 6;
+    /// Hint: the question is over `HINT_TEXT_MAX` characters.
+    pub const TEXT_TOO_LONG: u8 = 7;
+    /// Hint: too soon after the last one.
+    pub const COOLDOWN: u8 = 8;
+    /// Hint: the asker's head cannot pay for it.
+    pub const FUNDS: u8 = 9;
+    /// Hint: no usable fix for the asker or the target.
+    pub const NO_FIX: u8 = 10;
 }
 
 pub mod domain {
@@ -97,4 +122,8 @@ pub mod domain {
     pub const KEYS: &[u8] = b"tail/keys/v2";
     /// Signature digest of a `VoiceLine`, and the seal AAD of a `SignedVoiceLine`.
     pub const VOICE: &[u8] = b"tail/voice/v1";
+    /// HKDF info of `K_log`, the match's log-salt key.
+    pub const LOG: &[u8] = b"tail/log";
+    /// HMAC prefix of a log entry's salt.
+    pub const LOG_SALT: &[u8] = b"tail/log-salt";
 }

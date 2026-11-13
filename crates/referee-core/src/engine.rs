@@ -18,15 +18,17 @@ use crate::{
     RECEIPT_WINDOW_MS, TREND_SAME_M,
 };
 use std::collections::BTreeMap;
-use tail_protocol::beacon::{beacon_token, derive_player_key, derive_tag_key, epoch_at};
+use tail_protocol::beacon::{
+    beacon_token, derive_log_key, derive_player_key, derive_tag_key, epoch_at, log_salt,
+};
 use tail_protocol::digest::{batch_client_data_hash, batch_hash, sha256, verdict_digest};
 use tail_protocol::{
     constants::{hint_kind, target_status},
     hint_price, ring, Action, Batch, BatchEnvelope, CallId, Fix, GridCell, Hash, HintFact, Hud, LogEntry,
-    PlayerKeys, Token, Verdict, VerdictPayload, CHECKPOINT_MS, CLOCK_SKEW_MS, DARK_FORFEIT_MS, DARK_LEAK_MS,
-    EPOCH_MS, FIX_WINDOW_MS, GEO_SLACK_M, HINT_COOLDOWN_MS, HINT_NEAR_M, HINT_TEXT_MAX, HINT_TREND_MS,
-    LEAK_CELL_M, LOCK_EPOCHS, MAX_ACC_M, MAX_SPEED_MPS, MIN_SAMPLES, RSSI_MIN_DBM, TELEPORT_MPS,
-    VEHICLE_FREEZE_MS, VEHICLE_HOLD_MS, WINDOW_EPOCHS,
+    PlayerKeys, Salt, Token, Verdict, VerdictPayload, CHECKPOINT_MS, CLOCK_SKEW_MS, DARK_FORFEIT_MS,
+    DARK_LEAK_MS, EPOCH_MS, FIX_WINDOW_MS, GEO_SLACK_M, HINT_COOLDOWN_MS, HINT_NEAR_M, HINT_TEXT_MAX,
+    HINT_TREND_MS, LEAK_CELL_M, LOCK_EPOCHS, MAX_ACC_M, MAX_SPEED_MPS, MIN_SAMPLES, RSSI_MIN_DBM,
+    TELEPORT_MPS, VEHICLE_FREEZE_MS, VEHICLE_HOLD_MS, WINDOW_EPOCHS,
 };
 
 /// What one call produces besides the state.
@@ -124,6 +126,7 @@ pub fn init(
         secrets: Secrets {
             k_tag,
             k_players,
+            k_log: derive_log_key(k_m),
             vrf_signature: *vrf_signature,
         },
         ring_commit: ring::ring_commit(vrf_signature),
@@ -410,6 +413,12 @@ impl State {
             .map(|i| i as u16)
     }
 
+    /// The salt of the entry appended next: bound to its leaf index, so it is the same whoever
+    /// computes it and the relay cannot test guesses of the entry against its leaf hash.
+    fn next_salt(&self) -> Salt {
+        log_salt(&self.secrets.k_log, self.log.size())
+    }
+
     fn append(&mut self, out: &mut Out, e: LogEntry) {
         self.log.push(&e);
         out.log.push(e);
@@ -462,6 +471,7 @@ impl State {
                     text_hash: r.text_hash,
                     signature: r.signature,
                     signing_address: r.signing_address,
+                    salt: self.next_salt(),
                 };
                 self.append(out, entry);
             }
@@ -841,6 +851,7 @@ impl State {
                     a: c.a,
                     b: c.b,
                     epoch: c.epoch,
+                    salt: self.next_salt(),
                 },
             );
         }
@@ -1017,6 +1028,7 @@ impl State {
                         strike_seq: seq,
                         strike_epoch: e,
                         epochs,
+                        salt: self.next_salt(),
                     },
                 );
                 self.verdict(out, Verdict::Tag { hunter: h, target: t });

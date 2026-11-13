@@ -6,7 +6,8 @@ use borsh::BorshDeserialize;
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 use serde_json::Value;
 use tail_protocol::beacon::{
-    beacon_tag, beacon_token, derive_player_key, derive_tag_key, resolve_token, tag_matches,
+    beacon_tag, beacon_token, check_log_salts, derive_log_key, derive_player_key, derive_tag_key, log_salt,
+    resolve_token, tag_matches,
 };
 use tail_protocol::digest::{
     batch_client_data_hash, batch_hash, enroll_client_data_hash, hud_sig_digest, keys_sig_digest,
@@ -57,6 +58,37 @@ fn beacon_keys_and_tokens_match() {
         assert_eq!(resolve_token(&kp, &k_tag, &token, epoch), Some(player as u16));
         assert_eq!(resolve_token(&kp, &k_tag, &token, epoch + 2), None);
     }
+}
+
+#[test]
+fn log_salts_match_and_check() {
+    let v = load("salt");
+    let km: [u8; 32] = arr(&v["K_m"]);
+    let k_log = derive_log_key(&km);
+    assert_eq!(k_log, arr::<32>(&v["K_log"]));
+    for s in v["salts"].as_array().unwrap() {
+        assert_eq!(log_salt(&k_log, num(&s["index"])), arr::<16>(&s["salt"]));
+    }
+    let decode = |name: &str| -> Vec<LogEntry> {
+        load(name)["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| LogEntry::try_from_slice(&bytes(&e["borsh"])).unwrap())
+            .collect()
+    };
+    let merkle_log = decode("merkle");
+    assert_eq!(check_log_salts(&km, &merkle_log), Ok(()));
+    assert_eq!(check_log_salts(&km, &decode("log")), Ok(()));
+    // A salt is bound to its index: the Contact at 1 moved to 2 no longer checks.
+    let moved = [
+        merkle_log[0].clone(),
+        merkle_log[2].clone(),
+        merkle_log[1].clone(),
+    ];
+    assert_eq!(check_log_salts(&km, &moved), Err(2));
+    assert_eq!(check_log_salts(&[0; 32], &merkle_log), Err(1));
+    assert_eq!(merkle_log[2].salt(), None, "a Verdict has no salt");
 }
 
 #[test]

@@ -7,6 +7,11 @@ pub type MatchId = [u8; 16];
 pub type CallId = [u8; 16];
 pub type Token = [u8; 16];
 pub type Hash = [u8; 32];
+/// Last field of the log entries whose other fields are guessable (`Contact`, `HintReceipt`,
+/// `Evidence`): `log_salt(K_log, leaf index)`. During play the relay holds every leaf hash, and
+/// without the salt it could hash each of the few thousand possible `Contact { a, b, epoch }`
+/// and read the whole contact graph off the leaves.
+pub type Salt = [u8; 16];
 
 // ── Phone → enclave ─────────────────────────────────────────────────────────────
 
@@ -148,6 +153,7 @@ pub enum LogEntry {
         a: u16,
         b: u16,
         epoch: u32,
+        salt: Salt,
     },
     Verdict {
         seq: u32,
@@ -159,6 +165,7 @@ pub enum LogEntry {
         text_hash: Hash,
         signature: Vec<u8>,
         signing_address: String,
+        salt: Salt,
     },
     /// One referee tick: when it ran and which OutLayer call ran it.
     Tick {
@@ -181,6 +188,7 @@ pub enum LogEntry {
         strike_seq: u32,
         strike_epoch: u32,
         epochs: Vec<u32>,
+        salt: Salt,
     },
     /// At start, one per player: who plays as index `player`, with which device key.
     Enrolled {
@@ -189,6 +197,18 @@ pub enum LogEntry {
         key_hash: Hash,
         attested: bool,
     },
+}
+
+impl LogEntry {
+    /// The entry's salt, for the kinds that carry one.
+    pub fn salt(&self) -> Option<&Salt> {
+        match self {
+            LogEntry::Contact { salt, .. }
+            | LogEntry::HintReceipt { salt, .. }
+            | LogEntry::Evidence { salt, .. } => Some(salt),
+            _ => None,
+        }
+    }
 }
 
 /// "These two phones were near each other": a `LogEntry::Contact` with its audit path to a root

@@ -94,7 +94,8 @@ sealed HUD when the relay accepted its batch. The keys live in `RELAY_KEYS_DIR` 
 4. Then: `{type: "ready", player}`, `{type: "keys", sealed}`, the latest `{type: "hud", tick, sealed}`,
    the Handler lines voiced so far for the player's own hints, and from then on every new HUD,
    `{type: "handler", match_id, sealed}` (the Handler's line for the player's own hint, sent to
-   no one else), `{type: "rejected" | "refused", detail}` (`detail.reason` a `RejectCode`) and
+   no one else), `{type: "rejected" | "refused", detail}` (`detail.reason` a `RejectCode` for a rejected
+   batch, a `RefuseCode` for a refused action; the relay logs them by name) and
    `{type: "over"}`. Everything sealed is signed by the referee: `SignedHud` (`tail/hud/v2`),
    `SignedPlayerKeys` (`tail/keys/v2`), `SignedVoiceLine` (`tail/voice/v1`); open them with
    `openSignedHud` / `openSignedPlayerKeys` / `openSignedVoiceLine` against the contract's
@@ -104,7 +105,9 @@ sealed HUD when the relay accepted its batch. The keys live in `RELAY_KEYS_DIR` 
 
 The relay keeps every leaf hash of the match log (RFC 6962), and serves proofs over them during
 play and after: `GET /matches/:id/inclusion?leaf=&size=` and
-`GET /matches/:id/consistency?from=&to=`. A leaf hash reveals nothing about its entry. Check the
+`GET /matches/:id/consistency?from=&to=`. A leaf hash reveals nothing about its entry: the
+entries with few possible values (`Contact`, `HintReceipt`, `Evidence`) carry a salt from a key
+only the referee holds until End, so the relay cannot hash guesses either. Check the
 result with `merkleVerify` / `verifyConsistency` against a root the referee signed (a HUD's
 `log_size`, `root`) or the contract anchored (`get_roots`).
 
@@ -114,7 +117,8 @@ result with `merkleVerify` / `verifyConsistency` against a root the referee sign
 safehouses, stake, players), the referee project and the keys the match pinned, every signed
 verdict with the NEAR transaction that applied it (`txHash` is null when that RPC answer was
 lost; the chain has the verdict anyway), the leaf hashes, the log the referee declassified after
-End (each entry must hash to its leaf), the ring reveal, `devices` with whether the referee
+End (each entry must hash to its leaf), the ring reveal with `kM` (the match key the referee
+releases with the log, which derives every salt), `devices` with whether the referee
 checked each one's attestation, and per answered hint its `hintId` and `signedText` (the message
 the model signature covers; the words themselves were sealed to the asker and the relay never
 had them). Matches played before protocol v2 are still served as the version 1 bundle they were.
@@ -171,7 +175,7 @@ on one sealed state would fork it. Each step:
    not tick while a verdict is unapplied: the referee refuses a state ahead of `last_seq`.
 2. **Voice hints.** For each hint the referee issued (an opaque blob sealed to the referee), call
    `voice` with the state and the blob; push the sealed line to the asker only; keep the answer's
-   sealed receipt (its `log_sealed`) for the next tick, and its `signed_text` for the replay.
+   sealed `receipt` for the next tick, and its `hint_id` and `signed_text` for the replay.
 3. **Tick.** Send the queued sealed batches (oldest first, ≤ 256), the receipts, the sealed state
    and `last_seq`. Check the stored leaves plus the returned `leaves` against `log_size`/`log_root`,
    and each Checkpoint's root and consistency proof against those leaves (the relay never sees a

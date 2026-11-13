@@ -67,34 +67,37 @@ record), then Start.
 
 **`tick`** `{match_id, state, last_seq, now_ms?, batches: [sealed], receipts: [b64]}`. Each
 batch is seal(referee_box_pk, borsh `BatchEnvelope`, `"tail/batch"`), at most 256. `receipts`
-are the `log_sealed` blobs `voice` returned since the last tick, in the order received. →
+are the `receipt` blobs `voice` returned since the last tick, in the order received. →
 
 ```text
 {call_id, tick_no, now_ms, seq, over, state, state_bytes,
  verdicts, proofs, huds: [{player, sealed}], leaves, log_sealed, log_size, log_root (hex),
  hints: [{player, blob}], opened, unopened: [{index, reason}],
  rejected: [{player, seq, reason: <RejectCode>}],
- refused: [{player, nonce, action: "strike" | "hint", reason: <variant name>}]}
+ refused: [{player, nonce, action: "strike" | "hint", reason: <RefuseCode>}]}
 ```
 
 `sealed` = seal(player_box_pk, borsh `SignedHud`, `"tail/hud/v2"`), signed with
 `hud_sig_digest`. `log_size` / `log_root` are the log after this tick; every HUD carries the
 same pair. A hint leaves only as its asker's index and `blob` = `match_id ‖` a referee-only
 blob of the fact and the question, for `voice`. `rejected[].reason` is the protocol
-`RejectCode` number. `refused[].reason` is the engine's `Refuse` variant name (`Lock`,
-`NoContact`, `Cooldown`, `InsufficientHead`, …) without its numbers: the protocol has no code
-table for refused actions. The first log entry of a tick is always its `Tick`; receipts that
-open are logged after it (once per hint, within 120 s).
+`RejectCode` number, `refused[].reason` the protocol `RefuseCode` number (`Lock`, `NoContact`,
+`Cooldown`, `Funds`, …), without the amounts some reasons carry. The first log entry of a tick
+is always its `Tick`; receipts that open are logged after it (once per hint, within 120 s),
+each salted for the index it lands at.
 
 **`voice`** `{state, blob}`, one entry of a tick's `hints` plus any state blob of the match
-(voice changes no state and appends nothing). → `{player, hint_id, sealed, signed_text, leaves,
-log_sealed, source: "model"|"template", model, latency_ms, fallback_reason, signature_error}`.
+(voice changes no state and appends nothing). → `{player, hint_id, sealed, signed_text, receipt,
+source: "model"|"template", model, latency_ms, fallback_reason, signature_error}`.
 `sealed` = seal(asker's box key, borsh `SignedVoiceLine`, `"tail/voice/v1"`), signed with
 `voice_sig_digest`. `signed_text` is the exact text NEAR AI signed
 (`model:sha256(request):sha256(response)`), or null for a template line; the replay needs it to
-check the signature in the logged receipt. `log_sealed` is the `HintReceipt`, sealed to the
-referee; pass it in the next tick's (or `end`'s) `receipts`. `leaves` is the leaf hash that
-receipt's entry will have once a tick logs it; it is not a log append.
+check the signature in the logged receipt. The request carries a per-hint nonce in OpenAI's
+`user` field, `HMAC(K_log, "tail/voice-nonce" ‖ u32le(hint_id))[0..16]` as hex: without one, a
+hint with no question has a dozen possible requests, and `sha256(request)` would name its fact.
+`receipt` is the `HintReceipt`, sealed to the referee; pass it in the next tick's (or `end`'s)
+`receipts`. Its leaf is not known yet: the entry is salted for the index it lands at, and shows
+up in that call's `leaves`. `hint_id` is the one the Hint verdict on chain carries.
 
 **`end`** `{match_id, state, last_seq, receipts?}`, only after a tick returned `over`. →
 `{call_id, seq, verdicts: [End], proofs, log_size, root (hex), state, leaves, log_sealed}`.
@@ -184,7 +187,7 @@ worker (wasmtime 36) cannot instantiate. Before deploying, check that
   last verdict digest, and the log frontier (the peaks at the last anchored size plus the leaf
   hashes since, so up to one Checkpoint's worth: about 12 KB for 12 players)
 
-`state::VERSION` is 4 (protocol v2); a blob of another version is refused.
+`state::VERSION` is 5 (protocol v2 with log salts); a blob of another version is refused.
 
 One source of truth: the wrapper keeps no copy of anything the engine owns.
 
@@ -341,11 +344,12 @@ How it differs from the enclave:
 concurrent first calls), `enroll` ×3 and `start` (signature over the verdict digest, signed
 and sealed player keys, a second `start` refused). It then plays three ticks: a hint, a forged
 batch refused with `ASSERTION`, signed HUDs naming the log, `voice` (the template, sealed and
-signed to the asker; a forged hint blob refused), the receipt joining the next tick's leaves, a
+signed to the asker; a forged hint blob refused), the receipt joining the next tick's log, a
 Checkpoint, and the end. Then two racing `end`s of which exactly one wins, the verdict chain,
 every consistency proof, the VRF reveal under `vrf_pk` with the contract's alpha checks,
 `declassify` (refused with a blob missing; the log equals the leaves, with `Enrolled`, `Tick`,
-`Rejected` and the receipt), `declassify_batches` with assertions, and the file modes.
+`Rejected` and the receipt, every salt checked against the released `K_m`),
+`declassify_batches` with assertions, and the file modes.
 
 `REFEREE_MODE=local bun crates/referee-wasi/scripts/smoke.ts` (and `match.ts`) run the same
 scripts as on OutLayer against `target/release/tail-referee`, checked with `packages/protocol`,

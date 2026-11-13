@@ -52,6 +52,8 @@ import {
   type RawVerdict,
   type Referee,
   RefereeError,
+  refuseName,
+  rejectName,
   type VerdictProof,
 } from "./referee.ts";
 
@@ -475,8 +477,8 @@ export class Matches {
         wallMs,
         batches: batches.length,
         verdicts: r.verdicts.map((v) => `${v.v.seq}:${v.v.body.kind}`),
-        rejected: r.rejected.length,
-        refused: r.refused.length,
+        rejected: r.rejected.map((x) => `${x.player}:${rejectName(x.reason)}`),
+        refused: r.refused.map((x) => `${x.player}:${refuseName(x.reason)}`),
         hints: r.hints.length,
         over: r.over,
       },
@@ -712,8 +714,8 @@ export class Matches {
         this.d.store.setVoiced(h.id, {
           sealed: v.sealed,
           signedText: v.signedText,
-          leaves: v.leaves.map(toHex),
-          receipt: v.logSealed,
+          hintId: v.hintId,
+          receipt: v.receipt,
         });
         this.d.hub.send(matchId, h.asker, { type: "handler", match_id: matchId, sealed: b64(v.sealed) });
       } catch (e) {

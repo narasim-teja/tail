@@ -39,7 +39,7 @@ pub fn verify_presence(
     roots: &[(u64, Hash)],
     players: &[String],
 ) -> Result<Presence, PresenceError> {
-    let LogEntry::Contact { a, b, epoch } = proof.entry else {
+    let LogEntry::Contact { a, b, epoch, .. } = proof.entry else {
         return Err(PresenceError::NotContact);
     };
     let root = roots

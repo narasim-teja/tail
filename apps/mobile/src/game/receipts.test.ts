@@ -27,15 +27,17 @@ const matchId = new Uint8Array(16).fill(3);
 
 // A match log as the referee writes it: my batches 0–2 accepted, 3 refused for the clock,
 // contacts with both other players, and someone else's batch in between.
+// Contacts end in a 16-byte salt: logSalt(K_log, index) in a real log, any bytes here.
+const salt = (i: number) => new Uint8Array(16).fill(i);
 const log: LogEntry[] = [
   { kind: "Batch", player: ME, seq: 0, hash: h(10) },
   { kind: "Batch", player: 0, seq: 0, hash: h(20) },
-  { kind: "Contact", a: 0, b: ME, epoch: 3 },
+  { kind: "Contact", a: 0, b: ME, epoch: 3, salt: salt(2) },
   { kind: "Batch", player: ME, seq: 1, hash: h(11) },
   { kind: "Batch", player: ME, seq: 2, hash: h(12) },
   { kind: "Rejected", player: ME, seq: 3, hash: h(13), code: RejectCode.ClockSkew },
-  { kind: "Contact", a: ME, b: 2, epoch: 5 },
-  { kind: "Contact", a: 0, b: ME, epoch: 6 },
+  { kind: "Contact", a: ME, b: 2, epoch: 5, salt: salt(6) },
+  { kind: "Contact", a: 0, b: ME, epoch: 6, salt: salt(7) },
 ];
 const leaves = log.map(merkleLeaf);
 const rootAt = (size: number): AnchoredRoot => ({
@@ -160,7 +162,9 @@ describe("presence proofs", () => {
 
   test("a log the relay altered yields no proof that does not verify", () => {
     // The altered leaf is a sibling on ann's path too, so neither proof holds against NEAR's root.
-    const altered = log.map((e, i) => (i === 6 ? { kind: "Contact" as const, a: ME, b: 2, epoch: 50 } : e));
+    const altered = log.map((e, i) =>
+      i === 6 ? { kind: "Contact" as const, a: ME, b: 2, epoch: 50, salt: salt(6) } : e,
+    );
     expect(meetings({ matchId, contract: "tail.testnet", log: altered, me: ME, players, root })).toEqual([]);
   });
 });

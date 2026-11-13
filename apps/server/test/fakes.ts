@@ -14,6 +14,7 @@ import {
   consistencyProof,
   decodeBatchEnvelope,
   decodeSignedVerdict,
+  deriveLogKey,
   derivePlayerKey,
   deriveTagKey,
   encodeBatch,
@@ -23,6 +24,8 @@ import {
   fromHex,
   type Hud,
   type LogEntry,
+  logEntrySalt,
+  logSalt,
   merkleLeaf,
   merkleRoot,
   open,
@@ -336,10 +339,16 @@ export class FakeReferee implements Referee {
     r.done();
     return v;
   }
-  /** Appends entries to the match log; returns what the relay gets for them. */
+  /**
+   * Appends entries to the match log; returns what the relay gets for them. As the referee does,
+   * each salted entry gets the salt of the index it lands at.
+   */
   private log(m: FakeMatch, entries: LogEntry[], into: LogEntry[]) {
-    for (const e of entries) m.leaves.push(merkleLeaf(e));
-    into.push(...entries);
+    for (const e of entries) {
+      const at = logEntrySalt(e) ? { ...e, salt: logSalt(deriveLogKey(m.km), m.leaves.length) } : e;
+      m.leaves.push(merkleLeaf(at));
+      into.push(at);
+    }
   }
   private verdict(m: FakeMatch, body: Verdict, log: LogEntry[]): RawVerdict {
     m.seq += 1;
@@ -596,6 +605,7 @@ export class FakeReferee implements Referee {
       throw new RefereeError("voice", "state is not this hint's match", true);
     const text = `line for hint ${h.hintId}`;
     const line = { matchId: m.matchId, player: h.asker, hintId: h.hintId, text };
+    // Salted by the tick that logs it, for the index it lands at.
     const receipt: LogEntry = {
       kind: "HintReceipt",
       hintId: h.hintId,
@@ -603,13 +613,14 @@ export class FakeReferee implements Referee {
       textHash: sha256(utf8(text)),
       signature: new Uint8Array(65),
       signingAddress: "0x0",
+      salt: new Uint8Array(16),
     };
     return {
       player: h.asker,
+      hintId: h.hintId,
       sealed: sealSignedVoiceLine(this.boxOf(m, h.asker), signVoiceLine(line, this.sk)),
       signedText: `fake-model:${toHex(sha256(utf8("req")))}:${toHex(sha256(utf8(text)))}`,
-      leaves: [merkleLeaf(receipt)],
-      logSealed: this.sealLog([receipt]),
+      receipt: this.sealLog([receipt]),
     };
   }
   async end(i: EndInput): Promise<EndResult> {
@@ -647,12 +658,17 @@ export class FakeReferee implements Referee {
     });
     return { batches: [...batches, new Uint8Array([9, 9, 9])], refused: [] };
   }
-  async declassify(_matchId: Uint8Array, logSealed: Uint8Array[]): Promise<DeclassifyResult> {
+  async declassify(matchId: Uint8Array, logSealed: Uint8Array[]): Promise<DeclassifyResult> {
     this.calls.push("declassify");
     this.declassified = logSealed;
     return {
       log: logSealed.flatMap((b) => this.openLog(b)).map(encodeLogEntry),
-      reveal: { ring: ["a", "b", "c"], k_m: "00", vrf_alpha: "vrf:1:x:y", vrf_signature: "00".repeat(64) },
+      reveal: {
+        ring: ["a", "b", "c"],
+        k_m: toHex(this.m(matchId).km),
+        vrf_alpha: "vrf:1:x:y",
+        vrf_signature: "00".repeat(64),
+      },
     };
   }
 }

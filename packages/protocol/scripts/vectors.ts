@@ -10,6 +10,7 @@ import {
   replayDigest as authReplayDigest,
   requestDigest as authRequestDigest,
   type Batch,
+  badLogSalts,
   batchClientDataHash,
   batchHash,
   beaconTag,
@@ -19,6 +20,7 @@ import {
   type CarryRequest,
   carryAckDigest,
   consistencyProof,
+  deriveLogKey,
   derivePlayerKey,
   deriveTagKey,
   encodeBatch,
@@ -43,6 +45,7 @@ import {
   hudSigDigest,
   keysSigDigest,
   type LogEntry,
+  logSalt,
   merkleLeaf,
   merklePeaks,
   merkleProof,
@@ -95,6 +98,22 @@ write("beacon", {
     }),
   ),
 });
+
+// ── log salts (K_log from the same K_m) ──
+const kLog = deriveLogKey(km);
+write("salt", {
+  K_m: km,
+  K_log: kLog,
+  salts: [0, 1, 7, 2 ** 32 + 1].map((index) => ({ index, salt: logSalt(kLog, index) })),
+});
+/** Entries as the referee logs them from index 0: each salted kind gets its index's salt. */
+type Unsalted<E> = E extends { salt: Uint8Array } ? Omit<E, "salt"> : E;
+const salted = (list: Unsalted<LogEntry>[]): LogEntry[] =>
+  list.map((e, i) =>
+    e.kind === "Contact" || e.kind === "HintReceipt" || e.kind === "Evidence"
+      ? ({ ...e, salt: logSalt(kLog, i) } as LogEntry)
+      : (e as LogEntry),
+  );
 
 // ── batch ──
 const matchId = seed("match").slice(0, 16);
@@ -194,8 +213,8 @@ write("verdicts", {
   }),
 });
 
-// ── merkle (v1 entries; unchanged) ──
-const entries: LogEntry[] = [
+// ── merkle (the original entry kinds, salted where they carry a salt) ──
+const base: Unsalted<LogEntry>[] = [
   { kind: "Batch", player: 0, seq: 0, hash: seed("b0") },
   { kind: "Contact", a: 0, b: 1, epoch: 4_000_000 },
   { kind: "Verdict", seq: 1, digest: seed("v1") },
@@ -211,6 +230,8 @@ const entries: LogEntry[] = [
   { kind: "Contact", a: 1, b: 2, epoch: 4_000_001 },
   { kind: "Verdict", seq: 2, digest: seed("v2") },
 ];
+const entries = salted(base);
+if (badLogSalts(km, entries).length) throw new Error("vector salts do not check");
 const leaves = entries.map(merkleLeaf);
 write("merkle", {
   entries: entries.map((e) => ({ entry: e, borsh: encodeLogEntry(e) })),
@@ -223,14 +244,14 @@ write("merkle", {
 });
 
 // ── log entries added in v2 (tags 4..7) ──
-const entriesV2: LogEntry[] = [
+const entriesV2 = salted([
   { kind: "Enrolled", player: 0, account: "alice.tail.testnet", keyHash: seed("key0"), attested: true },
   { kind: "Enrolled", player: 1, account: "bob.tail.testnet", keyHash: seed("key1"), attested: false },
   { kind: "Tick", tickNo: 17, nowMs: 1_794_514_170_000n, callId },
   { kind: "Rejected", player: 1, seq: 9, hash: seed("b9"), code: RejectCode.Teleport },
   { kind: "Evidence", hunter: 2, target: 0, strikeSeq: 31, strikeEpoch: 40, epochs: [33, 35, 36, 38, 40] },
   { kind: "Evidence", hunter: 0, target: 1, strikeSeq: 0, strikeEpoch: 0, epochs: [] },
-];
+]);
 write("log", {
   entries: entriesV2.map((e) => ({ entry: e, borsh: encodeLogEntry(e), leaf: merkleLeaf(e) })),
 });
@@ -264,7 +285,7 @@ write("consistency", {
 
 // ── presence proof ──
 const players = ["alice.tail.testnet", "bob.tail.testnet", "carol.tail.testnet"];
-const presenceLog: LogEntry[] = [...entriesV2.slice(0, 2), ...entries];
+const presenceLog = salted([...entriesV2.slice(0, 2), ...base]);
 const contract = "tail-dev.testnet";
 const proof = presenceProof({ matchId, contract, log: presenceLog, index: 3, size: 8, players });
 write("presence", {

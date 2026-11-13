@@ -11,6 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tail_protocol::beacon::check_log_salts;
 use tail_protocol::digest::{
     batch_client_data_hash, batch_hash, hud_sig_digest, keys_sig_digest, sha256, verdict_digest,
     voice_sig_digest,
@@ -407,6 +408,10 @@ fn check_voice(
         v.get("text").is_none() && v.get("fact").is_none(),
         "the words stay sealed"
     );
+    assert!(
+        v.get("leaves").is_none(),
+        "the receipt's leaf depends on where it lands in the log, so voice cannot name it"
+    );
     let plain = seal::open(&box_sk(&asker.account), &unb64(&v["sealed"]), domain::VOICE).unwrap();
     let line: SignedVoiceLine = borsh::from_slice(&plain).unwrap();
     assert!(verifies(referee_pk, &voice_sig_digest(&line.line), &line.sig));
@@ -468,6 +473,16 @@ fn check_log(d: &Value, kept: &Kept, phones: &[Phone], forger: u16, forged_hash:
     assert!(log
         .iter()
         .any(|e| matches!(e, LogEntry::HintReceipt { hint_id: 0, .. })));
+    // K_m comes out with the log, so anyone can check every salt is the one its index gets.
+    let k_m: [u8; 32] = hex::decode(d["k_m"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(check_log_salts(&k_m, &log), Ok(()));
+    assert!(
+        log.iter().any(|e| e.salt().is_some()),
+        "the receipt at least is salted"
+    );
 }
 
 /// Tick 1: the hint is charged and handed out as an opaque blob, the forged batch is refused
@@ -679,13 +694,9 @@ fn plays_a_match_with_keys_on_disk() {
     let t2 = call(
         dir,
         &json!({ "cmd": "tick", "match_id": b64(&match_id), "state": t1["state"], "last_seq": t1["seq"],
-                 "now_ms": t2_ms, "batches": [hb2], "receipts": [v["log_sealed"]] }),
+                 "now_ms": t2_ms, "batches": [hb2], "receipts": [v["receipt"]] }),
     );
     kept.take(&t2);
-    assert!(
-        t2["leaves"].as_array().unwrap().contains(&v["leaves"][0]),
-        "the receipt joins the log in the tick that takes it, with the leaf voice named"
-    );
     let cp = verdict(&t2["verdicts"][0]);
     assert!(matches!(cp.body, Verdict::Checkpoint { .. }) && cp.prev == digest);
     digest = verdict_digest(&cp.payload());

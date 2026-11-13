@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS voice_hints (
   issued_ms INTEGER NOT NULL,
   sealed BLOB,
   signed_text TEXT,
-  leaves TEXT,
+  hint_id INTEGER,
   receipt BLOB,
   status TEXT NOT NULL CHECK (status IN ('pending', 'voiced', 'consumed', 'dropped'))
 );
@@ -293,9 +293,9 @@ export interface VoiceHintRow {
   /** SignedVoiceLine sealed to the asker, once voiced. */
   sealed: Uint8Array | null;
   signed_text: string | null;
-  /** Leaf hashes (hex) of the receipt entries the voice answer describes. */
-  leaves: string[] | null;
-  /** The voice answer's `log_sealed`, which the next tick takes as a receipt. */
+  /** The hint the voice answer is for (its Hint verdict's `hintId`). */
+  hint_id: number | null;
+  /** The voice answer's sealed receipt, which the next tick takes and logs. */
   receipt: Uint8Array | null;
   status: "pending" | "voiced" | "consumed" | "dropped";
 }
@@ -350,6 +350,9 @@ export class Store {
     this.addColumn("devices", "attestation", "BLOB");
     this.addColumn("devices", "challenge", "BLOB");
     this.addColumn("devices", "attested", "INTEGER");
+    // voice_hints first named a line by its receipt's leaf; a salted receipt's leaf is known only
+    // once it is logged, so the line is named by its hint id (an older `leaves` column stays unread).
+    this.addColumn("voice_hints", "hint_id", "INTEGER");
     this.uniqueDeviceKeys();
     this.splitChallenges();
   }
@@ -920,31 +923,31 @@ export class Store {
   }
 
   voiceHints(matchId: string, status: VoiceHintRow["status"] | "answered"): VoiceHintRow[] {
-    type Raw = Omit<VoiceHintRow, "leaves"> & { leaves: string | null };
     const where = status === "answered" ? "status IN ('voiced', 'consumed')" : "status = ?";
     const args = status === "answered" ? [matchId] : [matchId, status];
     return this.db
-      .query<Raw, string[]>(`SELECT * FROM voice_hints WHERE match_id = ? AND ${where} ORDER BY id`)
+      .query<VoiceHintRow, string[]>(
+        `SELECT id, asker, blob, issued_ms, sealed, signed_text, hint_id, receipt, status FROM voice_hints WHERE match_id = ? AND ${where} ORDER BY id`,
+      )
       .all(...args)
       .map((h) => ({
         ...h,
         blob: u8(h.blob),
         sealed: h.sealed ? u8(h.sealed) : null,
         receipt: h.receipt ? u8(h.receipt) : null,
-        leaves: h.leaves ? (JSON.parse(h.leaves) as string[]) : null,
       }));
   }
 
   /** The voice answer for a pending hint: the asker's sealed line and the receipt for the next tick. */
   setVoiced(
     id: number,
-    v: { sealed: Uint8Array; signedText: string | null; leaves: string[]; receipt: Uint8Array },
+    v: { sealed: Uint8Array; signedText: string | null; hintId: number; receipt: Uint8Array },
   ) {
     this.db
       .query(
-        "UPDATE voice_hints SET sealed = ?, signed_text = ?, leaves = ?, receipt = ?, status = 'voiced' WHERE id = ? AND status = 'pending'",
+        "UPDATE voice_hints SET sealed = ?, signed_text = ?, hint_id = ?, receipt = ?, status = 'voiced' WHERE id = ? AND status = 'pending'",
       )
-      .run(v.sealed, v.signedText, JSON.stringify(v.leaves), v.receipt, id);
+      .run(v.sealed, v.signedText, v.hintId, v.receipt, id);
   }
 
   setVoiceStatus(ids: number[], status: VoiceHintRow["status"]) {

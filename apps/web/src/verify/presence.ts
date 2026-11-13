@@ -9,7 +9,7 @@
 //
 // JSON form (what "Make presence proof" produces and the presence page reads):
 //   { "type": "tail/presence-proof", "matchId": hex, "contract": string,
-//     "contact": { "a": u16, "b": u16, "epoch": u32 }, "index": "u64", "size": "u64",
+//     "contact": { "a": u16, "b": u16, "epoch": u32, "salt": hex 16 }, "index": "u64", "size": "u64",
 //     "path": [hex 32], "accounts": [string, string] }
 // The page also reads the protocol's borsh PresenceProof, base64.
 
@@ -33,7 +33,8 @@ export interface PresenceJson {
   type: typeof PRESENCE_TYPE;
   matchId: string;
   contract: string;
-  contact: { a: number; b: number; epoch: number };
+  /** `salt` is the entry's own (hex): without it the leaf cannot be rebuilt. */
+  contact: { a: number; b: number; epoch: number; salt: string };
   index: string;
   size: string;
   path: string[];
@@ -46,7 +47,7 @@ export function toPresenceJson(p: PresenceProof): PresenceJson {
     type: PRESENCE_TYPE,
     matchId: toHex(p.matchId),
     contract: p.contract,
-    contact: { a: p.entry.a, b: p.entry.b, epoch: p.entry.epoch },
+    contact: { a: p.entry.a, b: p.entry.b, epoch: p.entry.epoch, salt: toHex(p.entry.salt) },
     index: p.index.toString(),
     size: p.size.toString(),
     path: p.path.map(toHex),
@@ -77,6 +78,8 @@ export function parsePresence(text: string): PresenceProof {
     !u(c["a"], 0xffff) ||
     !u(c["b"], 0xffff) ||
     !u(c["epoch"], 0xffffffff) ||
+    typeof c["salt"] !== "string" ||
+    !/^[0-9a-f]{32}$/.test(c["salt"]) ||
     !u64(j["index"]) ||
     !u64(j["size"]) ||
     !Array.isArray(path) ||
@@ -89,7 +92,13 @@ export function parsePresence(text: string): PresenceProof {
   return {
     matchId: fromHex(j["matchId"]),
     contract: j["contract"],
-    entry: { kind: "Contact", a: c["a"] as number, b: c["b"] as number, epoch: c["epoch"] as number },
+    entry: {
+      kind: "Contact",
+      a: c["a"] as number,
+      b: c["b"] as number,
+      epoch: c["epoch"] as number,
+      salt: fromHex(c["salt"] as string),
+    },
     index: BigInt(j["index"] as string | number),
     size: BigInt(j["size"] as string | number),
     path: (path as string[]).map(fromHex),

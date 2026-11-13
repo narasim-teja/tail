@@ -162,7 +162,7 @@ describe("HUD socket messages", () => {
     });
     expect(
       parseHudMessage(JSON.stringify({ type: "refused", detail: { nonce: 4, action: "strike", reason: 3 } })),
-    ).toEqual({ type: "refused", nonce: 4, action: "strike", reason: "code 3" });
+    ).toEqual({ type: "refused", nonce: 4, action: "strike", reason: 3 });
     expect(parseHudMessage("not json")).toBeNull();
     expect(parseHudMessage(JSON.stringify({ type: "something-new" }))).toBeNull();
     expect(parseHudMessage(JSON.stringify({ type: "keys", sealed: "%%%" }))).toBeNull();
@@ -476,7 +476,7 @@ describe("carry, receipts and the replay log", () => {
 
   test("the replay log is asked for as a player: challenge, then the signed nonce", async () => {
     const nonce = new Uint8Array(32).fill(8);
-    const entry = { kind: "Contact", a: 0, b: 1, epoch: 4 } as const;
+    const entry = { kind: "Contact", a: 0, b: 1, epoch: 4, salt: new Uint8Array(16) } as const;
     const asked: string[] = [];
     const c = new RelayClient("http://relay.test", {
       contractId: CONTRACT,

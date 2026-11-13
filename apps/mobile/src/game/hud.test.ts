@@ -5,6 +5,7 @@ import {
   HintKind,
   type Hud,
   LOCK_EPOCHS,
+  RefuseCode,
   RejectCode,
   SealContext,
   seal,
@@ -122,12 +123,15 @@ describe("words", () => {
     expect(formatAmount(3_000_000n)).toBe("3.00");
   });
 
-  test("referee refusals read as plain sentences, whatever the Debug shape", () => {
-    expect(describeRefusal("hint", "NoFix")).toBe(
+  test("referee refusals read as plain sentences, one for every RefuseCode", () => {
+    expect(describeRefusal("hint", RefuseCode.NoFix)).toBe(
       "Hint refused. No location for you or your target yet. Try again in a minute.",
     );
-    expect(describeRefusal("strike", "Lock { lock: 2 }")).toBe("Strike refused. Your lock isn't full.");
-    expect(describeRefusal("", "Something new")).toBe("Refused. Something new");
+    expect(describeRefusal("strike", RefuseCode.Lock)).toBe("Strike refused. Your lock isn't full.");
+    for (const code of Object.values(RefuseCode))
+      expect(describeRefusal("hint", code)).not.toContain("Reason");
+    expect(describeRefusal("", 99)).toBe("Refused. Reason 99.");
+    expect(describeRefusal("strike", null)).toBe("Strike refused. No reason given.");
   });
 
   test("every refusal code has plain words, and the ones the phone mends itself say nothing", () => {

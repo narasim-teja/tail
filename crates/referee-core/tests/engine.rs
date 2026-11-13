@@ -1129,6 +1129,7 @@ fn a_tag_is_logged_right_after_the_evidence_that_justifies_its_lock() {
                 strike_seq,
                 strike_epoch,
                 epochs,
+                ..
             } = &log[at - 1]
             else {
                 panic!("the entry before the Tag is {:?}", log[at - 1]);
@@ -1147,7 +1148,9 @@ fn a_tag_is_logged_right_after_the_evidence_that_justifies_its_lock() {
                     "{e} in the window"
                 );
                 assert!(
-                    log.contains(&LogEntry::Contact { a, b, epoch: *e }),
+                    log.iter()
+                        .any(|x| matches!(*x, LogEntry::Contact { a: xa, b: xb, epoch, .. }
+                        if (xa, xb, epoch) == (a, b, *e))),
                     "contact in epoch {e} is logged"
                 );
             }

@@ -293,7 +293,7 @@ for (let k = 1; !over; k++) {
     const { result: v, call: vc } = await ok("voice", { state: t.state, blob: h.blob });
     const asker = ghosts.find((x) => x.index === h.player) as Ghost;
     const line = openSignedVoiceLine(asker.boxSk, unb64(v.sealed), refereePk);
-    receipts.push(v.log_sealed);
+    receipts.push(v.receipt);
     signedText = v.signed_text;
     voiceRow = `"${line.text}" (${v.source}, model ${v.latency_ms} ms, call ${vc.wall.toFixed(0)} ms, ${v.signed_text ? "signed" : (v.signature_error ?? v.fallback_reason)})`;
   }

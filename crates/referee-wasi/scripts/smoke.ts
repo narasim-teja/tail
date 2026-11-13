@@ -9,6 +9,7 @@ import { secp256k1 } from "../../../packages/protocol/node_modules/@noble/curves
 import { keccak_256 } from "../../../packages/protocol/node_modules/@noble/hashes/sha3.js";
 import {
   type Batch,
+  badLogSalts,
   batchClientDataHash,
   batchHash,
   boxPublicKey,
@@ -285,15 +286,12 @@ const { result: t2, call: t2Call } = await ok("tick", {
   state: t1.state,
   last_seq: t1.seq,
   now_ms: Number(endMs),
-  receipts: [v.log_sealed],
+  receipts: [v.receipt],
 });
 console.log(`  tick 2: wall ${t2Call.wall.toFixed(0)} ms, enclave ${t2Call.enclave} ms`);
 check(t2.tick_no === 2 && t2.over === true, "tick 2 at end_ms continues from tick 1 and ends the match");
 keep(t2);
-check(
-  t2.leaves.some((l: string) => l === v.leaves[0]),
-  "the receipt's leaf, as voice named it, joins the log in the tick that took it",
-);
+check(v.leaves === undefined, "voice names no leaf: the receipt is salted where it lands");
 const otherMatch = await refused("tick", {
   match_id: b64(randomBytes(16)),
   state: t2.state,
@@ -378,6 +376,7 @@ if (receiptEntry?.kind === "HintReceipt" && v.signed_text) {
 }
 
 const km = fromHex(d.k_m);
+check(badLogSalts(km, log).length === 0, "every log salt is the one the declassified K_m gives its index");
 const ring = buildRing(accounts, endV.body.vrfSignature);
 check(
   JSON.stringify(d.ring) === JSON.stringify(ring),

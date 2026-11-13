@@ -14,6 +14,8 @@ use tail_protocol::{Hash, MatchId};
 pub(crate) struct Secrets {
     pub k_tag: [u8; 32],
     pub k_players: Vec<[u8; 32]>,
+    /// `derive_log_key(K_m)`: salts the guessable log entries.
+    pub k_log: [u8; 32],
     pub vrf_signature: [u8; 64],
 }
 
@@ -197,6 +199,11 @@ impl State {
     }
     pub fn log_root(&self) -> Hash {
         self.log.root()
+    }
+    /// `K_log`, for the referee's own derivations from it (the voice request nonce). It never
+    /// leaves the enclave during play; after End, `declassify` releases `K_m`, which derives it.
+    pub fn log_key(&self) -> &[u8; 32] {
+        &self.secrets.k_log
     }
     /// Seq the next verdict will carry.
     pub fn next_verdict_seq(&self) -> u32 {

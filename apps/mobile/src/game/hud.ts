@@ -17,6 +17,7 @@ import {
   openSignedPlayerKeys,
   openSignedVoiceLine,
   type PlayerKeys,
+  RefuseCode,
   RejectCode,
   TargetStatus,
   type VoiceLine,
@@ -121,32 +122,38 @@ export function formatAmount(units: bigint, decimals = 6): string {
 }
 
 /**
- * Why the referee refused a strike or a hint (referee-core `Refuse`, Debug text such as
- * `NoFix` or `Lock { lock: 2 }`), as a short line a player understands.
+ * Why the referee refused a strike or a hint (a protocol RefuseCode, as the relay forwards it),
+ * as a short line a player understands.
  */
-export function describeRefusal(action: string, reason: string): string {
+export function describeRefusal(action: string, code: number | null): string {
   const what = action ? `${action.charAt(0).toUpperCase()}${action.slice(1)} refused.` : "Refused.";
-  const r = reason.toLowerCase();
-  const why = r.startsWith("nofix")
-    ? "No location for you or your target yet. Try again in a minute."
-    : r.startsWith("lock")
-      ? "Your lock isn't full."
-      : r.startsWith("nocontact")
-        ? "Your target wasn't in range just then."
-        : r.startsWith("cooldown")
-          ? "Too soon for another hint."
-          : r.startsWith("insufficienthead")
-            ? "Your head can't cover that hint."
-            : r.startsWith("texttoolong")
-              ? "Your question is too long."
-              : r.startsWith("playerout")
-                ? "You're out."
-                : r.startsWith("timeup") || r.startsWith("matchover")
-                  ? "The match is over."
-                  : r.startsWith("unknownhint")
-                    ? "That hint doesn't exist."
-                    : reason;
-  return `${what} ${why}`;
+  return `${what} ${refuseWhy(code)}`;
+}
+
+function refuseWhy(code: number | null): string {
+  switch (code) {
+    case RefuseCode.NoFix:
+      return "No location for you or your target yet. Try again in a minute.";
+    case RefuseCode.Lock:
+      return "Your lock isn't full.";
+    case RefuseCode.NoContact:
+      return "Your target wasn't in range just then.";
+    case RefuseCode.Cooldown:
+      return "Too soon for another hint.";
+    case RefuseCode.Funds:
+      return "Your head can't cover that hint.";
+    case RefuseCode.TextTooLong:
+      return "Your question is too long.";
+    case RefuseCode.PlayerOut:
+      return "You're out.";
+    case RefuseCode.TimeUp:
+    case RefuseCode.MatchOver:
+      return "The match is over.";
+    case RefuseCode.UnknownHint:
+      return "That hint doesn't exist.";
+    default:
+      return code === null ? "No reason given." : `Reason ${code}.`;
+  }
 }
 
 /**
@@ -171,6 +178,8 @@ export function describeRejectCode(code: number): string | null {
       return "Moved impossibly fast. Report not counted.";
     case RejectCode.TimeOrder:
       return "A report was dated before the last one. Report not counted.";
+    case RejectCode.TooOld:
+      return "A report arrived too late to count.";
     case RejectCode.PlayerOut:
       return "You are out.";
     case RejectCode.WrongMatch:
@@ -199,6 +208,8 @@ export function rejectReason(code: number): string {
       return "moved impossibly fast";
     case RejectCode.TimeOrder:
       return "dated before the last one";
+    case RejectCode.TooOld:
+      return "arrived too late";
     case RejectCode.PlayerOut:
       return "already out";
     case RejectCode.WrongMatch:

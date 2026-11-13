@@ -227,9 +227,14 @@ export const decodeSignedVerdict = (bytes: Bytes): SignedVerdict =>
 
 // ── Match log (Merkle leaves) ───────────────────────────────────────────────────
 
+/**
+ * `salt` (16 bytes, last field of Contact, HintReceipt and Evidence) is logSalt(K_log, leaf
+ * index). During play the relay holds every leaf hash; without the salt it could hash each of
+ * the few thousand possible Contact {a, b, epoch} and read the contact graph off the leaves.
+ */
 export type LogEntry =
   | { kind: "Batch"; player: number; seq: number; hash: Bytes }
-  | { kind: "Contact"; a: number; b: number; epoch: number }
+  | { kind: "Contact"; a: number; b: number; epoch: number; salt: Bytes }
   | { kind: "Verdict"; seq: number; digest: Bytes }
   | {
       kind: "HintReceipt";
@@ -238,6 +243,7 @@ export type LogEntry =
       textHash: Bytes;
       signature: Bytes;
       signingAddress: string;
+      salt: Bytes;
     }
   /** One referee tick: when it ran and which OutLayer call ran it. */
   | { kind: "Tick"; tickNo: number; nowMs: bigint; callId: Bytes }
@@ -251,6 +257,7 @@ export type LogEntry =
       strikeSeq: number;
       strikeEpoch: number;
       epochs: number[];
+      salt: Bytes;
     }
   /** At start, one per player: who plays as index `player`, with which device key. */
   | { kind: "Enrolled"; player: number; account: string; keyHash: Bytes; attested: boolean };
@@ -260,7 +267,7 @@ export function writeLogEntry(w: Writer, e: LogEntry): Writer {
     case "Batch":
       return w.u8(0).u16(e.player).u32(e.seq).fixed(e.hash, 32);
     case "Contact":
-      return w.u8(1).u16(e.a).u16(e.b).u32(e.epoch);
+      return w.u8(1).u16(e.a).u16(e.b).u32(e.epoch).fixed(e.salt, 16);
     case "Verdict":
       return w.u8(2).u32(e.seq).fixed(e.digest, 32);
     case "HintReceipt":
@@ -270,7 +277,8 @@ export function writeLogEntry(w: Writer, e: LogEntry): Writer {
         .string(e.chatId)
         .fixed(e.textHash, 32)
         .vecU8(e.signature)
-        .string(e.signingAddress);
+        .string(e.signingAddress)
+        .fixed(e.salt, 16);
     case "Tick":
       return w.u8(4).u32(e.tickNo).u64(e.nowMs).fixed(e.callId, 16);
     case "Rejected":
@@ -282,7 +290,8 @@ export function writeLogEntry(w: Writer, e: LogEntry): Writer {
         .u16(e.target)
         .u32(e.strikeSeq)
         .u32(e.strikeEpoch)
-        .vec(e.epochs, (w2, x) => w2.u32(x));
+        .vec(e.epochs, (w2, x) => w2.u32(x))
+        .fixed(e.salt, 16);
     case "Enrolled":
       return w.u8(7).u16(e.player).string(e.account).fixed(e.keyHash, 32).bool(e.attested);
   }
@@ -293,7 +302,7 @@ export function readLogEntry(r: Reader): LogEntry {
     case 0:
       return { kind: "Batch", player: r.u16(), seq: r.u32(), hash: r.fixed(32) };
     case 1:
-      return { kind: "Contact", a: r.u16(), b: r.u16(), epoch: r.u32() };
+      return { kind: "Contact", a: r.u16(), b: r.u16(), epoch: r.u32(), salt: r.fixed(16) };
     case 2:
       return { kind: "Verdict", seq: r.u32(), digest: r.fixed(32) };
     case 3:
@@ -304,6 +313,7 @@ export function readLogEntry(r: Reader): LogEntry {
         textHash: r.fixed(32),
         signature: r.vecU8(),
         signingAddress: r.string(),
+        salt: r.fixed(16),
       };
     case 4:
       return { kind: "Tick", tickNo: r.u32(), nowMs: r.u64(), callId: r.fixed(16) };
@@ -317,6 +327,7 @@ export function readLogEntry(r: Reader): LogEntry {
         strikeSeq: r.u32(),
         strikeEpoch: r.u32(),
         epochs: r.vec((r2) => r2.u32()),
+        salt: r.fixed(16),
       };
     case 7:
       return {

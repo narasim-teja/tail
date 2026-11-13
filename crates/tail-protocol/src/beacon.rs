@@ -1,7 +1,7 @@
-//! Match keys and the rotating beacon (4.1, 4.2).
+//! Match keys, the rotating beacon and the log salts (4.1, 4.2, 4.11).
 
 use crate::constants::{domain, EPOCH_MS};
-use crate::messages::Token;
+use crate::messages::{LogEntry, Salt, Token};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -23,6 +23,31 @@ pub fn derive_tag_key(k_m: &[u8; 32]) -> [u8; 32] {
 /// Player i's beacon key. Only the enclave and player i hold it.
 pub fn derive_player_key(k_m: &[u8; 32], player: u16) -> [u8; 32] {
     derive(k_m, &[domain::BEACON, &player.to_le_bytes()])
+}
+
+/// `K_log`: salts the log entries an observer could otherwise guess from their leaf hash.
+/// Only the referee holds it during play; `declassify` releases `K_m` after End, so anyone can
+/// derive it then and check every salt.
+pub fn derive_log_key(k_m: &[u8; 32]) -> [u8; 32] {
+    derive(k_m, &[domain::LOG])
+}
+
+/// The salt of the log entry at leaf `index`: HMAC-SHA256(K_log, "tail/log-salt" ‖ u64le(index))
+/// truncated to 16 bytes. Bound to the index, so the referee has no choice of salt.
+pub fn log_salt(k_log: &[u8; 32], index: u64) -> Salt {
+    hmac(k_log, &[domain::LOG_SALT, &index.to_le_bytes()])[..16]
+        .try_into()
+        .expect("16 bytes")
+}
+
+/// Checks the salt of every salted entry of a match log (index 0 first) against `K_m`.
+/// `Err` holds the first index whose salt is not `log_salt(K_log, index)`.
+pub fn check_log_salts(k_m: &[u8; 32], log: &[LogEntry]) -> Result<(), u64> {
+    let k_log = derive_log_key(k_m);
+    (0u64..).zip(log).try_for_each(|(i, e)| match e.salt() {
+        Some(s) if *s != log_salt(&k_log, i) => Err(i),
+        _ => Ok(()),
+    })
 }
 
 fn hmac(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {

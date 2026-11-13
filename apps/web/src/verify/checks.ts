@@ -6,10 +6,12 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import {
+  badLogSalts,
   buildRing,
   concat,
   equal,
   type LogEntry,
+  logEntrySalt,
   playersHash,
   ringCommit,
   type SignedVerdict,
@@ -352,6 +354,34 @@ export function checkHandler(d: DecodedBundle): Map<number, HandlerCheck> {
     });
   }
   return out;
+}
+
+// ── Log salts: the leaves the relay held during play gave nothing away ────────────────
+
+/**
+ * Contact, HintReceipt and Evidence entries end in a salt, logSalt(K_log, index) with
+ * K_log = HKDF(K_m, "tail/log"). The referee drew K_m inside itself at start and released it only
+ * with the log after End, so during play the relay could not test guesses of those entries (who
+ * met whom, a hint's fact) against the leaf hashes it held. Checked here from the K_m the bundle
+ * carries: every salt is the one its position gets, so none was left out or chosen.
+ *   v1: recorded before protocol v2, whose log had no salts;
+ *   no-key: the bundle does not carry K_m, so nothing was checked;
+ *   checked: `salted` entries carry a salt, `bad` are the indexes whose salt is not their own.
+ */
+export type SaltCheck =
+  | { kind: "v1" }
+  | { kind: "no-key" }
+  | { kind: "checked"; salted: number; bad: number[] };
+
+export function checkSalts(d: DecodedBundle): SaltCheck {
+  if (d.version === 1) return { kind: "v1" };
+  if (!d.reveal.kM) return { kind: "no-key" };
+  const entries = d.log.map((e) => e.entry);
+  return {
+    kind: "checked",
+    salted: entries.filter((e) => e && logEntrySalt(e)).length,
+    bad: badLogSalts(d.reveal.kM, entries),
+  };
 }
 
 // ── Devices: who enrolled with an Apple attestation ──────────────────────────────────

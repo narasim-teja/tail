@@ -28,6 +28,7 @@ import {
   CHECKPOINT_MS,
   concat,
   DARK_FORFEIT_MS,
+  deriveLogKey,
   derivePlayerKey,
   deriveTagKey,
   EPOCH_MS,
@@ -40,6 +41,7 @@ import {
   hintPrice,
   LOCK_EPOCHS,
   type LogEntry,
+  logSalt,
   playersHash,
   type ReplayBundle,
   type ReplayBundleV2,
@@ -55,7 +57,7 @@ import {
   verdictDigest,
   WINDOW_EPOCHS,
 } from "@tail/protocol";
-import { encodeSignedVerdictV1, verdictDigestV1 } from "../src/verify/v1.ts";
+import { encodeLogEntryV1, encodeSignedVerdictV1, NO_SALT, verdictDigestV1 } from "../src/verify/v1.ts";
 import paths from "./data/common-paths.json" with { type: "json" };
 
 export interface Fixtures {
@@ -541,6 +543,10 @@ function generate(opts: Options) {
   // ── Referee: ticks over the batches, in the engine's order ─────────────────────────
 
   const log: LogEntry[] = [];
+  const kLog = deriveLogKey(K_M);
+  /** The salt of the entry appended next, as the referee gives it (a v1 log had none). */
+  const nextSalt = () => (V2 ? logSalt(kLog, log.length) : NO_SALT);
+  const encodeEntry = V2 ? encodeLogEntry : encodeLogEntryV1;
   const signed: SignedVerdict[] = [];
   const handler: ReplayBundle["handler"] = [];
   let nextSeq = 1;
@@ -553,7 +559,7 @@ function generate(opts: Options) {
     signed.push({ ...payload, sig: ed25519.sign(digest, REFEREE_SK) });
   }
   const encodeVerdict = (v: SignedVerdict) => (V2 ? encodeSignedVerdict(v) : encodeSignedVerdictV1(v));
-  const leaves = () => log.map((e) => sha256(Uint8Array.of(0, ...encodeLogEntry(e))));
+  const leaves = () => log.map((e) => sha256(Uint8Array.of(0, ...encodeEntry(e))));
   function root(): Uint8Array {
     const merkle = (l: Uint8Array[]): Uint8Array => {
       if (l.length === 0) return sha256(new Uint8Array(0));
@@ -617,6 +623,7 @@ function generate(opts: Options) {
       textHash: sha256(utf8(r.text)),
       signature: concat(rsig.slice(1), Uint8Array.of(27 + (rsig[0] as number))),
       signingAddress: modelAddress,
+      salt: nextSalt(),
     };
   }
   let nextHintId = 0;
@@ -683,7 +690,7 @@ function generate(opts: Options) {
     found.sort((x, y) => x[0] - y[0] || x[1] - y[1] || x[2] - y[2]);
     for (const [a, b, e] of found) {
       contacts.add(`${a}:${b}:${e}`);
-      log.push({ kind: "Contact", a, b, epoch: e });
+      log.push({ kind: "Contact", a, b, epoch: e, salt: nextSalt() });
     }
     acts.sort((x, y) => x.t - y.t || x.player - y.player);
     for (const { t, player: p, seq, action } of acts) {
@@ -701,7 +708,16 @@ function generate(opts: Options) {
         target[p] = target[tg] === p ? -1 : (target[tg] as number);
         target[tg] = -1;
         lockFrom[p] = cur + 1;
-        if (V2) log.push({ kind: "Evidence", hunter: p, target: tg, strikeSeq: seq, strikeEpoch: e, epochs });
+        if (V2)
+          log.push({
+            kind: "Evidence",
+            hunter: p,
+            target: tg,
+            strikeSeq: seq,
+            strikeEpoch: e,
+            epochs,
+            salt: nextSalt(),
+          });
         verdict({ kind: "Tag", hunter: p, target: tg }, call);
       } else {
         const price = hintPrice(STAKE, action.hint as HintKind);
@@ -777,17 +793,18 @@ function generate(opts: Options) {
     },
     verdicts: signed.map((v) => ({ signed: b64(encodeVerdict(v)), txHash: null })),
     leaves: leaves().map(toHex),
-    log: log.map((e) => b64(encodeLogEntry(e))),
+    log: log.map((e) => b64(encodeEntry(e))),
     batches: batches.filter((m) => used.has(m)).map((m) => b64(encodeBatch(m.batch))),
-    reveal: { vrfAlpha: alpha, vrfSignature: toHex(vrfSignature), ring },
+    reveal: { vrfAlpha: alpha, vrfSignature: toHex(vrfSignature), ring, kM: toHex(K_M) },
     devices: sorted.map((accountId) => ({ accountId, kind: "phone", attested: true })),
     // The Handler's words were sealed to the asker; the bundle has only what the model signed.
     handler: handler.map((h) => ({ hintId: h.hintId, signedText: signedTexts.get(h.hintId) ?? null })),
   };
   if (!V2) {
     // The v1 shape: the relay held the quotes, and had no leaves, devices or signed text.
-    const { leaves: _l, devices: _d, ...rest } = bundle;
-    const v1: ReplayBundle = { ...rest, version: 1, handler };
+    const { leaves: _l, devices: _d, reveal, ...rest } = bundle;
+    const { kM: _k, ...reveal1 } = reveal;
+    const v1: ReplayBundle = { ...rest, reveal: reveal1, version: 1, handler };
     return { bundle, v1, tampered: bundle, rewrite, summary: [] };
   }
 
