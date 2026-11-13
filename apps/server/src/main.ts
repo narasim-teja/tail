@@ -3,7 +3,6 @@
 // REFEREE_MODE=local), and the HTTP + WebSocket server.
 
 import { createLogger } from "@tail/log";
-import { toHex } from "@tail/protocol";
 import { createRelay } from "./app.ts";
 import { loadCarryKeys } from "./carry.ts";
 import { type Config, ConfigError, describeConfig, loadConfig, loadRepoEnv } from "./config.ts";
@@ -11,6 +10,7 @@ import { Store } from "./db.ts";
 import { DossierBackfill } from "./dossiers.ts";
 import { proxyHeaderWarning } from "./limits.ts";
 import { NearChain } from "./near.ts";
+import { pinProblem } from "./pins.ts";
 import { GuardedReferee, makeReferee } from "./referee.ts";
 import { MAX_BODY } from "./routes/util.ts";
 import { stopOnSignals, stopRelay } from "./shutdown.ts";
@@ -98,32 +98,21 @@ if (import.meta.main) {
 }
 
 /**
- * The contract pins one referee's keys and VRF caller at a time, and every verdict is checked
- * against them, so the relay refuses to run beside a referee the contract does not pin: every
- * verdict would be refused mid-match, and End's VRF reveal would name another caller. Checked
- * once, before serving. A referee that does not answer cannot be checked; the relay starts anyway
- * and the guard reports it down.
+ * Checked once, before serving: the relay refuses to run beside a referee the contract does not
+ * pin, or a local test referee that does not answer (pins.ts).
  */
 async function checkPins(config: Config) {
   const pinned = await new NearChain(config, log).config();
   const keys = await makeReferee(config)
     .pubkeys()
-    .catch((e: unknown) => {
-      log.warn({ err: (e as Error).message }, "could not check the contract's pinned referee keys");
-      return null;
-    });
-  if (
-    keys &&
-    (pinned.referee_pk !== toHex(keys.refereePk) ||
-      pinned.vrf_pk !== toHex(keys.vrfPk) ||
-      pinned.vrf_sender !== config.vrfSender)
-  ) {
-    log.fatal(
-      { contract: config.contract, mode: config.refereeMode },
-      `the contract pins another referee's keys or VRF caller; run REFEREE_MODE=${config.refereeMode} bun apps/server/scripts/pin-referee.ts`,
-    );
+    .catch((e: unknown) => e as Error);
+  const problem = pinProblem(config, pinned, keys);
+  if (problem) {
+    log.fatal({ contract: config.contract, mode: config.refereeMode }, problem);
     process.exit(1);
   }
+  if (keys instanceof Error)
+    log.warn({ err: keys.message }, "could not check the contract's pinned referee keys; starting anyway");
   if (config.refereeMode === "local") {
     log.warn(
       { contract: config.contract },
