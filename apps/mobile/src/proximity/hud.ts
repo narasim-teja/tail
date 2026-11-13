@@ -12,7 +12,16 @@
 // dropped, because the signed HUD carries the referee's latest refusal; a Handler line in plain
 // text is dropped, because only a sealed, signed line can be the referee's.
 
-import { equal, type Hud, openSignedHud, openSignedPlayerKeys, type PlayerKeys } from "@tail/protocol";
+import {
+  decodeSignedHud,
+  equal,
+  type Hud,
+  open,
+  openSignedPlayerKeys,
+  type PlayerKeys,
+  SealContext,
+  verifySignedHud,
+} from "@tail/protocol";
 import { fromB64, toB64 } from "../lib/b64";
 import { hudDigest, type Signer } from "./auth";
 
@@ -29,9 +38,25 @@ export function forSeat<T extends Seat>(v: T, seat: Seat, what: string): T {
   return v;
 }
 
-/** Opens a sealed SignedHud for this seat; throws if it does not open, verify or fit. */
+/**
+ * Opens a sealed SignedHud for this seat; throws if it does not open, verify or fit. Also returns
+ * the SignedHud's bytes as the referee signed them: the log monitor keeps them as evidence
+ * (monitor.ts), and unlike the sealed copy anyone can check them.
+ */
+export function openSignedHudBytes(
+  boxSk: Uint8Array,
+  sealed: Uint8Array,
+  refereePk: Uint8Array,
+  seat: Seat,
+): { hud: Hud; signed: Uint8Array } {
+  const signed = open(boxSk, sealed, SealContext.hud);
+  const s = decodeSignedHud(signed);
+  if (!verifySignedHud(s, refereePk)) throw new Error("HUD not signed by the referee");
+  return { hud: forSeat(s.hud, seat, "HUD"), signed };
+}
+
 export const openHud = (boxSk: Uint8Array, sealed: Uint8Array, refereePk: Uint8Array, seat: Seat): Hud =>
-  forSeat(openSignedHud(boxSk, sealed, refereePk), seat, "HUD");
+  openSignedHudBytes(boxSk, sealed, refereePk, seat).hud;
 
 /** Opens this player's keys and checks they are signed by the referee, for this match and seat. */
 export const openPlayerKeys = (

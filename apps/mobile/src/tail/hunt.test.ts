@@ -41,6 +41,7 @@ import { decodeMeshMessage, encodeMeshMessage, type MeshLink } from "../proximit
 import { STALL_MS, unconfirmed } from "../proximity/chain";
 import type { CarryPlan, RadioPort } from "../proximity/client";
 import type { HudMessage } from "../proximity/hud";
+import { freshMonitor } from "../proximity/monitor";
 import { OFFLINE_CARRY_MS } from "../proximity/outbox";
 import { type CarryReply, RelayError, type SignedRequest } from "../proximity/relay";
 import { NOT_SIGNED } from "./hud";
@@ -133,6 +134,7 @@ const fresh = (): HuntRecord => ({
   tags: 0,
   lastFixMs: null,
   actions: [],
+  monitor: freshMonitor(),
 });
 
 /** The relay's carry keys and a stand-in for `POST /carry`: opens the envelope, signs the receipt. */
@@ -210,6 +212,7 @@ function rig(
       return { open: () => {}, close: () => {} };
     },
     carry: o.carry?.(mesh) ?? { kind: "off", why: "Mesh carry is off in Settings." },
+    log: { consistency: async () => [], anchors: async () => [] },
     zone: { latE7: 423_550_000, lonE7: -710_660_000, radiusM: 300 },
     now: t.now,
     timers: t.timers,

@@ -358,10 +358,12 @@ export const STATES: Record<string, () => ReactNode> = {
         referee: "local",
         receipts: RECEIPTS,
         met: ["maya.tail-dev.testnet"],
+        forked: false,
       }}
       onReplay={noop}
       onDone={noop}
       onProve={noop}
+      onExportFork={noop}
     />
   ),
   "results-out": () => (
@@ -375,10 +377,12 @@ export const STATES: Record<string, () => ReactNode> = {
         referee: "local",
         receipts: RECEIPTS,
         met: ["maya.tail-dev.testnet"],
+        forked: false,
       }}
       onReplay={noop}
       onDone={noop}
       onProve={noop}
+      onExportFork={noop}
     />
   ),
   "results-running": () => (
@@ -392,10 +396,12 @@ export const STATES: Record<string, () => ReactNode> = {
         referee: null,
         receipts: { kind: "checking" },
         met: [],
+        forked: true,
       }}
       onReplay={noop}
       onDone={noop}
       onProve={noop}
+      onExportFork={noop}
     />
   ),
 };

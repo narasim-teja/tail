@@ -7,11 +7,14 @@ import {
   type Action,
   BATCH_MS,
   beaconToken,
+  consistencyProof,
   decodeBatchEnvelope,
+  decodeSignedHud,
   derivePlayerKey,
   deriveTagKey,
   HintKind,
   type Hud,
+  merkleRoot,
   open,
   type PlayerKeys,
   RejectCode,
@@ -25,8 +28,16 @@ import { fakeTime } from "../../test/fake-time";
 import { hudOf, refereePk, sealedHud } from "../../test/referee";
 import { genesis } from "./batch";
 import { unconfirmed } from "./chain";
-import { ProximityClient, type ProximityNotice, type ProximityRecord, type RadioPort } from "./client";
+import {
+  ANCHOR_POLL_MS,
+  type LogPort,
+  ProximityClient,
+  type ProximityNotice,
+  type ProximityRecord,
+  type RadioPort,
+} from "./client";
 import type { HudMessage } from "./hud";
+import { freshMonitor } from "./monitor";
 import type { Report } from "./receipts";
 
 const START = 1_800_000_000_000;
@@ -54,9 +65,12 @@ const genesisRecord = (): ProximityRecord => ({
   hudTick: 0,
   lastFixMs: null,
   actions: [],
+  monitor: freshMonitor(),
 });
 
-function rig(record: ProximityRecord = genesisRecord()) {
+const noLog: LogPort = { consistency: async () => [], anchors: async () => [] };
+
+function rig(record: ProximityRecord = genesisRecord(), log: LogPort = noLog) {
   const t = fakeTime(START);
   const calls: string[] = [];
   const tokens: string[] = [];
@@ -113,6 +127,7 @@ function rig(record: ProximityRecord = genesisRecord()) {
       return { open: () => undefined, close: () => undefined };
     },
     carry: { kind: "off", why: "not used here" },
+    log,
     now: t.now,
     timers: t.timers,
   });
@@ -200,5 +215,52 @@ describe("proximity client", () => {
     r.client.stop();
     expect(() => r.client.start({ ...keys, matchId: new Uint8Array(16).fill(5) })).toThrow("another match");
     expect(() => r.client.start(keys)).not.toThrow();
+  });
+
+  test("a signed HUD whose log does not extend the last one is a log fork, saved with both signed HUDs", async () => {
+    const leaves = Array.from({ length: 12 }, (_, i) => sha256(Uint8Array.of(i)));
+    const rewritten = leaves.map((l, i) => (i === 1 ? sha256(Uint8Array.of(99)) : l));
+    const r = rig(genesisRecord(), {
+      consistency: async (from, to) => consistencyProof(leaves.slice(0, to), from),
+      anchors: async () => [],
+    });
+    const notices: ProximityNotice["kind"][] = [];
+    r.client.onNotice((n) => notices.push(n.kind));
+    r.client.start(keys);
+    r.hud({ tick: 1, logSize: 3n, root: merkleRoot(leaves.slice(0, 3)) });
+    r.hud({ tick: 2, logSize: 6n, root: merkleRoot(leaves.slice(0, 6)) });
+    await flush();
+    expect(r.client.status().logFork).toBeNull();
+    r.hud({ tick: 3, logSize: 9n, root: merkleRoot(rewritten.slice(0, 9)) });
+    await flush();
+    expect(notices).toEqual(["log-forked"]);
+    const fork = r.saved.at(-1)?.monitor.fork;
+    expect(r.client.status().logFork).toEqual(fork ?? null);
+    expect(fork && decodeSignedHud(fork.hud.signed).hud.tick).toBe(2);
+    expect(fork?.other.kind === "hud" && decodeSignedHud(fork.other.hud.signed).hud.tick).toBe(3);
+  });
+
+  test("roots anchored on NEAR are read about once a checkpoint and checked against the HUD roots", async () => {
+    const leaves = Array.from({ length: 12 }, (_, i) => sha256(Uint8Array.of(i)));
+    const asked: [number, number][] = [];
+    let anchors = 0;
+    const r = rig(genesisRecord(), {
+      consistency: async (from, to) => {
+        asked.push([from, to]);
+        return consistencyProof(leaves.slice(0, to), from);
+      },
+      anchors: async () => {
+        anchors++;
+        return [{ logSize: 10n, root: merkleRoot(leaves.slice(0, 10)) }];
+      },
+    });
+    r.client.start(keys);
+    r.hud({ tick: 1, logSize: 4n, root: merkleRoot(leaves.slice(0, 4)) });
+    r.t.advance(ANCHOR_POLL_MS);
+    await flush();
+    expect(anchors).toBe(1);
+    expect(asked).toEqual([[4, 10]]);
+    expect(r.saved.at(-1)?.monitor.anchored).toBe(10);
+    expect(r.client.status().logFork).toBeNull();
   });
 });

@@ -65,6 +65,7 @@ const snap = (o: Partial<HuntSnapshot> = {}): HuntSnapshot => ({
   blocked: null,
   invisible: null,
   noPocketSensor: false,
+  logFork: null,
   ...o,
 });
 /** The referee counting a dark run of `ms`, as of now. */
@@ -142,6 +143,17 @@ describe("hunt model", () => {
     // Being dark right now matters more than having been invisible.
     const dark = snap({ invisible: { seconds: 42, atMs: NOW }, dark: darkRun(25_000) });
     expect(huntModel(dark, ctx, NOW).banner?.title).toBe("Dark 25 s");
+  });
+
+  test("a log fork is the banner above every other warning, for the rest of the match", () => {
+    const fork = {
+      atMs: NOW,
+      hud: { size: 3, root: new Uint8Array(32), signed: new Uint8Array(1) },
+      other: { kind: "anchor" as const, anchor: { size: 5, root: new Uint8Array(32).fill(1) } },
+      proof: [],
+    };
+    const b = huntModel(snap({ logFork: fork, dark: darkRun(25_000) }), ctx, NOW).banner;
+    expect(b).toMatchObject({ kind: "fork", title: "The referee showed you a log it later changed" });
   });
 
   test("a phone without a proximity sensor is warned that the screen won't go off in a pocket", () => {

@@ -1,7 +1,7 @@
 // The app's state and every action a screen can take. Screens read `app` and call its methods;
 // nothing else talks to the relay, NEAR or the native modules.
 
-import type { PlayerKeys } from "@tail/protocol";
+import type { AnchoredRoot, PlayerKeys } from "@tail/protocol";
 import Constants from "expo-constants";
 import { useSyncExternalStore } from "react";
 import { Share } from "react-native";
@@ -16,7 +16,9 @@ import { payoutProblem, withdrawCall, withdrawGas } from "../near/withdraw";
 import { meshProfile } from "../proximity/carry/mesh";
 import { offlineProtocolLink } from "../proximity/carry/sdk";
 import type { CarryPlan } from "../proximity/client";
+import { realTimers } from "../proximity/epoch";
 import { HudSocket, openPlayerKeys } from "../proximity/hud";
+import { forkJson, type LogFork, LogMonitor } from "../proximity/monitor";
 import {
   checkReceipts,
   type Meeting,
@@ -146,6 +148,8 @@ class AppModel {
   resultsNow = false;
   /** Tags won in the open match as its file had them when opened (a relaunch has no session). */
   private savedTags = 0;
+  /** The log fork the open match's file holds, if the monitor found one (a relaunch has no session). */
+  private savedFork: LogFork | null = null;
   receipts: Receipts = { kind: "idle" };
   /** Presence proofs this player can share once the match has ended; null until looked up. */
   meetings: Meeting[] | null = null;
@@ -545,10 +549,13 @@ class AppModel {
     this.receipts = { kind: "idle" };
     this.meetings = null;
     try {
-      this.savedTags = this.loadRecord(id).tags;
+      const r = this.loadRecord(id);
+      this.savedTags = r.tags;
+      this.savedFork = r.monitor.fork;
     } catch {
       // An unreadable file only costs the tag count here; beginHunt reads it again and stops on it.
       this.savedTags = 0;
+      this.savedFork = null;
     }
     files.write(CURRENT_FILE, JSON.stringify({ matchId: id }));
     this.startPolling();
@@ -680,6 +687,8 @@ class AppModel {
     const record = this.loadRecord(matchId);
     const signer = nearSigner(id);
     const relay = this.relay;
+    const rpc = this.rpc;
+    const contract = this.settings.contractId;
     this.session = new TailHunt({
       keys: b.keys,
       stake: m.chain.stake,
@@ -701,6 +710,10 @@ class AppModel {
           onState,
         }),
       carry: this.carryPlan(b, matchId),
+      log: {
+        consistency: (from, to) => relay.consistency(matchId, from, to),
+        anchors: async () => (await anchoredRoots(rpc, contract, matchId)).all,
+      },
       zone: this.zone?.zone ?? null,
     });
     this.session.subscribe(() => this.emit());
@@ -717,6 +730,18 @@ class AppModel {
   /** Tags this player won in the open match: live from the hunt, else from the match file. */
   get tags(): number {
     return this.session?.snapshot().tags ?? this.savedTags;
+  }
+
+  /** The referee's log roots did not fit together (proximity/monitor.ts): the evidence, for good. */
+  get logFork(): LogFork | null {
+    return this.session?.snapshot().logFork ?? this.savedFork;
+  }
+
+  /** Shares the fork's evidence (both signed roots and the failed proof) as a JSON document. */
+  async shareFork(): Promise<void> {
+    const f = this.logFork;
+    if (!f || !this.matchId) return;
+    await Share.share({ title: "TAIL log fork", message: forkJson(f, this.matchId) });
   }
 
   finishMatch(): void {
@@ -742,6 +767,7 @@ class AppModel {
         matchFacts(this.rpc, contract, id),
         anchoredRoots(this.rpc, contract, id),
       ]);
+      await this.checkLog(id, roots.all);
       const player = facts?.players.indexOf(me) ?? -1;
       const root = roots.final ?? roots.all.at(-1) ?? null;
       const reports = this.loadRecord(id).reports;
@@ -764,6 +790,34 @@ class AppModel {
       this.receipts = { kind: "error", message: message(e) };
     }
     if (this.matchId === id) this.emit();
+  }
+
+  /**
+   * Checks the anchored roots against the HUD roots this phone was shown (proximity/monitor.ts):
+   * through the hunt while it runs, else from the match file, which keeps the result. A relay it
+   * can't reach leaves the check for the next time Results reads the roots.
+   */
+  private async checkLog(id: string, roots: readonly AnchoredRoot[]): Promise<void> {
+    if (this.session) {
+      await this.session.checkAnchors(roots);
+      return;
+    }
+    const record = this.loadRecord(id);
+    const relay = this.relay;
+    const monitor: LogMonitor = new LogMonitor(
+      {
+        consistency: (from, to) => relay.consistency(id, from, to),
+        changed: () =>
+          files.write(matchFile(id), encodeMatchRecord({ ...record, monitor: monitor.record() })),
+        onFork: () => undefined,
+        now: Date.now,
+        timers: realTimers,
+      },
+      record.monitor,
+    );
+    await monitor.checkAnchors(roots);
+    monitor.stop();
+    if (this.matchId === id) this.savedFork = monitor.fork;
   }
 
   /**

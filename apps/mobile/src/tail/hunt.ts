@@ -5,10 +5,10 @@
 // - the signed HUD read as the hunt screen shows it: lock, heat, target, tags, being out; tags
 //   and dark time come from the referee, not from the phone's guesses
 // - the phone's own warnings before the referee acts: out of the zone, vehicle speed (rules.ts)
-// - the Handler's signed lines, and every notice in plain words
+// - the Handler's signed lines, and every notice in plain words (a log fork above all)
 // - the tag count, saved beside the proximity record so a relaunch keeps it
 
-import { type HintKind, type Hud, hintPrice, type PlayerKeys } from "@tail/protocol";
+import { type AnchoredRoot, type HintKind, type Hud, hintPrice, type PlayerKeys } from "@tail/protocol";
 import type { RadioFix } from "../../modules/tail-radio";
 import {
   ProximityClient,
@@ -26,6 +26,7 @@ import {
   formatAmount,
   type HudView,
   hudView,
+  LOG_FORKED,
   NOT_SIGNED,
   openVoice,
 } from "./hud";
@@ -138,6 +139,11 @@ export class TailHunt {
     void this.prox.batchNow();
   }
 
+  /** Anchored roots read from NEAR (Results reads End's), checked against the HUD roots. */
+  checkAnchors(roots: readonly AnchoredRoot[]): Promise<void> {
+    return this.prox.checkAnchors(roots);
+  }
+
   // ── Internals ────────────────────────────────────────────────────────────────────────────
 
   private onFix(f: RadioFix): void {
@@ -192,6 +198,9 @@ export class TailHunt {
           "info",
           `You were invisible ${n.seconds} s: the phone was locked or TAIL was in the background.`,
         );
+        return;
+      case "log-forked":
+        this.note("info", `${LOG_FORKED}. Your phone kept the signed proof; export it from Results.`);
         return;
     }
   }

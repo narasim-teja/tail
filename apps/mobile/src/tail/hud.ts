@@ -19,6 +19,9 @@ import { forSeat, type Seat } from "../proximity/hud";
 /** What the phone shows for anything sealed to it that the referee did not sign. */
 export const NOT_SIGNED = "This update was not signed by the referee";
 
+/** What the phone shows, in the hunt and on Results, once the log monitor finds a fork. */
+export const LOG_FORKED = "The referee showed you a log it later changed";
+
 /** Opens one Handler line, signed by the referee and sealed to this player. */
 export const openVoice = (
   boxSk: Uint8Array,
@@ -112,6 +115,8 @@ function refuseWhy(code: number | null): string {
       return "Too soon for another hint.";
     case RefuseCode.Funds:
       return "Your head can't cover that hint.";
+    case RefuseCode.HintLimit:
+      return "This match has had all the hints it allows.";
     case RefuseCode.TextTooLong:
       return "Your question is too long.";
     case RefuseCode.PlayerOut:

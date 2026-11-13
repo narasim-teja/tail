@@ -1,6 +1,6 @@
 // The relay calls a proximity game needs during play (apps/server, TECHNICAL.md 5.4): signing a
 // request with the player's NEAR key, sending a sealed batch, the HUD socket URL, the mesh carry
-// keys and forwarding, inclusion paths and the referee's keys. Any game's own endpoints (lobbies,
+// keys and forwarding, inclusion and consistency proofs and the referee's keys. Any game's own endpoints (lobbies,
 // enrolment, …) go in a subclass (relay/client.ts for TAIL). Bytes are base64 on the wire, match
 // ids are 32 lowercase hex characters. Answers are checked field by field: a shape change fails
 // here with the field's name, not somewhere in the hunt loop.
@@ -258,15 +258,19 @@ export class RelayTransport {
       if (e instanceof RelayError && e.status === 404) return null;
       throw e;
     }
-    return {
-      index: read.int(r, "index"),
-      size: read.int(r, "size"),
-      path: read.list(r, "path").map((h) => {
-        if (typeof h !== "string" || !/^[0-9a-f]{64}$/.test(h))
-          throw new RelayError(0, "relay answer: path is not 32-byte hashes");
-        return fromHex(h);
-      }),
-    };
+    return { index: read.int(r, "index"), size: read.int(r, "size"), path: hashes(r, "path") };
+  }
+
+  /**
+   * The relay's proof that the log's first `from` leaves are a prefix of its first `to`. Public,
+   * like inclusion paths. Unverified: the log monitor checks it against two roots the referee
+   * signed or NEAR anchored (monitor.ts).
+   */
+  async consistency(matchId: string, from: number, to: number): Promise<Uint8Array[]> {
+    const r = await this.json("GET", `/matches/${matchId}/consistency?from=${from}&to=${to}`);
+    if (read.int(r, "from") !== from || read.int(r, "to") !== to)
+      throw new RelayError(0, "relay answer: a proof between other sizes");
+    return hashes(r, "path");
   }
 
   // ── Plumbing ─────────────────────────────────────────────────────────────────────────────
@@ -356,6 +360,15 @@ export class RelayTransport {
     if (!res.ok) throw new RelayError(res.status, refusal(res.status, o["error"]), o);
     return o;
   }
+}
+
+/** A list of 32-byte hashes in lowercase hex, as proofs travel. */
+function hashes(o: Obj, k: string): Uint8Array[] {
+  return read.list(o, k).map((h) => {
+    if (typeof h !== "string" || !/^[0-9a-f]{64}$/.test(h))
+      throw new RelayError(0, `relay answer: ${k} is not 32-byte hashes`);
+    return fromHex(h);
+  });
 }
 
 /**

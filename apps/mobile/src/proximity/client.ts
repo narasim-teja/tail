@@ -14,15 +14,19 @@
 //   handed to the game newest first; the game's own frames are passed through
 // - the mesh carry path, both roles, when the plan says so (carry/mesh.ts): a second transport for
 //   the same outbox, deduplicated by batch hash
+// - the log monitor (monitor.ts): every signed HUD root, and every root anchored on NEAR, checked
+//   to be one growing log; a fork is kept as evidence and stays in status() for good
 // The game (TAIL: tail/hunt.ts) reads the HUD and decides what it means, and says when this
 // player has nothing more to report. Everything device-specific comes in through ports, so tests
 // drive it with fakes.
 
 import {
   type Action,
+  type AnchoredRoot,
   BATCH_MS,
   beaconTag,
   beaconToken,
+  CHECKPOINT_MS,
   equal,
   type Hud,
   type PlayerKeys,
@@ -49,7 +53,8 @@ import {
 import { type Confirmed, planChain } from "./chain";
 import { currentEpoch, EpochTimer, realTimers, type Timers } from "./epoch";
 import { FIX_MAX_AGE_MS, FixCollector } from "./fixes";
-import { type HudMessage, openHud, type Seat, type SocketState } from "./hud";
+import { type HudMessage, openSignedHudBytes, type Seat, type SocketState } from "./hud";
+import { type LogFork, LogMonitor, type MonitorRecord } from "./monitor";
 import { Outbox, Uploader, type UploadState } from "./outbox";
 import type { Report } from "./receipts";
 import type { CarryKey, CarryReply, SignedRequest } from "./relay";
@@ -93,6 +98,8 @@ export interface ProximityRecord {
   lastFixMs: number | null;
   /** Game actions not yet inside a committed batch. */
   actions: Action[];
+  /** Where the log monitor stands: the last verified root, and the fork once one is found. */
+  monitor: MonitorRecord;
 }
 
 /** The mesh carry path: on with the relay's carry keys, or off and why. */
@@ -109,6 +116,14 @@ export type CarryPlan =
 export interface HudPort {
   open(): void;
   close(): void;
+}
+
+/** What the log monitor reads: proofs from the relay, anchored roots from NEAR. */
+export interface LogPort {
+  /** `GET /matches/:id/consistency`: the relay's proof, unverified. Throws when it can't be had. */
+  consistency(from: number, to: number): Promise<Uint8Array[]>;
+  /** The roots the contract anchored for the match, read from NEAR through the phone's own RPC. */
+  anchors(): Promise<readonly AnchoredRoot[]>;
 }
 
 export interface ProximityDeps {
@@ -129,6 +144,7 @@ export interface ProximityDeps {
   save: (r: ProximityRecord) => void;
   hud: (onMessage: (m: HudMessage) => void, onState: (s: SocketState) => void) => HudPort;
   carry: CarryPlan;
+  log: LogPort;
   now?: () => number;
   timers?: Timers;
 }
@@ -162,6 +178,8 @@ export interface ProximityStatus {
   invisible: { seconds: number; atMs: number } | null;
   /** This phone has no proximity sensor, so the screen cannot turn off in a pocket by itself. */
   noPocketSensor: boolean;
+  /** The referee committed to two logs that do not fit together; kept for good once found. */
+  logFork: LogFork | null;
 }
 
 /** Things the game may want to tell the player about; the words are the game's. */
@@ -174,10 +192,15 @@ export type ProximityNotice =
   /** Batches the referee never took were dropped and the chain goes on from `fromSeq`. */
   | { kind: "rebuilt"; dropped: number; fromSeq: number; lost: Action["kind"][] }
   /** Back in the foreground after `seconds` in which no one could hear this phone. */
-  | { kind: "invisible"; seconds: number };
+  | { kind: "invisible"; seconds: number }
+  /** The referee's log roots do not fit together (monitor.ts); `fork` is the evidence. */
+  | { kind: "log-forked"; fork: LogFork };
 
 /** Your own reports offered to the mesh at once while offline, oldest first. */
 const CARRY_AHEAD = 3;
+
+/** How often the anchored roots are read from NEAR during a match: about once per checkpoint. */
+export const ANCHOR_POLL_MS = CHECKPOINT_MS;
 
 type Local = Pick<
   ProximityStatus,
@@ -213,6 +236,7 @@ export class ProximityClient {
   private readonly actions: ActionQueue;
   private readonly outbox: Outbox;
   private readonly uploader: Uploader;
+  private readonly monitor: LogMonitor;
   private k: Keyed | null = null;
   private mesh: MeshCarry | null = null;
   private hudPort: HudPort | null = null;
@@ -230,6 +254,7 @@ export class ProximityClient {
   private readonly byDigest = new Map<string, Uint8Array>();
   private unsub: (() => void)[] = [];
   private batchTimer: unknown = null;
+  private anchorTimer: unknown = null;
   private local: Local = {
     epoch: null,
     token: null,
@@ -281,6 +306,19 @@ export class ProximityClient {
       now: this.now,
       timers: this.timers,
     });
+    this.monitor = new LogMonitor(
+      {
+        consistency: (from, to) => d.log.consistency(from, to),
+        changed: () => {
+          this.save();
+          this.refresh();
+        },
+        onFork: (fork) => this.on.notice.emit({ kind: "log-forked", fork }),
+        now: this.now,
+        timers: this.timers,
+      },
+      r.monitor,
+    );
     if (d.carry.kind === "on") {
       const c = d.carry;
       this.mesh = new MeshCarry({
@@ -349,7 +387,9 @@ export class ProximityClient {
     this.hudPort.open();
     void this.mesh?.start();
     this.uploader.kick();
+    this.monitor.resume();
     this.scheduleBatch();
+    this.scheduleAnchors();
     this.refresh();
   }
 
@@ -361,6 +401,9 @@ export class ProximityClient {
     this.k?.epochTimer.stop();
     if (this.batchTimer !== null) this.timers.clearTimeout(this.batchTimer);
     this.batchTimer = null;
+    if (this.anchorTimer !== null) this.timers.clearTimeout(this.anchorTimer);
+    this.anchorTimer = null;
+    this.monitor.stop();
     for (const u of this.unsub) u();
     this.unsub = [];
     this.stopRadio();
@@ -406,6 +449,14 @@ export class ProximityClient {
     this.refresh();
   }
 
+  /**
+   * Checks anchored roots the game read from NEAR itself (Results reads End's) against the
+   * signed HUD roots; resolves once checked, or once the relay could not be reached.
+   */
+  checkAnchors(roots: readonly AnchoredRoot[]): Promise<void> {
+    return this.monitor.checkAnchors(roots);
+  }
+
   /** Each signed HUD newer than any before, with the one before it. */
   onHud(fn: (hud: Hud, previous: Hud | null) => void): () => void {
     return this.on.hud.add(fn);
@@ -449,6 +500,7 @@ export class ProximityClient {
       offline: this.uploader.offline(),
       carry: this.mesh?.status ?? { kind: "off", why: this.d.carry.kind === "off" ? this.d.carry.why : "" },
       pendingActions: this.unsentActions().length,
+      logFork: this.monitor.fork,
     };
   }
 
@@ -506,6 +558,7 @@ export class ProximityClient {
       hudTick: this.hudTick,
       lastFixMs: t === null ? null : Number(t),
       actions: this.unsentActions(),
+      monitor: this.monitor.record(),
     });
   }
 
@@ -560,6 +613,20 @@ export class ProximityClient {
       this.batchTimer = null;
       void this.batchNow().finally(() => this.scheduleBatch());
     }, BATCH_MS);
+  }
+
+  /** Reads the anchored roots from NEAR about once per checkpoint, for the log monitor. */
+  private scheduleAnchors(): void {
+    if (!this.running) return;
+    this.anchorTimer = this.timers.setTimeout(() => {
+      this.anchorTimer = null;
+      void this.d.log
+        .anchors()
+        .then((roots) => this.monitor.checkAnchors(roots))
+        // NEAR unreachable: the next round reads them again.
+        .catch(() => undefined)
+        .finally(() => this.scheduleAnchors());
+    }, ANCHOR_POLL_MS);
   }
 
   /** Offline: hand the oldest reports the relay lacks to the mesh, sealed for the relay. */
@@ -633,8 +700,9 @@ export class ProximityClient {
     const k = this.k;
     if (!k) return;
     let hud: Hud;
+    let signed: Uint8Array;
     try {
-      hud = openHud(this.d.boxSk, sealed, this.d.refereePk, k.seat);
+      ({ hud, signed } = openSignedHudBytes(this.d.boxSk, sealed, this.d.refereePk, k.seat));
     } catch {
       this.on.notice.emit({ kind: "unsigned" });
       return;
@@ -646,6 +714,7 @@ export class ProximityClient {
     this.lastHud = hud;
     this.on.hud.emit(hud, before);
     this.noteRejection(hud);
+    this.monitor.onHud(hud, signed);
     this.save();
     this.chainWork = this.chainWork.then(() => this.mendChain(hud)).catch(() => undefined);
   }

@@ -5,14 +5,16 @@ import { HintKind, hintPrice, LOCK_EPOCHS, type PlayerKeys } from "@tail/protoco
 import type { Blocked } from "../proximity/client";
 import type { RefereeKind } from "../relay/client";
 import type { LatLon } from "./geo";
-import { formatAmount } from "./hud";
+import { formatAmount, LOG_FORKED } from "./hud";
 import type { HuntSnapshot, Note } from "./hunt";
 import { clock, darkState, zoneState } from "./rules";
 import type { Zone } from "./zone";
 
 export type Banner =
   | { kind: "dark"; title: string; detail: string }
-  | { kind: "zone"; title: string; detail: string };
+  | { kind: "zone"; title: string; detail: string }
+  /** The referee's log roots do not fit together; it stays up for the rest of the match. */
+  | { kind: "fork"; title: string; detail: string };
 
 /** How long "You were invisible N s" stays up after you are back. */
 export const INVISIBLE_SHOW_MS = 10_000;
@@ -149,7 +151,14 @@ export function huntModel(
   const dark = darkState(nowMs, s.dark, s.offline);
   const zone = zoneState(nowMs, s.lastFix, ctx.zone?.zone ?? null, s.outSinceMs);
   let banner: Banner | null = null;
-  if (zone) {
+  // Above everything: a referee that rewrote its log makes the rest of the screen untrustworthy.
+  if (s.logFork) {
+    banner = {
+      kind: "fork",
+      title: LOG_FORKED,
+      detail: "Your phone kept the signed proof. Export it from Results.",
+    };
+  } else if (zone) {
     banner =
       zone.leakIn > 0
         ? {

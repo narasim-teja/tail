@@ -1,11 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { RejectCode } from "@tail/protocol";
+import { freshMonitor, type LogFork } from "../proximity/monitor";
 import { decodeMatchRecord, emptyRecord, encodeMatchRecord, type MatchRecord } from "./persist";
 
 const h = (n: number) => new Uint8Array(32).fill(n);
 
 describe("match record", () => {
-  test("chain, outbox, confirmation, reports, tags, fix time and unsent actions survive a write and read", () => {
+  test("chain, outbox, confirmation, reports, tags, fix time, unsent actions and the log monitor survive a write and read", () => {
+    const fork: LogFork = {
+      atMs: 1_800_000_200_000,
+      hud: { size: 4, root: h(4), signed: Uint8Array.of(4, 4) },
+      other: { kind: "hud", hud: { size: 6, root: h(6), signed: Uint8Array.of(6) } },
+      proof: [h(5)],
+    };
     const r: MatchRecord = {
       matchId: "ab".repeat(16),
       chain: { seq: 3, prev: h(7) },
@@ -33,8 +40,22 @@ describe("match record", () => {
         { kind: "Hint", hint: 1, nonce: 10, text: "north?" },
         { kind: "Hint", hint: 2, nonce: 11 },
       ],
+      monitor: {
+        verified: { size: 4, root: h(4), signed: Uint8Array.of(4, 4) },
+        pending: null,
+        anchored: 3,
+        fork,
+      },
     };
     expect(decodeMatchRecord(encodeMatchRecord(r))).toEqual(r);
+    const anchor = {
+      ...r,
+      monitor: {
+        ...freshMonitor(),
+        fork: { ...fork, other: { kind: "anchor" as const, anchor: { size: 9, root: h(9) } } },
+      },
+    };
+    expect(decodeMatchRecord(encodeMatchRecord(anchor))).toEqual(anchor);
   });
 
   test("a file from before protocol v2 keeps its counts but drops batches no HUD can confirm", () => {

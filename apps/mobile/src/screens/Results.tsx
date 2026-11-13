@@ -1,10 +1,12 @@
 // Results: survived or out, final head, your tags, the 3D replay (opens in Safari), how it is
 // verified (one tap away for anyone who asks), your reports checked against the log anchored on
-// NEAR, and after the end a presence proof for each player you met.
+// NEAR, after the end a presence proof for each player you met, and, above all of it, the alarm
+// if the referee's log roots did not fit together (proximity/monitor.ts), with its evidence.
 import { useEffect, useState } from "react";
 import { Animated, Linking, Pressable, StyleSheet, View } from "react-native";
 import type { RefereeKind } from "../relay/client";
 import { type Receipts, useApp } from "../state/app";
+import { LOG_FORKED } from "../tail/hud";
 import { handleOf, howVerified, money, type Outcome, resultOutcome } from "../tail/huntModel";
 import { receiptLines } from "../tail/results";
 import { Icon, Mark } from "../ui/brand";
@@ -41,6 +43,8 @@ export interface ResultsModel {
   receipts: Receipts;
   /** Players you can prove you met (account ids), once the match has ended. */
   met: string[];
+  /** The referee showed this phone a log it later changed; the evidence is in the match file. */
+  forked: boolean;
 }
 
 /** The receipt check as lines for the screen, and problems apart. */
@@ -105,11 +109,13 @@ export function ResultsView({
   onReplay,
   onDone,
   onProve,
+  onExportFork,
 }: {
   m: ResultsModel;
   onReplay: () => void;
   onDone: () => void;
   onProve: (account: string) => void;
+  onExportFork: () => void;
 }) {
   const receipts = receiptsText(m.receipts);
   const [why, setWhy] = useState(false);
@@ -151,6 +157,16 @@ export function ResultsView({
         <Display>{HEADLINE[m.outcome]}</Display>
         <Body muted>{LINE[m.outcome]}</Body>
       </Animated.View>
+      {m.forked ? (
+        <View style={styles.fork} accessible accessibilityRole="alert">
+          <Strong>{`${LOG_FORKED}.`}</Strong>
+          <Body>
+            Two log roots it committed to don't fit one growing log, so don't trust its verdicts in this
+            match. Your phone kept the signed evidence.
+          </Body>
+          <Button kind="quiet" symbol="square.and.arrow.up" title="Export the proof" onPress={onExportFork} />
+        </View>
+      ) : null}
       <Row gap="xxl">
         <View accessible accessibilityLabel={`Final head ${m.head === null ? "pending" : money(m.head)}`}>
           <Eyebrow muted>Final head</Eyebrow>
@@ -265,10 +281,12 @@ export function Results() {
         referee: app.refereeKind,
         receipts: app.receipts,
         met: app.meetings?.map((x) => x.other) ?? [],
+        forked: app.logFork !== null,
       }}
       onReplay={() => replay && void Linking.openURL(replay)}
       onDone={() => app.finishMatch()}
       onProve={(account) => void app.shareMeeting(account)}
+      onExportFork={() => void app.shareFork()}
     />
   );
 }
@@ -284,4 +302,12 @@ const styles = StyleSheet.create({
   whyBody: { paddingLeft: 40 },
   badge: { width: 28, alignItems: "center" },
   receipts: { gap: space.xs },
+  // The alarm: persimmon, the colour the app keeps for what needs acting on now.
+  fork: {
+    gap: space.xs,
+    padding: space.l,
+    borderRadius: radius.m,
+    borderWidth: 2,
+    borderColor: color.persimmon,
+  },
 });
