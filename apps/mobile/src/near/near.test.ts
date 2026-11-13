@@ -5,8 +5,9 @@ import { sha256 } from "@tail/protocol";
 import * as nearApi from "../../../server/node_modules/near-api-js/lib/index.js";
 import { fromBase58, toBase58 } from "../lib/base58";
 import { parseMatchFacts } from "./chain";
+import { NearRpc } from "./rpc";
 import { encodeTransaction, nearPublicKeyString, PLAYER_GAS, signTransaction, type Transaction } from "./tx";
-import { payoutProblem, withdrawCall, withdrawGas } from "./withdraw";
+import { payoutProblem, withdrawCall, withdrawGas, withdrawRefusal } from "./withdraw";
 
 const sk = ed25519.utils.randomSecretKey();
 const pk = ed25519.getPublicKey(sk);
@@ -74,6 +75,41 @@ describe("withdraw", () => {
       amount: "1500000",
       to: "maya.testnet",
     });
+  });
+
+  test("a withdraw the token refused is a failure, though its transaction succeeded", async () => {
+    // The contract's on_withdraw puts the balance back and returns false; the transaction's
+    // final value is that return value.
+    const sent = (status: object | undefined) =>
+      new NearRpc("http://rpc", async (_url, init) => {
+        const method = (JSON.parse(String(init?.body)) as { method: string }).method;
+        const result =
+          method === "query"
+            ? { nonce: 7, block_hash: toBase58(sha256(new TextEncoder().encode("b"))) }
+            : { ...(status ? { status } : {}), transaction: {} };
+        return Response.json({ jsonrpc: "2.0", id: "tail", result });
+      }).functionCall(
+        { accountId: "maya.tail-dev.testnet", publicKey: pk, secretKey: sk },
+        "tail.tail-dev.testnet",
+        {
+          methodName: "withdraw",
+          args: {},
+          gas: 50n * TGAS,
+        },
+      );
+    const b64 = (v: string) => Buffer.from(v).toString("base64");
+    expect((await sent({ SuccessValue: b64("false") })).value).toBe(false);
+    expect((await sent({ SuccessValue: b64("true") })).value).toBe(true);
+    // Accepted but not yet executed: nothing is known, and nothing is read as a refusal.
+    expect((await sent(undefined)).value).toBeUndefined();
+    expect(withdrawRefusal(true, "maya.testnet")).toBeNull();
+    expect(withdrawRefusal(undefined, undefined)).toBeNull();
+    expect(withdrawRefusal(false, "maya.testnet")).toBe(
+      "The token didn't take the transfer: maya.testnet must be registered with the token first. Nothing was moved, and your payout wallet was not set.",
+    );
+    expect(withdrawRefusal(false, undefined)).toBe(
+      "The token didn't take the transfer: your payout wallet must be registered with the token first. Nothing was moved.",
+    );
   });
 
   test("a payout account must be a valid NEAR account that is neither this account nor the contract", () => {

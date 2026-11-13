@@ -2,7 +2,7 @@
 // a signed transaction, and contract views. The relay pays for everything else.
 
 import { utf8 } from "@tail/protocol";
-import { toB64 } from "../lib/b64";
+import { fromB64, toB64 } from "../lib/b64";
 import { fromBase58 } from "../lib/base58";
 import type { Fetch } from "../proximity/relay";
 import { type FunctionCall, nearPublicKeyString, signTransaction } from "./tx";
@@ -58,8 +58,16 @@ export class NearRpc {
     return JSON.parse(new TextDecoder().decode(bytes)) as T;
   }
 
-  /** Signs and sends one function call with the player's key; resolves once it executed. */
-  async functionCall(key: NearKey, contract: string, call: FunctionCall): Promise<string> {
+  /**
+   * Signs and sends one function call with the player's key; resolves once it executed, with the
+   * transaction's return value (the last call in its chain of receipts, as JSON). `value` is
+   * undefined when the method returned nothing or the outcome is not known yet.
+   */
+  async functionCall(
+    key: NearKey,
+    contract: string,
+    call: FunctionCall,
+  ): Promise<{ hash: string; value: unknown }> {
     const ak = await this.call("query", {
       request_type: "view_access_key",
       finality: "final",
@@ -85,7 +93,18 @@ export class NearRpc {
     // Without a status the transaction was accepted but its outcome is not known yet; the lobby
     // poll shows whether it took effect.
     if (status && "Failure" in status) throw new NearError(failureText(status["Failure"]));
-    return hash;
+    return { hash, value: returnValue(status?.["SuccessValue"]) };
+  }
+}
+
+/** `SuccessValue` (base64 of the JSON return value; empty for none) as a value. */
+function returnValue(v: unknown): unknown {
+  if (typeof v !== "string" || v === "") return undefined;
+  const text = new TextDecoder().decode(fromB64(v));
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new NearError("NEAR answered with a return value that isn't JSON.");
   }
 }
 

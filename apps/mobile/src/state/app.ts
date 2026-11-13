@@ -28,7 +28,7 @@ import { keychain } from "../identity/keychain";
 import { anchoredRoots, matchFacts } from "../near/chain";
 import { NearRpc } from "../near/rpc";
 import { PLAYER_GAS } from "../near/tx";
-import { payoutProblem, withdrawCall, withdrawGas } from "../near/withdraw";
+import { payoutProblem, withdrawCall, withdrawGas, withdrawRefusal } from "../near/withdraw";
 import { meshProfile } from "../proximity/carry/mesh";
 import { offlineProtocolLink } from "../proximity/carry/sdk";
 import type { CarryPlan } from "../proximity/client";
@@ -355,7 +355,7 @@ class AppModel {
         if (problem) throw new Error(problem);
         wallet = (to ?? "").trim();
       }
-      await this.rpc.functionCall(
+      const { value } = await this.rpc.functionCall(
         { accountId: id.accountId as string, publicKey: id.nearPk, secretKey: id.nearSk },
         this.settings.contractId,
         withdrawCall({
@@ -366,6 +366,8 @@ class AppModel {
         }),
       );
       void this.refreshWallet();
+      const refused = withdrawRefusal(value, wallet);
+      if (refused) throw new Error(refused);
     });
   }
 

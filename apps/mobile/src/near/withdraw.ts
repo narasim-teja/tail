@@ -56,3 +56,16 @@ export function withdrawCall(o: { token: string; amount: bigint; gas: bigint; to
     gas: o.gas,
   };
 }
+
+/**
+ * What a refused withdraw says, from the transaction's return value (the contract's
+ * `on_withdraw`): false when the token refused the transfer and the contract put the balance
+ * back, which leaves the transaction itself a success. The usual cause is a wallet that is not
+ * registered with the token. Null for anything else: true, or no value known yet.
+ */
+export function withdrawRefusal(value: unknown, to: string | undefined): string | null {
+  if (value !== false) return null;
+  return to === undefined
+    ? "The token didn't take the transfer: your payout wallet must be registered with the token first. Nothing was moved."
+    : `The token didn't take the transfer: ${to} must be registered with the token first. Nothing was moved, and your payout wallet was not set.`;
+}
