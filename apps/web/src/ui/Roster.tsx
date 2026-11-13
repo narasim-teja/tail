@@ -8,36 +8,7 @@ import { useStore } from "../lib/store.ts";
 import { focusAt } from "../model/film.ts";
 import { lockAt, snapshotAt } from "../model/match.ts";
 import { useReplay } from "./context.tsx";
-
-const TWEEN_MS = 900;
-
-/** Counts a head from its old value to the new one, in whole cents. */
-function useTween(value: bigint, reduced: boolean, decimals: number): bigint {
-  const [shown, setShown] = useState(value);
-  const from = useRef(value);
-  useEffect(() => {
-    if (reduced) {
-      from.current = value;
-      setShown(value);
-      return;
-    }
-    const start = performance.now();
-    const a = from.current;
-    let raf = 0;
-    const tick = (now: number) => {
-      const k = Math.min(1, (now - start) / TWEEN_MS);
-      const e = 1 - (1 - k) ** 4;
-      const cent = 10n ** BigInt(Math.max(0, decimals - 2));
-      const v = ((a + ((value - a) * BigInt(Math.round(e * 1000))) / 1000n) / cent) * cent;
-      setShown(k >= 1 ? value : v);
-      from.current = k >= 1 ? value : v;
-      if (k < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [value, reduced, decimals]);
-  return shown;
-}
+import { useTween } from "./tween.ts";
 
 export function Roster({ compact }: { compact: boolean }) {
   const { match, play, verify, select, reduced } = useReplay();
