@@ -56,7 +56,7 @@ import { checkedZone, type Zone } from "../tail/zone";
 import { assertWith, attestor, radioPort } from "./device";
 import { files } from "./files";
 import { decodeMatchRecord, emptyRecord, encodeMatchRecord, type MatchRecord } from "./persist";
-import { type Page, type Route, routeFor } from "./route";
+import { joinRefusal, type Page, type Route, routeFor } from "./route";
 
 /** The busy label while a typed lobby code is looked up; Home shows it on its button. */
 export const FINDING_LOBBY = "Finding the lobby";
@@ -518,6 +518,11 @@ class AppModel {
    * only open lobbies), a full match id, or a tail://join link holding either.
    */
   openMatch(input: string) {
+    const refused = joinRefusal(this.session ? { over: this.session.snapshot().over } : null);
+    if (refused) {
+      this.session?.tell(refused);
+      return Promise.resolve();
+    }
     const target = readJoin(input);
     if (!target) {
       this.error = "Enter the lobby code, like K7M-4QX.";

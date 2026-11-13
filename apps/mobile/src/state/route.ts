@@ -57,3 +57,14 @@ export function routeFor(f: RouteFacts): Route {
 export function autoBrief(f: { briefed: boolean; busy: string | null; briefError: string | null }): boolean {
   return !f.briefed && f.busy === null && f.briefError === null;
 }
+
+/**
+ * Why a lobby link is not opened now, or null when it may be. While a hunt session runs (from the
+ * briefing on), opening another match would drop the hunt screen's match from under it and leave
+ * it blank, so the link waits; the line goes in the hunt's log.
+ */
+export function joinRefusal(session: { over: boolean } | null): string | null {
+  return session && !session.over
+    ? "A join link was opened. It can wait until this match is over: you're still in the hunt."
+    : null;
+}

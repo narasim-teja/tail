@@ -157,6 +157,11 @@ export class TailHunt {
     void this.prox.batchNow();
   }
 
+  /** One line in the hunt's log from the app, about something it did not do mid-hunt. */
+  tell(text: string): void {
+    this.note("info", text);
+  }
+
   /** Anchored roots read from NEAR (Results reads End's), checked against the HUD roots. */
   checkAnchors(roots: readonly AnchoredRoot[]): Promise<void> {
     return this.prox.checkAnchors(roots);

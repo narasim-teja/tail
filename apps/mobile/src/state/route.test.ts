@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { autoBrief, type RouteFacts, routeFor } from "./route";
+import { autoBrief, joinRefusal, type RouteFacts, routeFor } from "./route";
 
 const base: RouteFacts = {
   ready: true,
@@ -55,5 +55,15 @@ describe("the briefing reads the orders by itself", () => {
     expect(autoBrief({ ...idle, busy: "Starting" })).toBe(false);
     // Its own failure waits for Try again, so it does not loop.
     expect(autoBrief({ ...idle, briefError: "The match is not on chain yet." })).toBe(false);
+  });
+});
+
+describe("a join link opened during a hunt", () => {
+  test("is refused while the hunt session runs, with one line why; after it, the link opens", () => {
+    expect(joinRefusal({ over: false })).toBe(
+      "A join link was opened. It can wait until this match is over: you're still in the hunt.",
+    );
+    expect(joinRefusal({ over: true })).toBeNull();
+    expect(joinRefusal(null)).toBeNull();
   });
 });
