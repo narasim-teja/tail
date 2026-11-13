@@ -1,10 +1,11 @@
-# TAIL web: the front page and the replay
+# TAIL web: the front page, the docs and the replay
 
-The site at `/` is TAIL's front page (below, [The front page](#the-front-page)). Everything else
-is the replay: a web page that replays a finished TAIL match on the park it was played in, in 3D, and checks
-in the browser that every tag, hint and payout is the one the referee signed and NEAR settled. It
-re-runs the replay the contract runs at the end: money only becomes withdrawable after the
-contract has replayed and checked the whole match.
+The site at `/` is TAIL's front page and `/docs` its docs (below, [The front page and the
+docs](#the-front-page-and-the-docs)). Everything else is the replay: a web page that replays a
+finished TAIL match on the park it was played in, in 3D, and checks in the browser that every
+tag, hint and payout is the one the referee signed and NEAR settled. It re-runs the replay the
+contract runs at the end: money only becomes withdrawable after the contract has replayed and
+checked the whole match.
 
 It opens as a short film: the place and the match line come up large over the park and hand
 over to the corner title, then the film runs 30x through the quiet stretches, easing to real
@@ -61,6 +62,7 @@ The fixture is a generated match, not a real one (see below). Other URL options:
 | URL                                    | Shows                                                                                                               |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `/`                                    | the front page (also with tracking tags such as `utm_source`)                                                       |
+| `/docs`                                | the docs; each section has an anchor (`/docs#proof`)                                                                |
 | `/?fixture=boston-common`              | the fixture, with trails (any replay option below without a `fixture` or `match` plays it too, e.g. `/?t=372`)      |
 | `/?fixture=boston-common-no-trails`    | the same match without released batches                                                                             |
 | `/?fixture=boston-common-tampered`     | one Tag verdict rewritten after signing                                                                             |
@@ -150,36 +152,51 @@ bun test apps/web                          # verification, tamper and model test
 cd apps/web && bun run build                # fixtures, then the static site in dist/
 bun apps/web/scripts/make-fixture.ts       # write the fixtures without building
 bun apps/web/scripts/shots.ts http://localhost:5173/   # every state at 390, 1440 and 1920 wide
-bun apps/web/scripts/landing-shots.ts http://localhost:5173/   # the front page, 390 and 1440, motion and reduced
+bun apps/web/scripts/landing-shots.ts http://localhost:5173/   # front page and docs: 390, 768, 1024, 1440; motion and reduced
 bun apps/web/scripts/og-image.ts           # redraw public/og.png (after make-fixture)
 ```
 
-## The front page
+## The front page and the docs
 
 `/` answers two questions for a visitor arriving from a shared link: what TAIL is, and whether it
-is real. It is its own small bundle (`src/landing/`): it never loads MapLibre, deck.gl or the
-verifier, and the replay never loads it (`src/main.tsx` picks the page from `src/route.ts`, the
-one owner of which address opens what, and imports only that page's code).
+is real, in about three scrolls. `/docs` holds the rest, for a curious visitor and for a judge who
+wants to check the claims. Both are their own small bundles (`src/landing/`, `src/docs-page/`): they
+never load MapLibre, deck.gl or the verifier, and the replay never loads them (`src/main.tsx`
+picks the page from `src/route.ts`, the one owner of which address opens what, and imports only
+that page's code).
 
-Day to dusk: it opens on the phone app's daylight paper and, as the visitor reads down from the
-game to the proof, the ground deepens through sand and a low-sun band (no text sits on it) to the
-replay's dusk, where the matches are listed. Every colour is derived in OKLCH from `@tail/brand`
-(`src/landing/palette.ts`), and `test/landing.test.tsx` holds each text colour to WCAG AA on each
-ground it is set on. Persimmon is spent on the game only: the hunter, the lock, and the STRIKE
-fold, which floods it as the phone's lock-full takeover does.
+They are drawn in the phone app's design system, not a reinterpretation of it: the app's paper,
+sand, ink, mute and persimmon from `@tail/brand`; Archivo at its normal width; the app's 4-point
+spacing scale, radii (10, 16, 24) and text styles (12 px tracked caps with a brand icon beside
+them, the 40 px head and heat numbers, the giant lock numeral); its 52-point buttons (one ink,
+the rest sand) and round stepper. The lock arc, heat bar and head are `apps/mobile/src/ui/game.tsx`
+redrawn at the same proportions (`src/landing/instruments.tsx`): 270° in four segments 7° apart,
+a ring 24/232 of the arc wide, heat segments 22 tall, 6 apart, radius 6.
 
-- **Hero.** A recorded match playing its first chase on a loop, drawn in SVG from a scene cut
-  from the bundle by the replay's own model (`scripts/scene.ts`): every player's walked trail, the
-  hunter's lock arc filling from the logged contacts, the strike ring where the tag landed. It is
-  the featured published match, else the generated Boston Common fixture, labelled as generated.
-  It runs only on screen with the tab visible; Reduce Motion draws one still frame of the strike.
-- **Lock, Heat, Strike, Hints.** The phone's instruments redrawn. The rules in the words come from
-  `@tail/protocol`'s constants, and each hint price is `hintPrice` at a 5 USDC stake for the demand
-  the visitor sets (pinned by a test).
-- **One stake, one number.** A worked hunt as a ledger, every figure from the pricing rule; the
-  table's total never changes.
-- **What a tag proves.** The path from two phones to the browser, each step with where to check
-  it, then what is not claimed (the limits at the top of the root README).
+Day to dusk: the front page opens on the app's daylight paper and, as the visitor reads down, the
+ground warms through noon and an evening sand, falls through a low-sun band (no text sits on it)
+and lands on the replay's dusk, where the matches are listed. Every colour is derived in OKLCH
+from `@tail/brand` (`src/landing/palette.ts`), and `test/landing.test.tsx` holds each text colour
+to WCAG AA on each ground it is set on, the map's labels included. Persimmon is spent on the game
+only: the hunter, the lock, and the STRIKE fold, which floods it as the phone's lock-full
+takeover does.
+
+- **Hero.** The line, and beside it the phone's hunt screen opened out (on a phone it stacks into
+  the app's own): the top strip (target, time left), the lock arc, the head, the heat bar, and the
+  map panel, all reading the same moment of a recorded match. The map is the place drawn in SVG
+  from OpenStreetMap (below), with the app's marks on it: the dotted zone edge, the safehouse
+  glyph, the others as soft dots with their trails fading behind, the hunter as the Trail mark on
+  its paper disc turned to its heading, and the strike ring where the tag lands. The match is the
+  featured published one, else the generated Boston Common fixture, labelled as generated; its
+  scene is cut from the bundle by the replay's own model (`scripts/scene.ts`), including the
+  hunter's lock, heat and head as they changed. It runs only on screen with the tab visible;
+  Reduce Motion draws one still frame of the strike.
+- **Lock and heat, Strike, Hints.** One sentence each, the instruments doing the talking. Lock and
+  heat share a fold: they are one number seen from both sides, so the hunter's arc and the
+  target's bar climb together. The Handler's sheet prices each hint with `hintPrice` at a 5 USDC
+  stake for the demand the visitor sets (pinned by a test).
+- **How it's checked.** Four steps, a line each, a link to the docs' six, and one line on where
+  things stand (testnet, a test referee, iPhone only) with a link to everything not claimed.
 - **Matches.** The published matches, each with how the pinned contract settled it, read live with
   `get_match` (paid out, refunded, not on NEAR, or that NEAR didn't answer). That is the contract's
   record, not the replay's checks, which run when a row is opened. With none published, the
@@ -188,14 +205,38 @@ fold, which floods it as the phone's lock-full takeover does.
 - **A dossier.** One player's card, the contract's own `nft_token` media, when
   `VITE_DOSSIER_ACCOUNT` is set and NEAR returns it; otherwise the section is absent.
 
-Everything the first screen needs (type, the match list, the scene, the demos) is fetched before
-the first render, so nothing moves when a font or file arrives. The browser's theme colour follows
-the ground: paper, then dusk once the proof turns.
+Everything the first screen needs (type, the match list, the scene and its map, the demos) is
+fetched before the first render, so nothing moves when a font or file arrives. The browser's theme
+colour follows the ground: paper, then dusk once the matches come up.
+
+**The docs** (`src/docs-page/`) are long-form reading on the paper: how a match works (with the rules'
+numbers read from `@tail/protocol`'s constants, and the Handler's sheet), the worked hunt as a
+ledger (every figure from the pricing rule; the table's total never changes), the six steps of
+what a tag proves with where to check each, how to check a match yourself (the replay, the
+contract's views, `tail-verify`), the dossier, everything not claimed, where it stands today, and
+what TAIL is built on. Every fact in them is one the root `README.md` and `ARCHITECTURE.md` state.
+
+### The hero's map
+
+`public/maps/<name>.json` (`src/landing/map.ts`) is one place drawn from OpenStreetMap: lawns and
+gardens, water, street centre lines classed main or side, the footpaths inside the parks, where
+each street's name can sit, and a few place names, in whole metres from the map's centre, with
+the box the hero frames. `scripts/fetch-paths.ts` writes it from the Overpass API
+(`scripts/osm-map.ts`: clipped to the box, simplified to about a metre, each shape once); the site
+never fetches tiles. Boston Common's is 59 KB, 17 KB gzipped. The scene names its zone's centre,
+so the hero lays the match on the map by the distance between the two centres; a map that
+doesn't cover the zone, or none, draws the plain zone in the same style. Map data © OpenStreetMap
+contributors (ODbL), credited at the map's corner.
+
+A match published in another park needs that park's map: add it to `MAPS` in `fetch-paths.ts`
+(its centre, the box to fetch, the box to frame, the streets and places to name), run
+`bun apps/web/scripts/fetch-paths.ts --map <name>`, commit the file, and publish with
+`--map <name>`.
 
 ### Published matches
 
 `public/matches/index.json` lists the matches the site ships, newest first (it is committed empty):
-`{ id, place, playedAt, players, minutes, survivors?, featured? }`. Each has its bundle at
+`{ id, place, playedAt, players, minutes, survivors?, featured?, map? }`. Each has its bundle at
 `public/matches/<id>.json` and the front page's scene of it at `<id>.scene.json`. A link
 `/?match=<id>` reads a listed match from the site instead of the relay; it is checked exactly as
 any other, against the pinned contract and the linked id, so the site's copy earns no trust of its
@@ -203,32 +244,34 @@ own. A list that can't be read (none deployed, or not the documented shape) send
 the relay, as before.
 
 ```sh
-bun apps/web/scripts/publish-match.ts <match id> --place "Boston Common" [--relay <url>] [--featured]
+bun apps/web/scripts/publish-match.ts <match id> --place "Boston Common" [--map <name>] [--relay <url>] [--featured]
 ```
 
 It fetches the finished match from a relay (default `http://localhost:8787`), refuses a private one
-(the relay's 403, or a bundle whose `publicReplay` isn't true), writes the bundle and its scene,
-lists it first (with `--featured`, it becomes the hero's match), and prints what it published.
+(the relay's 403, or a bundle whose `publicReplay` isn't true), reads the stake token's decimals
+from NEAR (`ft_metadata`, for the hero's head), writes the bundle and its scene, lists it first
+(with `--featured`, it becomes the hero's match; with `--map`, it names its place's map, which
+must exist), and prints what it published.
 **The bundle holds every player's location trail for the whole match**, and the script says so:
 once deployed anyone can download it, so publish only a match whose players agreed. No real match
 has been published.
 
 ### Settings
 
-Build-time, all optional. Unset means the link or section they feed is left out.
+Build-time, all optional.
 
-| Variable               | What it does                                                                                                                |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `VITE_SITE_URL`        | the canonical origin (default `https://playtail.app`; https only): the canonical link, `og:url`, `og:image`, the footer     |
-| `VITE_REPO_URL`        | the source repository; adds the Code and Source links and the proof steps' links into the repo (GitHub-style `/blob/main/`) |
-| `VITE_DOCS_URL`        | a Docs link in the footer                                                                                                   |
-| `VITE_DOSSIER_ACCOUNT` | the player whose Dossier the front page shows                                                                               |
+| Variable               | What it does                                                                                                                                                         |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VITE_SITE_URL`        | the canonical origin (default `https://playtail.app`; https only): the canonical link, `og:url`, `og:image`, the footer                                              |
+| `VITE_REPO_URL`        | the source repository (default `https://github.com/narasim-teja/tail`): GitHub in the top bar and footer, the docs' links into the repo (GitHub-style `/blob/main/`) |
+| `VITE_DOCS_URL`        | where Docs links to (default the site's own `/docs`)                                                                                                                 |
+| `VITE_DOSSIER_ACCOUNT` | the player whose Dossier the front page shows; unset, the section is left out                                                                                        |
 
 ### Hosting
 
-`dist/` is a static site. `public/_redirects` sends `/dossier/<account>` to `index.html` for
-Cloudflare Pages (and Netlify), so a dossier link opens directly; every other page is `/` with a
-query. `public/og.png` is the social card (`scripts/og-image.ts`, committed), named with absolute
+`dist/` is a static site. `public/_redirects` sends `/docs` and `/dossier/<account>` to
+`index.html` for Cloudflare Pages (and Netlify), so those links open directly; every other page is
+`/` with a query. `public/og.png` is the social card (`scripts/og-image.ts`, committed), named with absolute
 URLs from `VITE_SITE_URL` in `index.html`.
 
 ## What the page checks, and how
