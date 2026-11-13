@@ -123,6 +123,8 @@ export class Matches {
   private readonly tickMs: number;
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly running = new Set<string>();
+  /** Steps and Starts in flight, for `drain`. */
+  private readonly busy = new Set<Promise<unknown>>();
   /** Hosts with a create in flight: one open lobby per host, and the check spans an await. */
   private readonly creating = new Set<string>();
   /** This process's name on lease rows. */
@@ -220,7 +222,11 @@ export class Matches {
    * host is a player). Every other player's keys reach only that player: on its HUD socket and in
    * its signed zone view.
    */
-  async start(matchId: string, caller: string) {
+  start(matchId: string, caller: string) {
+    return this.track(this.startNow(matchId, caller));
+  }
+
+  private async startNow(matchId: string, caller: string) {
     const m = this.d.store.match(matchId);
     if (!m) throw new HttpError(404, "no such match");
     if (m.host !== caller) throw new HttpError(403, "only the host can start the match");
@@ -378,6 +384,32 @@ export class Matches {
       if (!this.running.has(id)) this.d.store.releaseLease(id, this.holder);
   }
 
+  /**
+   * Stops the loop, waits up to `ms` for the steps and Starts in flight (a referee answer they
+   * are waiting for would otherwise be lost with the process), then hands back every lease this
+   * process holds, so another relay can step its matches at once rather than LEASE_MS later. A
+   * step still running after `ms` is abandoned with the process.
+   */
+  async drain(ms: number) {
+    this.stop();
+    const timer = { id: undefined as ReturnType<typeof setTimeout> | undefined };
+    await Promise.race([
+      Promise.allSettled([...this.busy]),
+      new Promise((done) => {
+        timer.id = setTimeout(done, ms);
+      }),
+    ]);
+    clearTimeout(timer.id);
+    this.d.store.releaseLeasesOf(this.holder);
+  }
+
+  private track<T>(p: Promise<T>): Promise<T> {
+    this.busy.add(p);
+    const done = () => this.busy.delete(p);
+    p.then(done, done);
+    return p;
+  }
+
   /** True while a step is scheduled or running for this match. */
   active(matchId: string) {
     return this.timers.has(matchId) || this.running.has(matchId);
@@ -389,7 +421,7 @@ export class Matches {
       matchId,
       setTimeout(() => {
         this.timers.delete(matchId);
-        void this.run(matchId);
+        void this.track(this.run(matchId));
       }, delayMs),
     );
   }

@@ -13,6 +13,7 @@ import { proxyHeaderWarning } from "./limits.ts";
 import { NearChain } from "./near.ts";
 import { GuardedReferee, makeReferee } from "./referee.ts";
 import { MAX_BODY } from "./routes/util.ts";
+import { stopOnSignals, stopRelay } from "./shutdown.ts";
 
 const log = createLogger("relay");
 
@@ -75,12 +76,7 @@ export function startRelay(config: Config) {
     referee,
     refereeClient,
     server,
-    stop() {
-      relay.matches.stop();
-      relay.retention.stop();
-      server.stop(true);
-      store.close();
-    },
+    stop: () => stopRelay({ matches: relay.matches, retention: relay.retention, store, server }),
   };
 }
 
@@ -97,7 +93,7 @@ if (import.meta.main) {
     throw e;
   }
   await checkPins(config);
-  startRelay(config);
+  stopOnSignals(startRelay(config).stop, log);
 }
 
 /**

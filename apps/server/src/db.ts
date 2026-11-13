@@ -1292,6 +1292,11 @@ export class Store {
     this.db.query("DELETE FROM leases WHERE match_id = ? AND holder = ?").run(matchId, holder);
   }
 
+  /** Every lease `holder` has, for a process that is stopping. */
+  releaseLeasesOf(holder: string) {
+    this.db.query("DELETE FROM leases WHERE holder = ?").run(holder);
+  }
+
   // ── Signed-request replay guard ──────────────────────────────────────────────────
 
   /** False if this signed request was seen before (inside its freshness window). */

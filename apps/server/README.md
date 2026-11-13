@@ -280,7 +280,11 @@ The contract stores only `zone_hash` = SHA256("tail/zone/v1" ‖ borsh(zone, saf
 circles as `{lat_e7 i32, lon_e7 i32, radius_m u32}`; the replay bundle carries the zone so the replay can
 check it.
 
-The relay restarts the loop of every running match on boot (state lives in SQLite).
+The relay restarts the loop of every running match on boot (state lives in SQLite). On SIGINT
+or SIGTERM it takes no new requests or steps, lets the steps and Starts in flight finish (up to
+75 s, a referee call's deadline and a NEAR call or two), hands back every match lease it holds
+and closes the database, so a restarted relay steps its matches at once rather than after the
+lease's 120 s. A second signal exits at once.
 
 ## Ghost players: the testing door
 
@@ -367,6 +371,10 @@ bun apps/server/scripts/pin-referee.ts                      # back to the enclav
 ```
 
 ## Run
+
+`bun run --cwd apps/server start` (or `bun apps/server/src/main.ts`) is the one to run a real
+match with. `bun run --cwd apps/server dev` restarts the relay on every saved file: for working
+on the relay only, never while a match is on.
 
 ```sh
 bun apps/server/src/main.ts                   # reads the repo-root .env.local; listens on RELAY_PORT

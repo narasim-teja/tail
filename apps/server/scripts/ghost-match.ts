@@ -326,7 +326,7 @@ try {
 } finally {
   squad?.stop();
   for (const g of ghosts) g.closeHud();
-  relay.stop();
+  await relay.stop();
 }
 console.log(`\n${results.filter((r) => r[1]).length}/${results.length} checks passed`);
 process.exit(0);
