@@ -28,8 +28,14 @@ pub const DOSSIER_ENTRIES: usize = 12;
 /// The largest dossier record with a 64-character account id, plus its place in the token list,
 /// including NEAR's 40-byte per-record overhead. `register_for` charges it; a unit test measures it.
 pub const DOSSIER_RECORD_BYTES: u128 = 1_200;
-/// `nft_tokens` returns at most this many tokens per call: each one builds its card.
-pub const MAX_TOKENS_PER_PAGE: u64 = 50;
+/// `nft_tokens` returns at most this many tokens per call: each one builds its card. Measured in
+/// the unit-test VM for ten maximal cards (`nft_tokens_pages_are_capped_at_ten_maximal_cards`):
+/// 1.47 Tgas of host functions (storage reads, two SHA-256 per card) and about 10.5 KB written
+/// per card (a 4 KB SVG, then 6.4 KB of JSON holding its base64). That VM does not meter wasm
+/// instructions; at NEAR's 822,756 gas per instruction and a generous 200 instructions per byte
+/// written, a card costs at most about 1.7 Tgas, so a page stays under about 20 Tgas, a fifteenth
+/// of the 300 Tgas an RPC node gives a view call.
+pub const MAX_TOKENS_PER_PAGE: u64 = 10;
 /// The error both transfer methods give.
 pub const BOUND: &str = "a dossier is bound to the player who earned it";
 
@@ -289,13 +295,14 @@ pub fn record_settlement(
         };
         let i = i as u16;
         let (result, tags) = if refunded {
-            d.refunded += 1;
+            d.refunded = d.refunded.saturating_add(1);
             (MatchResult::Refunded, 0)
         } else {
             let tags = events
                 .iter()
                 .filter(|e| matches!(e, PlayEvent::Tag { hunter, .. } if *hunter == i))
-                .count() as u8;
+                .count();
+            let tags = u8::try_from(tags).unwrap_or(u8::MAX);
             let result = if !p.out {
                 MatchResult::Survived
             } else if events
@@ -306,11 +313,16 @@ pub fn record_settlement(
             } else {
                 MatchResult::Tagged
             };
-            d.matches += 1;
-            d.survived += u32::from(result == MatchResult::Survived);
-            d.forfeits += u32::from(result == MatchResult::Forfeit);
-            d.tags += u32::from(tags);
-            d.won += p.paid;
+            // Saturating: the record is bookkeeping, and nothing in it may make End or abort panic.
+            d.matches = d.matches.saturating_add(1);
+            d.survived = d
+                .survived
+                .saturating_add(u32::from(result == MatchResult::Survived));
+            d.forfeits = d
+                .forfeits
+                .saturating_add(u32::from(result == MatchResult::Forfeit));
+            d.tags = d.tags.saturating_add(u32::from(tags));
+            d.won = d.won.saturating_add(p.paid);
             (result, tags)
         };
         d.push(
@@ -338,15 +350,21 @@ impl Tail {
             .map(|d| DossierView::of(&account_id, d))
     }
 
-    /// Mints the dossier of an account registered before dossiers existed. The account itself or
-    /// its parent, with exactly `get_config().dossier_deposit` attached.
+    /// Mints the dossier of an account registered before dossiers existed, with exactly
+    /// `get_config().dossier_deposit` attached. The relay (each player's parent) backfills its
+    /// players this way, since a player's own function-call key cannot attach a deposit; the
+    /// owner may too, and so may the account itself. Whoever calls pays the storage.
     #[payable]
     pub fn mint_dossier(&mut self, account_id: AccountId) {
         require!(
             env::attached_deposit() == crate::dossier_deposit(),
             "attach exactly dossier_deposit (see get_config)"
         );
-        crate::require_self_or_parent(&account_id, "mint its dossier");
+        let caller = env::predecessor_account_id();
+        require!(
+            caller == self.owner || crate::is_self_or_parent(&account_id, &caller),
+            "only the account, its parent or the owner can mint its dossier"
+        );
         require!(self.payouts.contains_key(&account_id), "account not registered");
         require!(
             !self.dossiers.contains_key(&account_id),
@@ -385,7 +403,7 @@ impl Tail {
     }
 
     /// NEP-171's callback after `nft_transfer_call`. No transfer ever starts, so nothing schedules
-    /// it; the token never left its owner, which is what `true` ("returned") means.
+    /// it. NEP-171's `true` means the token was transferred; it never is, so this says `false`.
     #[private]
     pub fn nft_resolve_transfer(
         &mut self,
@@ -395,11 +413,13 @@ impl Tail {
         approved_account_ids: Option<std::collections::HashMap<AccountId, u64>>,
     ) -> bool {
         let _ = (owner_id, receiver_id, token_id, approved_account_ids);
-        true
+        false
     }
 
-    pub fn nft_token(&self, token_id: AccountId) -> Option<Token> {
-        self.dossiers.get(&token_id).map(|d| token(&token_id, d))
+    /// NEP-171 `token_id` is a string; one that is not an account id names no dossier.
+    pub fn nft_token(&self, token_id: String) -> Option<Token> {
+        let account_id: AccountId = token_id.parse().ok()?;
+        self.dossiers.get(&account_id).map(|d| token(&account_id, d))
     }
 
     // ── NEP-177 metadata ─────────────────────────────────────────────────────────────────────
@@ -449,7 +469,11 @@ impl Tail {
         if skip > 0 || limit == Some(0) {
             return Vec::new();
         }
-        self.nft_token(account_id).into_iter().collect()
+        self.dossiers
+            .get(&account_id)
+            .map(|d| token(&account_id, d))
+            .into_iter()
+            .collect()
     }
 }
 

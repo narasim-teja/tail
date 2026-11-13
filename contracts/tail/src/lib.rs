@@ -35,8 +35,8 @@ use tail_protocol::merkle::{verify_consistency_with, verify_with};
 use tail_protocol::ring::{players_hash, ring_commit, ring_order};
 use tail_protocol::settle::{replay, PlayEvent, Violation};
 use tail_protocol::{
-    hint_price, recent_hints, Hash, LogEntry, MatchId, SignedVerdict, Verdict, CHECKPOINT_MS, MAX_HINTS,
-    REFEREE_TIMEOUT_MS,
+    hint_bps, hint_kind, hint_price, recent_hints, Hash, LogEntry, MatchId, SignedVerdict, Verdict,
+    CHECKPOINT_MS, MAX_HINTS, PRICE_CAP_BPS, REFEREE_TIMEOUT_MS,
 };
 
 mod art;
@@ -88,6 +88,16 @@ pub const VERDICT_GRACE_MS: u64 = REFEREE_TIMEOUT_MS;
 /// access rule, and the verdict head, with NEAR's 40-byte per-record overhead). `create_match`
 /// charges it up front. A unit test checks the bound against a maximal match.
 pub const MATCH_STORAGE_BYTES: u128 = 15_200;
+/// The largest stake `create_match` accepts. `hint_price` computes `stake × base bps`, then
+/// `(… / 10 000) × demand bps`; with every base at most 10 000 bps and demand at most
+/// `PRICE_CAP_BPS`, both products stay below `MAX_STAKE × PRICE_CAP_BPS ≤ u128::MAX`, so pricing a
+/// hint can never overflow (and a match's heads, at most 12 stakes, cannot either).
+pub const MAX_STAKE: u128 = u128::MAX / PRICE_CAP_BPS;
+const _: () = assert!(
+    matches!(hint_bps(hint_kind::NEAR), Some(b) if b <= 10_000)
+        && matches!(hint_bps(hint_kind::TREND), Some(b) if b <= 10_000)
+        && matches!(hint_bps(hint_kind::BEARING), Some(b) if b <= 10_000)
+);
 /// One payout record with 64-character account ids, including the 40-byte record overhead.
 pub const PAYOUT_RECORD_BYTES: u128 = 180;
 /// One (account, token) balance record with 64-character ids, including the record overhead.
@@ -492,6 +502,7 @@ impl Tail {
             "attach exactly match_storage_deposit (see get_config)"
         );
         require!(self.allowed_tokens.contains(&cfg.token), "token not allowed");
+        require!(cfg.stake.0 <= MAX_STAKE, "stake is above MAX_STAKE");
         require!(
             MIN_PLAYERS <= cfg.min_players
                 && cfg.min_players <= cfg.max_players
@@ -626,7 +637,12 @@ impl Tail {
             .get(&id)
             .unwrap_or_else(|| env::panic_str("match was created before the upgrade and can never start"));
         if let Some(r) = play.requires {
-            let meets = self.dossiers.get(&who).is_some_and(|d| d.meets(&r));
+            // No dossier (an account registered before dossiers existed) reads as an empty record,
+            // so it clears `{0, 0}` and nothing above it.
+            let meets = self
+                .dossiers
+                .get(&who)
+                .map_or_else(|| Dossier::new(0).meets(&r), |d| d.meets(&r));
             if !meets {
                 env::panic_str(&format!(
                     "your dossier is below this match's requires: {} settled matches and {} survived",
@@ -688,6 +704,8 @@ impl Tail {
 
     /// Refunds a match the referee abandoned. Anyone may call it once:
     /// - a lobby passed `start_by_ms`, or its lock ran out, without a `Start`;
+    /// - at any time, a lobby created before the upgrade (it has no play record, so it can never
+    ///   start, and waiting for its deadline would only hold the stakes);
     /// - a running match saw no verdict for `REFEREE_TIMEOUT_MS`;
     /// - a running match is still running `REFEREE_TIMEOUT_MS` after its `end_ms` (a referee
     ///   that keeps talking but never sends `End` must not hold the money either).
@@ -702,7 +720,11 @@ impl Tail {
         match m.phase {
             Phase::Lobby => {
                 let lock_ran_out = m.locked_until_ms.is_some_and(|t| now >= t);
-                require!(now > m.start_by_ms || lock_ran_out, "lobby is still open");
+                let can_never_start = !self.plays.contains_key(&id);
+                require!(
+                    now > m.start_by_ms || lock_ran_out || can_never_start,
+                    "lobby is still open"
+                );
             }
             Phase::Running => {
                 let silent = now >= m.last_verdict_ms + REFEREE_TIMEOUT_MS;
@@ -1161,8 +1183,9 @@ fn start(m: &mut Match, ph: Hash, rc: Hash, start_ms: u64, end_ms: u64, now: u64
 /// A hint costs exactly its price at the match's demand when it was charged (`pricing`: the kind's
 /// base price, 25 % more for each hint anyone bought in the 5 minutes of match time before
 /// `t_ms`, at most 4x), recomputed here from the earlier hints' times, so the referee cannot
-/// charge anything else. `t_ms` must lie in `[start_ms, end_ms]` and never go back, so a referee
-/// cannot reorder hints in time to move the price. The amount goes from the asker's head into
+/// charge more than the pricing rule allows for the times it states (at most 4x the base);
+/// `tail-verify`'s re-execution checks the times. `t_ms` must lie in `[start_ms, end_ms]` and
+/// never go back, so a referee cannot reorder hints in time to move the price. The amount goes from the asker's head into
 /// the hint pool. Whom it was about stays secret until `End`; the Tag or Forfeit that puts that
 /// player out credits it to them first.
 fn pay_hint(m: &mut Match, play: &mut PlayRecord, from: u16, amount: u128, kind: u8, t_ms: u64) {
@@ -1469,15 +1492,19 @@ fn check_vrf_sender(vrf_sender: AccountId) -> AccountId {
     vrf_sender
 }
 
-/// The caller must be `account_id` itself or its direct parent (`<handle>.<caller>`).
-fn require_self_or_parent(account_id: &AccountId, what: &str) {
-    let caller = env::predecessor_account_id();
+/// Whether `caller` is `account_id` itself or its direct parent (`<handle>.<caller>`).
+fn is_self_or_parent(account_id: &AccountId, caller: &AccountId) -> bool {
     let is_parent = account_id
         .as_str()
         .strip_suffix(caller.as_str())
         .and_then(|rest| rest.strip_suffix('.'))
         .is_some_and(|handle| !handle.is_empty() && !handle.contains('.'));
-    if !(caller == *account_id || is_parent) {
+    caller == account_id || is_parent
+}
+
+/// The caller must be `account_id` itself or its direct parent (`<handle>.<caller>`).
+fn require_self_or_parent(account_id: &AccountId, what: &str) {
+    if !is_self_or_parent(account_id, &env::predecessor_account_id()) {
         env::panic_str(&format!("only the account or its parent can {what}"));
     }
 }

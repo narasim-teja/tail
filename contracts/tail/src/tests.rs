@@ -4339,8 +4339,9 @@ fn downgrade_to_v1(fx: &mut Fx) {
     fx.c.verdict_heads.remove(&fx.id);
     fx.c.verdict_heads.flush();
     // v1 registrations paid for no dossier, so v1 accounts have none.
-    for p in PLAYERS {
-        fx.c.dossiers.remove(&acc(p));
+    let ids: Vec<AccountId> = fx.c.dossier_ids.iter().cloned().collect();
+    for id in &ids {
+        fx.c.dossiers.remove(id);
     }
     fx.c.dossiers.flush();
     fx.c.dossier_ids.clear();
@@ -4519,7 +4520,7 @@ fn the_dossier_card_matches_the_golden_vectors_byte_for_byte() {
 #[test]
 fn registering_mints_a_dossier_whose_owner_and_token_id_are_the_account() {
     let fx = Fx::lobby();
-    let t = fx.c.nft_token(acc("alice.testnet")).unwrap();
+    let t = fx.c.nft_token("alice.testnet".to_owned()).unwrap();
     let json = near_sdk::serde_json::to_value(&t).unwrap();
     assert_eq!(json["token_id"], "alice.testnet");
     assert_eq!(json["owner_id"], "alice.testnet");
@@ -4558,7 +4559,7 @@ fn registering_mints_a_dossier_whose_owner_and_token_id_are_the_account() {
     .unwrap();
     assert_eq!(svg, art::dossier_svg(&dossier(&fx, "alice.testnet")).into_bytes());
     assert_eq!(t.metadata.media_hash.unwrap().0, env::sha256(&svg));
-    assert!(fx.c.nft_token(acc("mallory.testnet")).is_none());
+    assert!(fx.c.nft_token("mallory.testnet".to_owned()).is_none());
     assert!(fx.c.get_dossier(acc("mallory.testnet")).is_none());
 }
 
@@ -4664,7 +4665,7 @@ fn a_paid_out_match_adds_an_entry_to_every_players_dossier() {
         );
     }
     let t_name = name(t);
-    let extra = fx.c.nft_token(acc(&t_name)).unwrap().metadata.extra.unwrap();
+    let extra = fx.c.nft_token(t_name).unwrap().metadata.extra.unwrap();
     assert!(extra.contains(r#""matches":1"#), "{extra}");
 }
 
@@ -4887,7 +4888,7 @@ fn an_account_from_before_migrate_has_no_dossier_until_it_mints_one() {
         ctx(&acc("mallory.testnet"), fx.now, deposit);
         fx.c.mint_dossier(acc("alice.testnet"));
     });
-    assert!(why.contains("only the account or its parent"), "{why}");
+    assert!(why.contains("only the account, its parent or the owner"), "{why}");
     ctx(&acc("alice.testnet"), fx.now, deposit);
     fx.c.mint_dossier(acc("alice.testnet"));
     assert_eq!(dossier(&fx, "alice.testnet").matches, 0);
@@ -4958,4 +4959,258 @@ fn a_match_ended_before_the_upgrade_reads_as_paid_out_without_a_replay() {
     assert_eq!(fx.view().settled_as, Some(SettledAs::PayoutUnreplayed));
     let json = near_sdk::serde_json::to_value(fx.view()).unwrap();
     assert_eq!(json["settled_as"], "payout_unreplayed");
+}
+
+// ── Review fixes (money review of b1736f1) ──────────────────────────────────────────────────
+
+/// A player the relay created (`zoe.relay.testnet`) and registered before dossiers existed, next
+/// to the lobby's three.
+fn migrated_with_a_relay_player() -> Fx {
+    let mut fx = Fx::lobby();
+    ctx(&acc("relay.testnet"), fx.now, fx.registration_deposit());
+    fx.c.register_for(acc("zoe.relay.testnet"), acc("zoe-wallet.testnet"));
+    migrated(fx)
+}
+
+fn dossier_deposit_attached(fx: &Fx) -> NearToken {
+    NearToken::from_yoctonear(fx.c.get_config().dossier_deposit.0)
+}
+
+/// A relay player's function-call key cannot attach `mint_dossier`'s deposit, so its parent, the
+/// relay, backfills it and pays. Nobody else in the account tree may.
+#[test]
+fn the_relay_backfills_its_players_dossier_and_a_stranger_cannot() {
+    let mut fx = migrated_with_a_relay_player();
+    let zoe = acc("zoe.relay.testnet");
+    assert!(fx.c.get_dossier(zoe.clone()).is_none());
+    let deposit = dossier_deposit_attached(&fx);
+    // The grandparent, a sibling's parent and a stranger are not its parent.
+    for who in ["testnet", "relay2.testnet", "mallory.testnet", "elay.testnet"] {
+        let why = refusal(|| {
+            ctx(&acc(who), fx.now, deposit);
+            fx.c.mint_dossier(zoe.clone());
+        });
+        assert!(
+            why.contains("only the account, its parent or the owner can mint its dossier"),
+            "{who}: {why}"
+        );
+    }
+    let why = refusal(|| {
+        ctx(&acc("relay.testnet"), fx.now, NearToken::from_yoctonear(0));
+        fx.c.mint_dossier(zoe.clone());
+    });
+    assert!(why.contains("attach exactly dossier_deposit"), "{why}");
+    ctx(&acc("relay.testnet"), fx.now, deposit);
+    fx.c.mint_dossier(zoe.clone());
+    assert_eq!(fx.c.get_dossier(zoe.clone()).unwrap().matches, 0);
+    assert_eq!(fx.c.nft_supply_for_owner(zoe.clone()), U128(1));
+    assert!(fx.c.nft_token(zoe.to_string()).is_some());
+    let why = refusal(|| {
+        ctx(&acc("relay.testnet"), fx.now, deposit);
+        fx.c.mint_dossier(zoe.clone());
+    });
+    assert!(why.contains("already has a dossier"), "{why}");
+}
+
+#[test]
+fn the_owner_can_backfill_a_dossier() {
+    let mut fx = migrated(Fx::lobby());
+    let deposit = dossier_deposit_attached(&fx);
+    ctx(&owner(), fx.now, deposit);
+    fx.c.mint_dossier(acc("alice.testnet"));
+    assert_eq!(dossier(&fx, "alice.testnet").matches, 0);
+    assert_eq!(fx.c.nft_total_supply(), U128(1));
+}
+
+/// Review fix: a registered player without a dossier reads as an empty record, so `requires`
+/// of `{0, 0}` lets them in and any higher bar keeps them out.
+#[test]
+fn a_player_without_a_dossier_clears_an_empty_requires_and_nothing_above_it() {
+    let mut fx = migrated(Fx::lobby());
+    assert!(fx.c.get_dossier(acc("alice.testnet")).is_none());
+    fx.id = fx.create(requiring(fx.now, 0, 0));
+    fx.join("alice.testnet");
+    assert_eq!(fx.view().players.len(), 1);
+    for (m, s) in [(1, 0), (0, 1)] {
+        fx.id = fx.create(requiring(fx.now, m, s));
+        let why = refusal(|| fx.join("bob.testnet"));
+        assert!(why.contains("below this match's requires"), "{why}");
+    }
+}
+
+/// Review fix: totals at their largest saturate, so recording a settlement can never make End or
+/// abort panic.
+#[test]
+fn dossier_totals_saturate_so_end_and_abort_cannot_panic() {
+    let max_out = |fx: &mut Fx| {
+        for p in PLAYERS {
+            let d = fx.c.dossiers.get_mut(&acc(p)).unwrap();
+            (d.matches, d.survived, d.tags, d.forfeits, d.refunded, d.won) =
+                (u32::MAX, u32::MAX, u32::MAX, u32::MAX, u32::MAX, u128::MAX);
+        }
+    };
+    let mut fx = Fx::running();
+    max_out(&mut fx);
+    let ring = fx.ring();
+    fx.verdict(tag(ring[0], ring[1]));
+    fx.verdict(forfeit(ring[2], ring[0]));
+    fx.end();
+    assert_eq!(fx.view().settled_as, Some(SettledAs::Payout));
+    for p in PLAYERS {
+        let d = dossier(&fx, p);
+        assert_eq!(
+            (d.matches, d.survived, d.tags, d.forfeits),
+            (u32::MAX, u32::MAX, u32::MAX, u32::MAX)
+        );
+        assert_eq!(d.won, U128(u128::MAX));
+        assert_eq!(d.entries.len(), 1);
+    }
+    let mut fx = Fx::running();
+    max_out(&mut fx);
+    fx.now += REFEREE_TIMEOUT_MS;
+    fx.abort();
+    for p in PLAYERS {
+        let d = dossier(&fx, p);
+        assert_eq!(d.refunded, u32::MAX);
+        assert_eq!(d.entries[0].result, MatchResult::Refunded);
+    }
+}
+
+/// Fills `MAX_TOKENS_PER_PAGE + 3` dossiers at their largest (64-character ids, 12 entries, every
+/// tick drawn) for the page-size measurement.
+fn maximal_dossiers(fx: &mut Fx, n: u64) {
+    for i in 0..n {
+        let who = acc(&format!("p{i:03}{}.testnet", "d".repeat(52)));
+        ctx(&who, fx.now, fx.registration_deposit());
+        fx.c.register_for(who.clone(), who.clone());
+        let d = fx.c.dossiers.get_mut(&who).unwrap();
+        for k in 0..DOSSIER_ENTRIES as u8 {
+            let result =
+                [MatchResult::Survived, MatchResult::Tagged, MatchResult::Forfeit][usize::from(k % 3)];
+            d.push(
+                dossier::DossierEntry {
+                    match_id: [k; 16],
+                    result,
+                    tags: 11,
+                    payout: u128::MAX,
+                    anchor: Root {
+                        log_size: u64::MAX,
+                        root: [9; 32],
+                    },
+                },
+                u64::MAX,
+            );
+        }
+        (d.matches, d.survived, d.tags, d.forfeits, d.refunded, d.won) =
+            (u32::MAX, u32::MAX, u32::MAX, u32::MAX, u32::MAX, u128::MAX);
+    }
+    fx.c.dossiers.flush();
+    fx.c.dossier_ids.flush();
+}
+
+/// Review fix: `nft_tokens` builds one card per token in wasm, which the unit-test VM does not
+/// meter, so the page is kept small enough that the unmetered part is bounded by the bytes it
+/// writes. Measured here per maximal token: the host gas (storage reads, two SHA-256) and the
+/// bytes of SVG, base64 and JSON. See `MAX_TOKENS_PER_PAGE` for the bound.
+#[test]
+fn nft_tokens_pages_are_capped_at_ten_maximal_cards() {
+    use dossier::MAX_TOKENS_PER_PAGE;
+    assert_eq!(MAX_TOKENS_PER_PAGE, 10);
+    let mut fx = Fx::empty();
+    maximal_dossiers(&mut fx, MAX_TOKENS_PER_PAGE + 3);
+    fx.as_("anyone.testnet");
+    let mut page = Vec::new();
+    let gas = host_gas(|| page = fx.c.nft_tokens(None, Some(u64::MAX)));
+    assert_eq!(page.len() as u64, MAX_TOKENS_PER_PAGE);
+    assert_eq!(fx.c.nft_tokens(Some(U128(10)), None).len(), 3);
+    let json = near_sdk::serde_json::to_vec(&page).unwrap().len();
+    let svg: usize = page
+        .iter()
+        .map(|t| art::dossier_svg(&fx.c.get_dossier(t.owner_id.clone()).unwrap()).len())
+        .sum();
+    println!(
+        "nft_tokens of {} maximal cards: host gas {} Ggas, {} bytes of SVG, {} bytes of JSON",
+        page.len(),
+        gas / 1_000_000_000,
+        svg,
+        json
+    );
+    // The two numbers `MAX_TOKENS_PER_PAGE`'s bound rests on, with margin: host gas per card under
+    // 0.2 Tgas, and the bytes the wasm side writes per card (the SVG, then the JSON that holds
+    // its base64) under 10.6 KB.
+    assert!(gas < MAX_TOKENS_PER_PAGE * 200_000_000_000, "{gas} gas");
+    let per_card = (svg + json) as u64 / MAX_TOKENS_PER_PAGE;
+    assert!(per_card < 10_600, "{per_card} bytes per card");
+}
+
+/// Review fix (NEP-171): `token_id` is a string, and one that is not an account id names no
+/// token instead of failing the view.
+#[test]
+fn nft_token_takes_any_string_and_a_malformed_id_names_no_token() {
+    let fx = Fx::lobby();
+    assert!(fx.c.nft_token("alice.testnet".to_owned()).is_some());
+    for bad in [
+        String::new(),
+        "Alice!".to_owned(),
+        "a..testnet".to_owned(),
+        "x".repeat(65),
+    ] {
+        assert!(fx.c.nft_token(bad.clone()).is_none(), "{bad}");
+    }
+    let json = near_sdk::serde_json::to_value(fx.c.nft_token("not an id".to_owned())).unwrap();
+    assert!(json.is_null());
+}
+
+/// NEP-171: `nft_resolve_transfer` returns whether the token was transferred; none ever is.
+#[test]
+fn nft_resolve_transfer_says_nothing_was_transferred() {
+    let mut fx = Fx::lobby();
+    ctx(&contract(), fx.now, NearToken::from_yoctonear(0));
+    let moved = fx.c.nft_resolve_transfer(
+        acc("alice.testnet"),
+        acc("market.testnet"),
+        "alice.testnet".to_owned(),
+        None,
+    );
+    assert!(!moved);
+    assert_eq!(
+        fx.c.nft_token("alice.testnet".to_owned()).unwrap().owner_id,
+        acc("alice.testnet")
+    );
+}
+
+/// Review fix: a lobby from before the upgrade can never start, so anyone may abort it at once
+/// instead of waiting for its deadline. A lobby from after it still waits.
+#[test]
+fn a_lobby_from_before_migrate_aborts_at_once_and_a_new_one_still_waits() {
+    let mut fx = migrated_lobby();
+    assert!(fx.now < fx.view().start_by_ms);
+    fx.abort();
+    assert_eq!(fx.view().phase, Phase::Aborted);
+    assert_eq!(fx.view().settled_as, Some(SettledAs::RefundedAbort));
+    for p in PLAYERS {
+        assert_eq!(fx.bal(p), 2 * STAKE);
+    }
+    fx.id = fx.create(cfg(usdc(), STAKE));
+    let why = refusal(|| fx.abort());
+    assert!(why.contains("lobby is still open"), "{why}");
+}
+
+/// Review fix: `create_match` caps the stake so `hint_price` (stake × base bps × demand bps) can
+/// never overflow, whatever the demand.
+#[test]
+fn a_stake_above_max_stake_is_refused_and_max_stake_prices_every_hint() {
+    for kind in [NEAR, TREND, BEARING] {
+        for recent in [0, 1, 12, u32::MAX] {
+            let price = hint_price(MAX_STAKE, kind, recent).unwrap();
+            assert!(price <= MAX_STAKE / 5, "{kind} at {recent}: {price}");
+        }
+    }
+    let mut fx = Fx::empty();
+    fx.id = fx.create(cfg(usdc(), MAX_STAKE));
+    assert_eq!(fx.view().stake, U128(MAX_STAKE));
+    let why = refusal(|| {
+        fx.create(cfg(usdc(), MAX_STAKE + 1));
+    });
+    assert!(why.contains("stake is above MAX_STAKE"), "{why}");
 }
