@@ -292,6 +292,10 @@ strings in the script. They were never used on NEAR, the bundle names no transac
   no wallet: it shows one only when the TAIL app opens it with a fresh sign-in (above). Anyone
   else, and a player who reloads or follows a plain link, gets the private page.
   A replay whose trails the relay deleted after its retention window (410) says so.
+- The private sign-in and the dossier page have run only in tests. The dossier page's comparison
+  was checked against the live contract's `get_dossier` and `nft_token` by a script, not in a
+  browser. The checks did run, outside a browser, on the bundle of the 2026-11-13 iPhone match: 8
+  of 8 verdicts passed and its tag's evidence fits the lock rule.
 - deck.gl 9.4 reads `map.transform`, which MapLibre 6 moved onto its camera; `Scene3D.tsx`
   exposes it until deck.gl catches up.
 - The flat 2D map draws the source's z14 tiles without labels.
