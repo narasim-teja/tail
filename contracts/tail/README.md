@@ -16,13 +16,16 @@ and Forfeit against it and the revealed hint targets. Only then does it pay out.
 fails, it refunds every original stake and records the first broken rule. `abort` refunds every
 original stake of a match whose referee went quiet.
 
-Testnet: `tail.tail-dev-a38d13.testnet`, deployed by `e2e/deploy.ts`. It was upgraded in place to
-this code on 2026-11-13 (`deploy.ts --upgrade --migrate`; matches settled before that read
-`settled_as: "payout_unreplayed"`). Since OutLayer testnet stopped running calls on 2026-11-12 it
-pins the local test referee's keys, not the enclave's: `get_config` shows `referee_pk`
-`d35338a9…6594` and `vrf_pk` `ad82f28f…defcb`. While those are pinned, the referee is whoever runs
-that machine. The enclave's verdict key is `e1c64271…7d6c56` and OutLayer's testnet VRF key
-`c0c5aeae…f8cfa8`; re-pinning them is a `set_referee_pk` / `set_vrf_pk` away.
+Testnet: `tail.tail-dev-a38d13.testnet`, deployed by `e2e/deploy.ts`. It was upgraded in place on
+2026-11-13 (`deploy.ts --upgrade --migrate`; matches settled before that read
+`settled_as: "payout_unreplayed"`) to this code as it stood before the `nft_metadata_update` event
+(below), which it does not log: the End of that day's iPhone match logged nothing. v2 matches of
+test players, and one of two iPhones with a test player, settled on it as `payout` through the
+End replay. Since OutLayer testnet stopped running calls on 2026-11-12 it pins the local test
+referee's keys, not the enclave's: `get_config` shows `referee_pk` `d35338a9…6594` and `vrf_pk`
+`ad82f28f…defcb`. While those are pinned, the referee is whoever runs that machine. The enclave's
+verdict key is `e1c64271…7d6c56` and OutLayer's testnet VRF key `c0c5aeae…f8cfa8`; re-pinning them
+is a `set_referee_pk` / `set_vrf_pk` away.
 
 ## Encoding
 
@@ -145,7 +148,8 @@ recording a settlement can never make End or abort fail.
 **Events.** Minting (`register_for` or `mint_dossier`) logs NEP-171's `nft_mint`. Since the
 metadata is computed on read, a settlement changes it without any transfer, so each settlement
 that changed at least one dossier logs one NEP-171 `nft_metadata_update` naming those tokens in
-player order, and an indexer or wallet that cached a card knows to fetch it again. Both use
+player order, and an indexer or wallet that cached a card knows to fetch it again (in this
+source; the live testnet contract was deployed before it and does not log it). Both use
 version 1.2.0, the NEP-171 version that defines `nft_metadata_update`:
 `EVENT_JSON:{"standard":"nep171","version":"1.2.0","event":"nft_metadata_update","data":[{"token_ids":["alice.testnet","bob.testnet","carol.testnet"]}]}`.
 
@@ -278,8 +282,9 @@ then:
    refunded because the payout account is not registered on the token.
 
 The demand-priced Hint, the dossier checks and the `nft_metadata_update` event were added after
-the last testnet run of `e2e.ts` and have only run in the unit tests so far (`e2e.ts` does not
-check the NEP-171 events).
+the last testnet run of `e2e.ts`. Demand-priced Hints and dossier updates have since run on the
+live contract in real matches (2026-11-13), but not through `e2e.ts`; the event has run only in
+the unit tests (`e2e.ts` does not check the NEP-171 events).
 
 It also checks that each of these is refused: an unregistered join, an uninvited join, a leave
 from a locked lobby, a forged verdict, a replayed verdict, a verdict with the wrong `prev`, a hint
