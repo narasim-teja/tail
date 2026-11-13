@@ -677,6 +677,18 @@ export class Store {
   }
 
   /**
+   * The referee does not hold the device this receipt is for (enroll.ts `ensureWithReferee`): the
+   * receipt goes, so the account reads as not with the referee until it is registered again.
+   */
+  clearDeviceReceipt(accountId: string) {
+    this.db
+      .query(
+        "UPDATE devices SET receipt = NULL, receipt_sig = NULL, enroll_call_id = NULL, attested = NULL, referee_pk = NULL WHERE account_id = ?",
+      )
+      .run(accountId);
+  }
+
+  /**
    * A refresh the referee accepted (enroll.ts): the phone's new App Attest key and box key, and
    * the new receipt. The NEAR key stays: it is the account's own key on chain.
    */

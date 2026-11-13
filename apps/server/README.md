@@ -194,8 +194,9 @@ The relay keeps each device's receipt with the referee key that signed it (recei
 are recognised by their signature). When the contract pins another referee (local test referee ↔
 OutLayer, `scripts/pin-referee.ts`), the new one knows none of the devices, and an old
 attestation cannot be sent to it again: Apple's credential certificate in it is valid for about
-3 days. Start then answers 409 `{error, code: "refresh", accounts: [account_id]}`, and every
-listed phone refreshes:
+3 days. The same happens to a device whose record the referee can no longer read (Start asks
+the referee before it locks the lobby, and drops the receipt). Start then answers 409 `{error,
+code: "refresh", accounts: [account_id]}`, and every listed phone refreshes:
 
 1. `GET /enroll/status` (signed) → `{account_id, with_referee}`. Ask on launch; refresh when false.
 2. `POST /enroll/refresh/challenge {}` (signed) → `{challenge, account_id, expires_ms}` (5 min,
@@ -262,10 +263,12 @@ on one sealed state would fork it. Each step:
    the log, the reveal and the trails for the replay. Each of these retries on the next step if
    it fails; the match counts as ended only when both are stored.
 
-Start: the relay reads the lobby from the chain, checks every player is enrolled and that its
-receipt is from the referee the relay runs with (a test player, or a device an older relay left
-waiting with its attestation, is registered now; any other phone must refresh, and the lobby
-stays open until it has), calls `lock_lobby` (joins frozen), then referee `start` with `start_ms` = now (the contract wants it
+Start: the relay reads the lobby from the chain, checks every player is enrolled, asks the
+referee (`devices`) whether it holds each player's device exactly as the relay's receipt says
+(a receipt it does not match, such as one for a record the referee no longer reads, is dropped)
+and that each receipt is from the referee the relay runs with (a test player, or a device an
+older relay left waiting with its attestation, is registered now; any other phone must refresh,
+and the lobby stays open until it has), calls `lock_lobby` (joins frozen), then referee `start` with `start_ms` = now (the contract wants it
 within 5 min of block time), stores the result and applies Start at once. Before the referee
 answers, a failed start can be retried; after, it cannot (the enclave starts a match id once),
 and the lobby refunds through `leave_lobby`/`abort`.

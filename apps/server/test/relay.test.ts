@@ -221,7 +221,7 @@ describe("enrolment", () => {
     expect((await attemptIn(env, "dana", near)).r.status).toBe(500);
     // The relay freed the handle; the referee keeps the record it stored, under this NEAR key.
     expect(env.store.device(account)).toBeUndefined();
-    expect(env.referee.devices.get(account)?.appAttestPk).toEqual(k1);
+    expect(env.referee.records.get(account)?.appAttestPk).toEqual(k1);
     env.chain.createPlayerAccount = create;
     // App Attest attests a key once, so the retry brings K2: without consent the referee refuses,
     const bare = await attemptIn(env, "dana", near);
@@ -236,7 +236,7 @@ describe("enrolment", () => {
     const ok = await attemptIn(env, "dana", near, { rebind_sig: consent(seed) });
     expect(ok.r.status).toBe(200);
     expect(env.store.device(account)?.app_attest_pk).toEqual(k2);
-    expect(env.referee.devices.get(account)?.appAttestPk).toEqual(k2);
+    expect(env.referee.records.get(account)?.appAttestPk).toEqual(k2);
     expect(env.chain.accounts.get(account)).toEqual(near);
   });
 
@@ -381,6 +381,25 @@ describe("after the contract pins another referee", () => {
     expect(sent?.nearPk).toEqual(ed25519.getPublicKey(l.a.seed));
     expect(env.store.device(l.a.account)?.player_box_pk).toEqual(new Uint8Array(32).fill(2));
     expect((await req(env, "GET", "/enroll/status", undefined, l.b)).json["with_referee"]).toBe(true);
+    expect((await req(env, "POST", `/matches/${l.id}/start`, {}, l.a)).status).toBe(200);
+  });
+
+  test("Start asks the referee first: a device it cannot read is refreshed while the lobby stays open", async () => {
+    const env = setup();
+    const l = await lobby(env);
+    env.referee.makeUnreadable(l.b.account);
+    // The relay's receipt alone still says the referee holds it.
+    expect((await req(env, "GET", "/enroll/status", undefined, l.b)).json["with_referee"]).toBe(true);
+    const s = await req(env, "POST", `/matches/${l.id}/start`, {}, l.a);
+    expect(s.status).toBe(409);
+    expect(s.json["code"]).toBe("refresh");
+    expect(s.json["accounts"]).toEqual([l.b.account]);
+    // Nothing irreversible happened: no lock on chain, no referee start.
+    expect(env.store.match(l.id)?.phase).toBe("lobby");
+    expect(env.chain.locked).toEqual([]);
+    expect(env.referee.calls).not.toContain("start");
+    expect((await req(env, "GET", "/enroll/status", undefined, l.b)).json["with_referee"]).toBe(false);
+    expect((await refresh(env, l.b)).status).toBe(200);
     expect((await req(env, "POST", `/matches/${l.id}/start`, {}, l.a)).status).toBe(200);
   });
 

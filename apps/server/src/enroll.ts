@@ -386,10 +386,12 @@ export class Enrolment {
    */
   async ensureWithReferee(accountIds: string[]): Promise<void> {
     const stale: string[] = [];
+    // A refresh in flight lands (or fails) first, so Start sees the device the referee holds.
+    // None starts after this: a lobby being started refuses its players' refreshes.
+    await Promise.all(accountIds.map((a) => this.idle(a)));
+    await this.dropReceiptsNotHeld(accountIds);
     await Promise.all(
       accountIds.map(async (a) => {
-        // A refresh in flight lands (or fails) first, so Start sees the device the referee holds.
-        await this.idle(a);
         const dev = this.d.store.device(a);
         if (!dev || (await this.withReferee(dev))) return;
         if (dev.kind === "ghost" || (dev.attestation && dev.challenge)) {
@@ -424,6 +426,25 @@ export class Enrolment {
         `the referee does not know these players yet; each must open the app to refresh: ${stale.join(", ")}`,
         { code: "refresh", accounts: stale },
       );
+    }
+  }
+
+  /**
+   * A receipt says the referee held the device when it signed it, not that it holds it now (its
+   * record can be one it no longer reads, or gone). Before a lobby is locked, the referee is
+   * asked: a receipt that is not the body of the record `start` would read is cleared, so the
+   * account is registered again or told to refresh, and `/enroll/status` says so too.
+   */
+  private async dropReceiptsNotHeld(accountIds: string[]) {
+    const held = await this.d.referee.devices(accountIds);
+    for (const h of held) {
+      const dev = this.d.store.device(h.accountId);
+      if (!dev?.receipt || (h.receipt && equal(h.receipt, dev.receipt))) continue;
+      this.d.log.warn(
+        { accountId: h.accountId, unreadable: h.unreadable, held: h.receipt !== null },
+        "the referee does not hold this device as recorded; its receipt is dropped",
+      );
+      this.d.store.clearDeviceReceipt(h.accountId);
     }
   }
 

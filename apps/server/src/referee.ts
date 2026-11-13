@@ -59,6 +59,15 @@ export interface EnrollResult {
   attested: boolean | null;
 }
 
+/** What the referee holds for one account (`devices`): the receipt body `start` would read. */
+export interface HeldDevice {
+  accountId: string;
+  /** borsh Device of the record `start` would load; null when there is none or it does not decode. */
+  receipt: Uint8Array | null;
+  /** Why a stored record does not decode, when that is why `receipt` is null. */
+  unreadable: string | null;
+}
+
 /** A borsh SignedVerdict as the referee returned it, plus its decoded form. */
 export interface RawVerdict {
   raw: Uint8Array;
@@ -231,6 +240,8 @@ export const MAX_DECLASSIFY_BATCHES = 500;
 export interface Referee {
   pubkeys(): Promise<RefereeKeys>;
   enroll(i: EnrollInput): Promise<EnrollResult>;
+  /** Read-only: for each account, in order, the device record `start` would load. */
+  devices(accountIds: string[]): Promise<HeldDevice[]>;
   start(i: StartInput): Promise<StartResult>;
   tick(i: TickInput): Promise<TickResult>;
   voice(i: VoiceInput): Promise<VoiceResult>;
@@ -530,6 +541,22 @@ export class RefereeClient implements Referee {
     };
   }
 
+  async devices(accountIds: string[]): Promise<HeldDevice[]> {
+    const r = await this.call("devices", { accounts: accountIds });
+    const s = shape("devices");
+    const list = s.arr(r, "devices").map((x, k) => {
+      const e = s.obj(x, `devices[${k}]`);
+      return {
+        accountId: s.str(e, "account_id"),
+        receipt: e["receipt"] === null ? null : s.bytes(e, "receipt"),
+        unreadable: e["unreadable"] === undefined ? null : s.str(e, "unreadable"),
+      };
+    });
+    if (list.length !== accountIds.length || list.some((d, k) => d.accountId !== accountIds[k]))
+      throw new RefereeError("devices", "unexpected answer: not the accounts asked for", false);
+    return list;
+  }
+
   async start(i: StartInput): Promise<StartResult> {
     const r = await this.call("start", {
       match_id: b64(i.matchId),
@@ -770,6 +797,9 @@ export class GuardedReferee implements Referee {
   }
   enroll(i: EnrollInput) {
     return this.run("enroll", () => this.inner.enroll(i));
+  }
+  devices(accountIds: string[]) {
+    return this.run("devices", () => this.inner.devices(accountIds));
   }
   start(i: StartInput) {
     return this.run("start", () => this.inner.start(i));

@@ -62,6 +62,7 @@ import {
   type EndResult,
   type EnrollInput,
   type EnrollResult,
+  type HeldDevice,
   type LogAppend,
   type RawVerdict,
   type Referee,
@@ -374,7 +375,12 @@ export class FakeReferee implements Referee {
    * rebind_sig is ignored; the same keys get the stored record back (replaced only when now
    * attested); other keys need a rebind_sig by the stored near_pk over the new keys.
    */
-  devices = new Map<string, FakeDevice>();
+  records = new Map<string, FakeDevice>();
+  /**
+   * Accounts whose stored record no longer decodes (a layout an older referee wrote): `start`
+   * refuses them, `devices` names no receipt, and an enrolment replaces the record.
+   */
+  unreadable = new Set<string>();
   private matches = new Map<string, FakeMatch>();
   /** Set when this call handed out a bad proof, so the tick is undone like a lying one. */
   private lied = false;
@@ -468,7 +474,8 @@ export class FakeReferee implements Referee {
       throw new RefereeError("enroll", "attestation refused: certificate expired", true);
     }
     const d = this.admit(i);
-    this.devices.set(i.accountId, d);
+    this.records.set(i.accountId, d);
+    this.unreadable.delete(i.accountId);
     return {
       callId: "call-enroll",
       refereePk: this.pk,
@@ -487,7 +494,7 @@ export class FakeReferee implements Referee {
       attested: i.attestation !== undefined,
       receipt: crypto.getRandomValues(new Uint8Array(8)),
     };
-    const old = this.devices.get(i.accountId);
+    const old = this.records.get(i.accountId);
     if (!old) return fresh;
     if (
       equal(old.appAttestPk, fresh.appAttestPk) &&
@@ -513,9 +520,25 @@ export class FakeReferee implements Referee {
     }
     return fresh;
   }
+  /** The record of `account` becomes one this referee cannot read; it keeps no key to check. */
+  makeUnreadable(account: string) {
+    this.records.delete(account);
+    this.unreadable.add(account);
+  }
+  async devices(accountIds: string[]): Promise<HeldDevice[]> {
+    this.calls.push("devices");
+    return accountIds.map((a) => ({
+      accountId: a,
+      receipt: this.records.get(a)?.receipt ?? null,
+      unreadable: this.unreadable.has(a) ? "device record version 7" : null,
+    }));
+  }
   async start(i: StartInput): Promise<StartResult> {
     this.calls.push("start");
     if (this.refuseStart) throw new RefereeError("start", "match already started", true);
+    for (const a of i.players)
+      if (this.unreadable.has(a))
+        throw new RefereeError("start", `device record of ${a}: device record version 7`, true);
     const players = sortAccounts(i.players);
     const m: FakeMatch = {
       matchId: i.matchId,
@@ -831,7 +854,7 @@ export function seedDevice(
   const receipt = crypto.getRandomValues(new Uint8Array(8));
   // Each device its own App Attest key, as the store requires.
   const appAttestPk = crypto.getRandomValues(new Uint8Array(65));
-  referee?.devices.set(accountId, {
+  referee?.records.set(accountId, {
     appAttestPk,
     playerBoxPk: boxPk,
     nearPk,
