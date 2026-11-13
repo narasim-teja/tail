@@ -33,8 +33,10 @@ cargo run -q -p referee-verify -- /tmp/forged.json
 FAIL      tick 13: verdict seq 5: the bundle has seq 5 Tag alice→bob (…), re-execution gives seq 5 Tag bob→alice (…)
 ```
 
-For a real match, save `GET /replay/:id` from the relay and run `tail-verify` on that file.
-`--relay-today` makes the demo bundle look like what the relay serves now (see below).
+For a real match, save `GET /replay/:id` from the relay and run `tail-verify --strict` on that
+file. `apps/server/test/replay-verify.test.ts` does that for a match judged by the local
+referee. `--older-relay` makes the demo bundle look like one from a relay before it released
+the fields below.
 
 The exit status is 0 when the re-execution matches, 1 when a check fails or the re-execution
 diverges, and 2 when the input is not a v2 bundle. With `--strict`, a pass that had to trust
@@ -63,14 +65,19 @@ the input order is rebuilt from the log. The batch that passed goes right before
 ## What it takes from the log, and says so
 
 The relay's bundle (`packages/protocol` `ReplayBundleV2`) has the log, the accepted batches,
-`K_m` and the VRF reveal. It does not yet have these optional fields:
+`K_m` and the VRF reveal, and since these optional fields were added, everything else the engine
+read. Bundles from before lack them, and then:
 
-| Field                        | Without it                                                                                                                                                           |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `devices[].appAttestPk`      | The `Enrolled` key hash comes from the log, and that player's assertions cannot be checked.                                                                          |
-| `assertions[]` (b64)         | Parallel to `batches`, as `declassify_batches` returns them. Without it, App Attest outcomes come from the log (`ASSERTION` refusals). Every other check still runs. |
-| refused batches in `batches` | A `Rejected` entry with no released batch is taken as given (`Withheld`). For a validity refusal, the chain must still advance at that seq.                          |
-| `match.appId`                | `--app-id`, or the production App ID by default.                                                                                                                     |
+| Field                   | What it is                                                                                 | Without it                                                                                                                      |
+| ----------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `devices[].appAttestPk` | The key the referee enrolled (`declassify`), hex. It must hash to the `Enrolled` key hash. | The key hash comes from the log, and that player's assertions cannot be checked.                                                |
+| `assertions[]` (b64)    | Parallel to `batches`, as `declassify_batches` returns them.                               | App Attest outcomes come from the log (`ASSERTION` refusals). Every other check still runs.                                     |
+| `rejected[]`            | `{ batch, assertion }` for each refused envelope that is not already in `batches`.         | A `Rejected` entry with no released batch is taken as given (`Withheld`). For a validity refusal, the chain must still advance. |
+| `match.appId`           | The App ID the relay gave `start`.                                                         | `--app-id`, or the production App ID by default.                                                                                |
+
+A refused batch is found by hash like an accepted one; the relay keeps them apart because the
+web replay draws `batches` as trails. A batch that never opened, or opened as another match's,
+is not released (`declassify_batches` refuses it), so its `Rejected` entry stays `Withheld`.
 
 Each released batch must hash to its logged entry, and an accepted batch that is missing fails
 the run. Enrolment counters default to 0, the value `start` uses.

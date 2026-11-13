@@ -15,7 +15,8 @@ use referee_core::{Circle, Device, HintReceipt, MatchConfig, TickInput};
 use referee_sim::phone::{device_key, Phone};
 use referee_sim::{APP_ID, START_MS};
 use referee_verify::{
-    Bundle, BundleCircle, BundleDevice, BundleMatch, BundleReferee, BundleReveal, BundleVerdict,
+    Bundle, BundleCircle, BundleDevice, BundleMatch, BundleReferee, BundleRejected, BundleReveal,
+    BundleVerdict,
 };
 use tail_protocol::digest::{batch_hash, sha256, verdict_digest};
 use tail_protocol::{hint_kind, merkle, BatchEnvelope, Fix, LogEntry, SignedVerdict, VerdictPayload};
@@ -235,53 +236,65 @@ pub fn sign(p: &Played, v: &VerdictPayload) -> String {
     b64(&borsh::to_vec(&signed).unwrap())
 }
 
-/// What the bundle carries besides what the relay serves today.
+/// Which optional fields the bundle carries.
 #[derive(Clone, Copy)]
 pub struct Extras {
     /// `devices[].appAttestPk`.
     pub keys: bool,
-    /// `assertions[]`, and the refused batches too.
+    /// `assertions[]` and `rejected[]`.
     pub assertions: bool,
 }
 
+/// What the relay serves (apps/server `routes/replay.ts`).
 pub const FULL: Extras = Extras {
     keys: true,
     assertions: true,
 };
-/// The relay as it is: accepted batches only, no keys, no assertions.
-pub const RELAY_TODAY: Extras = Extras {
+/// A bundle from a relay before it released keys, assertions and refused batches.
+pub const OLDER_RELAY: Extras = Extras {
     keys: false,
     assertions: false,
 };
 
+/// Builds the bundle the way the relay does (`Matches.declassifyTrails`): each accepted batch
+/// once in `batches`, and each other distinct (batch, assertion) envelope a `Rejected` entry
+/// names in `rejected`.
 pub fn bundle(p: &Played, x: Extras) -> Bundle {
-    let accepted: Vec<_> = p
-        .log
-        .iter()
-        .filter_map(|e| match e {
-            LogEntry::Batch { hash, .. } => Some(*hash),
-            _ => None,
-        })
-        .collect();
+    let logged = |rejected: bool| -> Vec<_> {
+        p.log
+            .iter()
+            .filter_map(|e| match e {
+                LogEntry::Batch { hash, .. } if !rejected => Some(*hash),
+                LogEntry::Rejected { hash, .. } if rejected => Some(*hash),
+                _ => None,
+            })
+            .collect()
+    };
+    let (accepted, refused) = (logged(false), logged(true));
     let mut batches = Vec::new();
     let mut assertions = Vec::new();
-    let mut seen = Vec::new();
+    let mut rejected = Vec::new();
+    let mut trailed = Vec::new();
+    let mut envelopes = Vec::new();
     for e in &p.sent {
         let h = batch_hash(&e.batch);
-        let key = (
-            h,
-            if x.assertions {
-                e.assertion.clone()
-            } else {
-                Vec::new()
-            },
-        );
-        if seen.contains(&key) || (!x.assertions && !accepted.contains(&h)) {
+        let envelope = (h, e.assertion.clone());
+        if envelopes.contains(&envelope) {
             continue;
         }
-        seen.push(key);
-        batches.push(b64(&borsh::to_vec(&e.batch).unwrap()));
-        assertions.push(Some(b64(&e.assertion)));
+        let raw = b64(&borsh::to_vec(&e.batch).unwrap());
+        if accepted.contains(&h) && !trailed.contains(&h) {
+            trailed.push(h);
+            envelopes.push(envelope);
+            batches.push(raw);
+            assertions.push(Some(b64(&e.assertion)));
+        } else if refused.contains(&h) && x.assertions {
+            envelopes.push(envelope);
+            rejected.push(BundleRejected {
+                batch: raw,
+                assertion: b64(&e.assertion),
+            });
+        }
     }
     Bundle {
         version: 2,
@@ -312,6 +325,7 @@ pub fn bundle(p: &Played, x: Extras) -> Bundle {
         log: p.log.iter().map(|e| b64(&borsh::to_vec(e).unwrap())).collect(),
         batches,
         assertions: x.assertions.then_some(assertions),
+        rejected: x.assertions.then_some(rejected),
         reveal: BundleReveal {
             vrf_alpha: p.alpha.clone(),
             vrf_signature: hex::encode(p.vrf_signature),

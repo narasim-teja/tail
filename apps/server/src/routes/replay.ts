@@ -11,6 +11,12 @@
 // during play, the log the referee declassified after End, and for each Handler line only the
 // public message its model signature covers (the words were sealed to the asker). A match from
 // before is served as the version 1 bundle it always was.
+//
+// A version 2 bundle also carries what a verifier needs to re-run the referee's App Attest
+// checks and refusals (crates/referee-verify): each device's App Attest key as the referee
+// enrolled it, each batch's assertion, the refused batches, and the App ID. Keys and assertions
+// are public-key material (a public key and signatures under it), not secrets; like the trails,
+// they are released only through this route, after End, to whoever may see the replay.
 
 import {
   decodeLogEntry,
@@ -161,7 +167,8 @@ export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: R
  * Version 2: the leaves beside the declassified log, K_m (released with it, so the replay can
  * check every log salt), and each answered hint by its id, with the text NEAR AI signed. A line
  * whose receipt the referee did not log (it came too late) has nothing to be checked against,
- * so it is left out.
+ * so it is left out. Trails stored before assertions were kept give a bundle without
+ * `assertions` and `rejected`.
  */
 function bundleV2(
   store: Store,
@@ -181,11 +188,46 @@ function bundleV2(
     .flatMap((h) =>
       h.hint_id !== null && logged.has(h.hint_id) ? [{ hintId: h.hint_id, signedText: h.signed_text }] : [],
     );
+  const rows = store.trailRows(m.match_id);
+  const trails = rows.filter((t) => !t.rejected);
+  const asserted = trails.every((t) => t.assertion !== null);
+  const keys = enrolledKeys(m.reveal);
   return {
     version: 2,
     ...common,
+    match: m.app_id === null ? common.match : { ...common.match, appId: m.app_id },
+    batches: trails.map((t) => b64(t.batch)),
+    ...(asserted
+      ? {
+          assertions: trails.map((t) => b64(t.assertion as Uint8Array)),
+          rejected: rows.flatMap((t) =>
+            t.rejected && t.assertion ? [{ batch: b64(t.batch), assertion: b64(t.assertion) }] : [],
+          ),
+        }
+      : {}),
     reveal: { ...common.reveal, kM: String(m.reveal?.["k_m"] ?? "") },
     leaves: store.leaves(m.match_id).map(toHex),
+    devices: common.devices.map((dev) => {
+      const pk = keys.get(dev.accountId);
+      return pk ? { ...dev, appAttestPk: pk } : dev;
+    }),
     handler,
   };
+}
+
+/** Each player's App Attest key (hex) from the referee's declassify answer, by account. */
+function enrolledKeys(reveal: Record<string, unknown> | null): Map<string, string> {
+  const keys = new Map<string, string>();
+  const players = reveal?.["players"];
+  if (!Array.isArray(players)) return keys;
+  for (const p of players as unknown[]) {
+    if (typeof p !== "object" || p === null) continue;
+    const pk =
+      "app_attest_pk" in p && typeof p.app_attest_pk === "string"
+        ? Buffer.from(p.app_attest_pk, "base64")
+        : null;
+    if ("account_id" in p && typeof p.account_id === "string" && pk?.length === 65)
+      keys.set(p.account_id, toHex(pk));
+  }
+  return keys;
 }

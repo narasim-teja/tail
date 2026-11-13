@@ -33,9 +33,9 @@ pub const DEFAULT_APP_ID: &str = "LKABS9RZAC.com.lkabs9rzac.tail";
 // ── bundle (packages/protocol/src/replay.ts `ReplayBundleV2`) ─────────────────────────
 
 /// A version 2 replay bundle as the relay serves it. Fields the verifier does not use (the
-/// Handler lines, transaction hashes) are ignored. `assertions`, `devices[].appAttestPk`,
-/// `devices[].counter` and `match.appId` are optional extensions; without them App Attest is
-/// taken from the log.
+/// Handler lines, transaction hashes) are ignored. `assertions`, `rejected`,
+/// `devices[].appAttestPk`, `devices[].counter` and `match.appId` are optional (older bundles
+/// lack them); without them App Attest outcomes and refusals are taken from the log.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bundle {
@@ -53,9 +53,22 @@ pub struct Bundle {
     /// b64 App Attest assertion of `batches[i]` (`declassify_batches` returns them).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assertions: Option<Vec<Option<String>>>,
+    /// The batches the referee refused, each with its assertion. A batch here is found by hash
+    /// like one in `batches`; the relay keeps them apart because they are not trails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected: Option<Vec<BundleRejected>>,
     pub reveal: BundleReveal,
     #[serde(default)]
     pub devices: Vec<BundleDevice>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleRejected {
+    /// b64 borsh `Batch`.
+    pub batch: String,
+    /// b64 App Attest assertion.
+    pub assertion: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -305,27 +318,7 @@ fn decode(b: &Bundle, opts: &Options) -> Result<Decoded, String> {
             borsh::from_slice::<LogEntry>(&unb64(e, "log entry")?).map_err(|e| format!("log[{i}]: {e}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if let Some(a) = &b.assertions {
-        if a.len() != b.batches.len() {
-            return Err(format!("{} assertions for {} batches", a.len(), b.batches.len()));
-        }
-    }
-    let mut released: BTreeMap<Hash, Released> = BTreeMap::new();
-    for (i, raw) in b.batches.iter().enumerate() {
-        let batch: Batch =
-            borsh::from_slice(&unb64(raw, "batch")?).map_err(|e| format!("batches[{i}]: {e}"))?;
-        let assertion = match b.assertions.as_ref().and_then(|a| a[i].as_ref()) {
-            Some(s) => Some(unb64(s, "assertion")?),
-            None => None,
-        };
-        let r = released.entry(batch_hash(&batch)).or_insert(Released {
-            batch,
-            assertions: Vec::new(),
-        });
-        if let Some(a) = assertion.filter(|a| !r.assertions.contains(a)) {
-            r.assertions.push(a);
-        }
-    }
+    let released = released(b)?;
     let device = |acc: &String| b.devices.iter().find(|d| &d.account_id == acc);
     let keys = players
         .iter()
@@ -355,6 +348,42 @@ fn decode(b: &Bundle, opts: &Options) -> Result<Decoded, String> {
         keys,
         counters,
     })
+}
+
+/// Every released batch by hash, from `batches` and `rejected`, with its distinct assertions.
+fn released(b: &Bundle) -> Result<BTreeMap<Hash, Released>, String> {
+    if let Some(a) = &b.assertions {
+        if a.len() != b.batches.len() {
+            return Err(format!("{} assertions for {} batches", a.len(), b.batches.len()));
+        }
+    }
+    let accepted = b.batches.iter().enumerate().map(|(i, raw)| {
+        let assertion = b.assertions.as_ref().and_then(|a| a[i].as_deref());
+        (format!("batches[{i}]"), raw.as_str(), assertion)
+    });
+    let refused = b.rejected.iter().flatten().enumerate().map(|(i, r)| {
+        (
+            format!("rejected[{i}]"),
+            r.batch.as_str(),
+            Some(r.assertion.as_str()),
+        )
+    });
+    let mut released: BTreeMap<Hash, Released> = BTreeMap::new();
+    for (what, raw, assertion) in accepted.chain(refused) {
+        let batch: Batch = borsh::from_slice(&unb64(raw, "batch")?).map_err(|e| format!("{what}: {e}"))?;
+        let assertion = match assertion {
+            Some(s) => Some(unb64(s, "assertion")?),
+            None => None,
+        };
+        let r = released.entry(batch_hash(&batch)).or_insert(Released {
+            batch,
+            assertions: Vec::new(),
+        });
+        if let Some(a) = assertion.filter(|a| !r.assertions.contains(a)) {
+            r.assertions.push(a);
+        }
+    }
+    Ok(released)
 }
 
 // ── checks that need no re-execution ─────────────────────────────────────────────
@@ -970,9 +999,9 @@ fn describe_body(v: &Verdict, names: &[String]) -> String {
     };
     match v {
         Verdict::Start { .. } => "Start".into(),
-        Verdict::Hint { from, to, amount, .. } => format!("Hint {}→{} {amount}", name(from), name(to)),
-        Verdict::Tag { hunter, target } => format!("Tag {}→{}", name(hunter), name(target)),
-        Verdict::Forfeit { player, to } => format!("Forfeit {}→{}", name(player), name(to)),
+        Verdict::Hint { from, amount, .. } => format!("Hint by {} {amount}", name(from)),
+        Verdict::Tag { hunter, target, .. } => format!("Tag {}→{}", name(hunter), name(target)),
+        Verdict::Forfeit { player, to, .. } => format!("Forfeit {}→{}", name(player), name(to)),
         Verdict::Checkpoint { log_size, root } => format!("Checkpoint {log_size} {}", short(root)),
         Verdict::End { log_size, root, .. } => format!("End {log_size} {}", short(root)),
     }

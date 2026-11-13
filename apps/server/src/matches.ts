@@ -42,7 +42,7 @@ import {
   Writer,
 } from "@tail/protocol";
 import { mintCode } from "./codes.ts";
-import type { Store, Zone } from "./db.ts";
+import type { Store, Trail, Zone } from "./db.ts";
 import { HttpError } from "./errors.ts";
 import type { HudHub } from "./hub.ts";
 import { type Chain, MAX_VERDICTS_PER_APPLY } from "./near.ts";
@@ -291,7 +291,13 @@ export class Matches {
       throw new Error("referee start times disagree with its Start verdict");
     }
     this.leasedTx(matchId, () => {
-      this.d.store.setStarted(matchId, { startMs: started.startMs, endMs: started.endMs, players, keys });
+      this.d.store.setStarted(matchId, {
+        startMs: started.startMs,
+        endMs: started.endMs,
+        players,
+        keys,
+        appId: this.d.appId,
+      });
       this.d.store.setState(matchId, started.state, 0);
       this.d.store.appendLog(matchId, started);
       this.storeVerdicts(matchId, started.verdicts, []);
@@ -595,32 +601,57 @@ export class Matches {
   }
 
   /**
-   * Has the referee open every sealed batch the relay forwarded, and keeps those whose SHA256 is
-   * a LogEntry::Batch of this match (the referee also returns batches it rejected during play,
-   * and the replay accepts only logged ones).
+   * Has the referee open every sealed batch the relay forwarded, and keeps, with the assertion
+   * each arrived with, those the log names: each LogEntry::Batch once (the trails), and each
+   * distinct envelope a LogEntry::Rejected names, so a verifier can recompute the refusal. An
+   * envelope the log does not name (bytes that never opened into this match's batch) is dropped.
    */
   private async declassifyTrails(matchId: string) {
     const m = this.d.store.match(matchId);
     if (!m?.state) throw new Error("ended match has no End state");
-    const logged = new Set<string>();
+    const accepted = new Set<string>();
+    const rejected = new Set<string>();
     for (const e of this.d.store.log(matchId)) {
       const entry = decodeLogEntry(e);
-      if (entry.kind === "Batch") logged.add(toHex(entry.hash));
+      if (entry.kind === "Batch") accepted.add(toHex(entry.hash));
+      if (entry.kind === "Rejected") rejected.add(toHex(entry.hash));
     }
     const sealed = this.d.store.allBatches(matchId).map((b) => b.sealed);
-    const kept: Uint8Array[] = [];
+    const kept: Trail[] = [];
+    const trailed = new Set<string>();
+    const envelopes = new Set<string>();
     for (let i = 0; i < sealed.length; i += MAX_DECLASSIFY_BATCHES) {
       const r = await this.d.referee.declassifyBatches({
         matchId: idBytes(matchId),
         state: m.state,
         sealed: sealed.slice(i, i + MAX_DECLASSIFY_BATCHES),
       });
-      // A batch sent twice (a resend) opens twice; the trail keeps it once.
-      for (const b of r.batches) if (logged.delete(toHex(sha256(b)))) kept.push(b);
+      for (const [k, batch] of r.batches.entries()) {
+        const hash = toHex(sha256(batch));
+        const assertion = r.assertions?.[k] ?? null;
+        // A batch sent twice (a resend) opens twice: the trail keeps it once, and a verifier
+        // needs another copy only when it came with a different assertion.
+        const envelope = `${hash}:${assertion ? toHex(assertion) : ""}`;
+        if (envelopes.has(envelope)) continue;
+        if (accepted.has(hash) && !trailed.has(hash)) {
+          trailed.add(hash);
+          envelopes.add(envelope);
+          kept.push({ batch, assertion, rejected: false });
+        } else if (rejected.has(hash) && assertion) {
+          envelopes.add(envelope);
+          kept.push({ batch, assertion, rejected: true });
+        }
+      }
     }
     this.d.store.putTrails(matchId, kept);
     this.d.log.info(
-      { matchId, sent: sealed.length, kept: kept.length, notReturned: logged.size },
+      {
+        matchId,
+        sent: sealed.length,
+        kept: trailed.size,
+        refused: kept.length - trailed.size,
+        notReturned: accepted.size - trailed.size,
+      },
       "trails declassified",
     );
   }

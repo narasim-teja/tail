@@ -3,7 +3,7 @@
 
 mod driver;
 
-use driver::{bundle, entries, play, remove_entry, set_entry, sign, tick_of, Played, FULL, RELAY_TODAY};
+use driver::{bundle, entries, play, remove_entry, set_entry, sign, tick_of, Played, FULL, OLDER_RELAY};
 use referee_verify::{verify, Bundle, Failure, Options, Stage};
 use std::sync::OnceLock;
 use tail_protocol::digest::batch_hash;
@@ -71,8 +71,8 @@ fn a_full_bundle_re_executes_byte_for_byte_with_app_attest() {
 }
 
 #[test]
-fn todays_relay_bundle_passes_and_says_what_it_took_from_the_log() {
-    let o = verify(&bundle(played(), RELAY_TODAY), &Options::default());
+fn an_older_relay_bundle_passes_and_says_what_it_took_from_the_log() {
+    let o = verify(&bundle(played(), OLDER_RELAY), &Options::default());
     assert!(o.passed(), "{:?}\n{}", o.failure, o.lines.join("\n"));
     let trusted = o.trusted.join("\n");
     assert!(trusted.contains("no App Attest key"), "{trusted}");
@@ -157,13 +157,10 @@ fn a_verdict_changed_after_signing_fails_its_signature() {
         .find(|(_, v)| matches!(v.body, Verdict::Tag { .. }))
         .unwrap();
     let mut v = tag.clone();
-    let Verdict::Tag { hunter, target } = v.body else {
+    let Verdict::Tag { hunter, target, .. } = &mut v.body else {
         unreachable!()
     };
-    v.body = Verdict::Tag {
-        hunter: target,
-        target: hunter,
-    };
+    std::mem::swap(hunter, target);
     let mut signed: SignedVerdict = {
         use base64::Engine as _;
         borsh::from_slice(
@@ -194,13 +191,10 @@ fn a_signed_verdict_the_rules_do_not_give_fails_at_its_tick() {
         .find(|(_, v)| matches!(v.body, Verdict::Tag { .. }))
         .unwrap();
     let mut v = tag.clone();
-    let Verdict::Tag { hunter, target } = v.body else {
+    let Verdict::Tag { hunter, target, .. } = &mut v.body else {
         unreachable!()
     };
-    v.body = Verdict::Tag {
-        hunter: target,
-        target: hunter,
-    };
+    std::mem::swap(hunter, target);
     // The referee key signed it: only re-execution can tell.
     forged.verdicts[k].signed = sign(game, &v);
     let log = entries(&forged);
@@ -328,12 +322,12 @@ fn the_binary_exits_0_on_a_clean_bundle_1_on_a_forged_one_and_3_when_strict_had_
         String::from_utf8_lossy(&out.stdout)
     );
 
-    let today = run(&bundle(played(), RELAY_TODAY), true);
+    let older = run(&bundle(played(), OLDER_RELAY), true);
     assert_eq!(
-        today.status.code(),
+        older.status.code(),
         Some(3),
         "{}",
-        String::from_utf8_lossy(&today.stdout)
+        String::from_utf8_lossy(&older.stdout)
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }

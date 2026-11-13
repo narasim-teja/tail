@@ -1,8 +1,8 @@
 //! Prints the replay bundle of a scripted match (the tests' match) as the relay would serve it.
 //!
-//! `demo-bundle [--relay-today] [--forge-tag]`: `--relay-today` leaves out the device keys,
-//! the assertions and the refused batches, as the relay serves bundles now; `--forge-tag`
-//! swaps the first Tag's hunter and target and signs it with the referee key.
+//! `demo-bundle [--older-relay] [--forge-tag]`: `--older-relay` leaves out the device keys,
+//! the assertions and the refused batches, as relays before they were released served bundles;
+//! `--forge-tag` swaps the first Tag's hunter and target and signs it with the referee key.
 
 #[path = "../tests/driver/mod.rs"]
 mod driver;
@@ -18,16 +18,13 @@ fn main() {
             .iter_mut()
             .find(|v| matches!(v.body, Verdict::Tag { .. }))
         {
-            if let Verdict::Tag { hunter, target } = v.body {
-                v.body = Verdict::Tag {
-                    hunter: target,
-                    target: hunter,
-                };
+            if let Verdict::Tag { hunter, target, .. } = &mut v.body {
+                std::mem::swap(hunter, target);
             }
         }
     }
-    let extras = if args.iter().any(|a| a == "--relay-today") {
-        driver::RELAY_TODAY
+    let extras = if args.iter().any(|a| a == "--older-relay") {
+        driver::OLDER_RELAY
     } else {
         driver::FULL
     };

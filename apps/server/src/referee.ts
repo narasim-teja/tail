@@ -210,6 +210,12 @@ export interface DeclassifyBatchesInput {
 export interface DeclassifyBatchesResult {
   /** borsh Batch (no assertion) for each sealed input that opened, in input order. */
   batches: Uint8Array[];
+  /**
+   * The App Attest assertion each of `batches` arrived with, parallel to it. The referee always
+   * returns them; a stand-in referee that has none leaves them out, and the replay then carries
+   * no assertions.
+   */
+  assertions?: Uint8Array[];
   refused: Record<string, unknown>[];
 }
 /** The referee opens at most this many sealed batches per call. */
@@ -625,8 +631,17 @@ export class RefereeClient implements Referee {
       sealed: i.sealed.map(b64),
     });
     const s = shape("declassify_batches");
+    const batches = s.bytesList(r, "batches");
+    const assertions = s.bytesList(r, "assertions");
+    if (assertions.length !== batches.length)
+      throw new RefereeError(
+        "declassify_batches",
+        `unexpected answer: ${assertions.length} assertions for ${batches.length} batches`,
+        false,
+      );
     return {
-      batches: s.bytesList(r, "batches"),
+      batches,
+      assertions,
       refused: s.arr(r, "refused").map((x, k) => s.obj(x, `refused[${k}]`)),
     };
   }

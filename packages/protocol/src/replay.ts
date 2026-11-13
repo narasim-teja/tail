@@ -81,7 +81,13 @@ export interface ReplayDevice {
 
 export interface ReplayBundleV2 {
   version: 2;
-  match: ReplayBundle["match"];
+  match: ReplayBundle["match"] & {
+    /**
+     * The App ID (`TEAMID.bundle`) the referee checked this match's assertions against. Absent in
+     * bundles from relays before it was recorded.
+     */
+    appId?: string;
+  };
   referee: ReplayBundle["referee"];
   /** Every signed verdict (protocol v2, chained by `prev`) in seq order, with its NEAR transaction. */
   verdicts: { signed: string; txHash: string | null }[];
@@ -99,11 +105,32 @@ export interface ReplayBundleV2 {
   /** As in version 1: declassified batches (b64 borsh Batch), each one a logged `Batch` entry. */
   batches: string[];
   /**
+   * The App Attest assertion (b64 CBOR) each of `batches` arrived with, parallel to it, as
+   * `declassify_batches` returns them, so a verifier can run the referee's assertion check again
+   * (crates/referee-verify). Public-key signatures, not secrets. Absent in older bundles.
+   */
+  assertions?: string[];
+  /**
+   * The batches the referee refused (a `LogEntry::Rejected` names each one's SHA256), with the
+   * assertion each arrived with, so a verifier can recompute the refusal. Kept apart from
+   * `batches`, which are trails: a refused batch is not part of a player's path. An envelope
+   * whose batch and assertion are already in `batches` (a plain resend) is not repeated. Absent
+   * in older bundles.
+   */
+  rejected?: { batch: string; assertion: string }[];
+  /**
    * The ring reveal from End, and `kM`: the match key K_m (hex), which the referee releases with
    * the log. K_log = HKDF(K_m, "tail/log") gives every salted entry's salt (badLogSalts).
    */
   reveal: ReplayBundle["reveal"] & { kM: string };
-  devices: ReplayDevice[];
+  devices: (ReplayDevice & {
+    /**
+     * The device's App Attest public key as the referee enrolled it (declassify), uncompressed
+     * SEC1 P-256, 65 bytes, hex. Its SHA256 is the `Enrolled` entry's key hash. Its assertion
+     * counter started at 0. Absent in older bundles.
+     */
+    appAttestPk?: string;
+  })[];
   /**
    * Hints the Handler answered. The words were sealed to the asker, so the relay never had them;
    * what is public is `signedText`, the message the NEAR AI signature covers

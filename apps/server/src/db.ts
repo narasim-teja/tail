@@ -252,6 +252,8 @@ export interface MatchRow {
   purged_ms: number | null;
   /** 2 for a match judged under protocol v2; null for one started before (served as v1). */
   protocol: number | null;
+  /** The App ID the referee was given at start; null for matches started before it was kept. */
+  app_id: string | null;
 }
 
 interface MatchRaw extends Omit<MatchRow, "zone" | "players" | "keys" | "reveal"> {
@@ -281,6 +283,16 @@ export interface VerdictRow {
 
 interface VerdictRaw extends Omit<VerdictRow, "proof"> {
   proof: string | null;
+}
+
+/** A declassified batch kept for the replay. */
+export interface Trail {
+  /** borsh Batch. */
+  batch: Uint8Array;
+  /** The App Attest assertion it arrived with; null for trails stored before they were kept. */
+  assertion: Uint8Array | null;
+  /** True for a batch the log holds only as `Rejected`: kept for verifiers, not drawn as a trail. */
+  rejected: boolean;
 }
 
 /** A Handler line under protocol v2 (voice_hints): the relay holds only sealed parts of it. */
@@ -353,6 +365,13 @@ export class Store {
     // voice_hints first named a line by its receipt's leaf; a salted receipt's leaf is known only
     // once it is logged, so the line is named by its hint id (an older `leaves` column stays unread).
     this.addColumn("voice_hints", "hint_id", "INTEGER");
+    // Trails stored before assertions and refused batches were released have neither: their
+    // replay bundles leave those fields out.
+    this.addColumn("trails", "assertion", "BLOB");
+    this.addColumn("trails", "rejected", "INTEGER NOT NULL DEFAULT 0");
+    // The App ID a match's assertions were checked against, for its replay; the relay's own
+    // setting may change after the match.
+    this.addColumn("matches", "app_id", "TEXT");
     this.uniqueDeviceKeys();
     this.splitChallenges();
   }
@@ -693,13 +712,13 @@ export class Store {
   /** Started under protocol v2: the replay of this match is a version 2 bundle. */
   setStarted(
     matchId: string,
-    m: { startMs: number; endMs: number; players: string[]; keys: PlayerKeysRow[] },
+    m: { startMs: number; endMs: number; players: string[]; keys: PlayerKeysRow[]; appId: string },
   ) {
     this.db
       .query(
-        "UPDATE matches SET start_ms = ?, end_ms = ?, players = ?, keys = ?, protocol = 2 WHERE match_id = ?",
+        "UPDATE matches SET start_ms = ?, end_ms = ?, players = ?, keys = ?, app_id = ?, protocol = 2 WHERE match_id = ?",
       )
-      .run(m.startMs, m.endMs, JSON.stringify(m.players), JSON.stringify(m.keys), matchId);
+      .run(m.startMs, m.endMs, JSON.stringify(m.players), JSON.stringify(m.keys), m.appId, matchId);
   }
 
   setState(matchId: string, state: Uint8Array, tickNo: number) {
@@ -1020,21 +1039,37 @@ export class Store {
 
   // ── Declassified trails ──────────────────────────────────────────────────────────
 
-  /** Stores the opened batches (borsh Batch) and marks the match's trails done, in one go. */
-  putTrails(matchId: string, batches: Uint8Array[]) {
+  /** Stores the opened batches and marks the match's trails done, in one go. */
+  putTrails(matchId: string, trails: Trail[]) {
     this.tx(() => {
       this.db.query("DELETE FROM trails WHERE match_id = ?").run(matchId);
-      const q = this.db.query("INSERT INTO trails (match_id, idx, batch) VALUES (?, ?, ?)");
-      for (const [i, b] of batches.entries()) q.run(matchId, i, b);
+      const q = this.db.query(
+        "INSERT INTO trails (match_id, idx, batch, assertion, rejected) VALUES (?, ?, ?, ?, ?)",
+      );
+      for (const [i, t] of trails.entries()) q.run(matchId, i, t.batch, t.assertion, t.rejected ? 1 : 0);
       this.db.query("UPDATE matches SET trails_done = 1 WHERE match_id = ?").run(matchId);
     });
   }
 
+  /** The accepted batches (borsh Batch): the players' trails. */
   trails(matchId: string): Uint8Array[] {
+    return this.trailRows(matchId)
+      .filter((t) => !t.rejected)
+      .map((t) => t.batch);
+  }
+
+  /** Every stored batch with its assertion, accepted and refused, in stored order. */
+  trailRows(matchId: string): Trail[] {
     return this.db
-      .query<{ batch: Uint8Array }, [string]>("SELECT batch FROM trails WHERE match_id = ? ORDER BY idx")
+      .query<{ batch: Uint8Array; assertion: Uint8Array | null; rejected: number }, [string]>(
+        "SELECT batch, assertion, rejected FROM trails WHERE match_id = ? ORDER BY idx",
+      )
       .all(matchId)
-      .map((r) => u8(r.batch));
+      .map((r) => ({
+        batch: u8(r.batch),
+        assertion: r.assertion ? u8(r.assertion) : null,
+        rejected: r.rejected === 1,
+      }));
   }
 
   // ── Retention ────────────────────────────────────────────────────────────────────
