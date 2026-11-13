@@ -13,6 +13,7 @@ mod host;
 mod http;
 mod records;
 mod state;
+mod vault;
 mod voice;
 
 use serde_json::{json, Value};

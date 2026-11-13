@@ -1,17 +1,19 @@
 //! `start` (TECHNICAL.md 4.8): K_m, one VRF output, then `referee_core::init`, which builds the
-//! ring, the players' keys and the `Start` verdict (seq 1). Here the keys are sealed to each
-//! player's box key and the verdict is signed. K_m and the VRF reveal stay in storage for `end`
-//! and `declassify`; the sealed tick state carries everything a tick needs.
+//! ring, the players' keys, one `Enrolled` log entry per player and the `Start` verdict (seq 1).
+//! Here each player's keys are signed and sealed to their box key, and the verdict is signed.
+//! K_m and the VRF reveal stay in storage for `end` and `declassify`; the sealed tick state
+//! carries everything a tick needs.
 
-use super::{log_b64, sign_all};
+use super::{log_out, seal_to, sign_all};
 use crate::codec::{b64, fixed_b64, parse, to_borsh, uuid_string};
 use crate::records::{device_record_key, domain, match_record_key, Device, MatchRecord};
 use crate::state::{self, MatchState};
 use crate::{account, host};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tail_protocol::digest::keys_sig_digest;
 use tail_protocol::ring::{build_ring, sort_accounts};
-use tail_protocol::Verdict;
+use tail_protocol::{PlayerKeys, SignedPlayerKeys, Verdict};
 
 /// App Attest App ID (`TEAMID.bundle.id`) of the TAIL iOS app.
 pub const DEFAULT_APP_ID: &str = "LKABS9RZAC.com.lkabs9rzac.tail";
@@ -58,6 +60,24 @@ fn load_device(account_id: &str) -> Result<Device, String> {
     borsh::from_slice(&bytes).map_err(|e| format!("device record of {account_id}: {e}"))
 }
 
+/// Each player's keys, signed as well as sealed to their box key: the relay can seal to the
+/// same key, so only the signature says the referee sent them.
+fn seal_keys(keys: Vec<(u16, PlayerKeys)>, devices: &[Device]) -> Result<Vec<Value>, String> {
+    keys.into_iter()
+        .map(|(player, pk)| {
+            let device = &devices[usize::from(player)];
+            let sig = host::sign_digest(&keys_sig_digest(&pk))?;
+            let signed = SignedPlayerKeys { keys: pk, sig };
+            let sealed = seal_to(
+                &device.player_box_pk,
+                &to_borsh(&signed),
+                tail_protocol::domain::KEYS,
+            )?;
+            Ok(json!({ "player": player, "account_id": device.account_id, "sealed": b64(&sealed) }))
+        })
+        .collect()
+}
+
 pub fn run(input: Value) -> Result<Value, String> {
     let i: Input = parse(input)?;
     let match_id: [u8; 16] = fixed_b64("match_id", &i.match_id)?;
@@ -101,6 +121,7 @@ pub fn run(input: Value) -> Result<Value, String> {
             key: d.app_attest_pk,
             // An assertion counter starts at 0 right after attestation.
             counter: 0,
+            attested: d.attested,
         })
         .collect();
     let started = referee_core::init(cfg, core_devices, &k_m, &vrf.signature, start_ms, call_id)
@@ -110,14 +131,7 @@ pub fn run(input: Value) -> Result<Value, String> {
         return Err("engine player order differs from the sorted accounts".into());
     }
 
-    let mut keys = Vec::with_capacity(started.keys.len());
-    for (player, pk) in &started.keys {
-        let device = &devices[usize::from(*player)];
-        let eph: [u8; 32] = host::random();
-        let sealed =
-            tail_protocol::seal::seal_with(&eph, &device.player_box_pk, &to_borsh(pk), domain::SEAL_KEYS);
-        keys.push(json!({ "player": player, "account_id": device.account_id, "sealed": b64(&sealed) }));
-    }
+    let keys = seal_keys(started.keys, &devices)?;
     let (players_hash, ring_commit, end_ms) = match started.verdicts.first().map(|v| &v.body) {
         Some(Verdict::Start {
             players_hash,
@@ -156,6 +170,7 @@ pub fn run(input: Value) -> Result<Value, String> {
         core: started.state,
     };
     let blob = state::seal(&st, domain::STATE, &match_id)?;
+    let (leaves, log_sealed) = log_out(&box_sk, &match_id, 0, &started.log);
 
     Ok(json!({
         "call_id": uuid_string(&call_id),
@@ -169,6 +184,9 @@ pub fn run(input: Value) -> Result<Value, String> {
         "keys": keys,
         "state": b64(&blob),
         "state_bytes": blob.len(),
-        "log": log_b64(&started.log),
+        "leaves": leaves,
+        "log_sealed": log_sealed,
+        "log_size": st.core.log_size(),
+        "log_root": hex::encode(st.core.log_root()),
     }))
 }

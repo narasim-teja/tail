@@ -1,13 +1,19 @@
 //! `tick`: one step of a match, with no storage access. The relay passes back the sealed state
 //! it got from the previous call (or from `start`), the last verdict seq it holds, the sealed
-//! batches the phones sent since, and the voice receipts for earlier hints. The rules engine
-//! does the rest, App Attest checks included.
+//! batches the phones sent since, and the receipts `voice` returned for earlier hints. The
+//! rules engine does the rest, App Attest checks included.
+//!
+//! What leaves in the clear is what the relay needs to run the match: signed verdicts with
+//! their consistency proofs, leaf hashes, reject codes and who has a hint to voice. The log
+//! entries, HUDs and hint facts leave sealed.
 
-use super::{log_b64, open_checked, receipts, sign_all};
+use super::{log_out, open_checked, proofs_json, receipts, seal_huds, sign_all};
 use crate::codec::{b64, fixed_b64, from_b64, parse, to_borsh, uuid_string};
 use crate::host;
-use crate::records::domain;
+use crate::records::HintBlob;
 use crate::state;
+use crate::vault::{self, Purpose};
+use referee_core::{ActionKind, Refusal, Rejection};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tail_protocol::{BatchEnvelope, MatchId, CLOCK_SKEW_MS};
@@ -27,7 +33,7 @@ struct Input {
     now_ms: Option<u64>,
     #[serde(default)]
     batches: Vec<String>,
-    /// Borsh `HintReceipt`s from `voice`, for hints of earlier ticks.
+    /// `log_sealed` blobs from `voice` (sealed `HintReceipt`s), for hints of earlier ticks.
     #[serde(default)]
     receipts: Vec<String>,
 }
@@ -35,9 +41,28 @@ struct Input {
 /// Opens one phone's sealed batch; the error says why it was dropped.
 pub(super) fn open_batch(box_sk: &[u8; 32], sealed_b64: &str) -> Result<BatchEnvelope, String> {
     let sealed = from_b64("batch", sealed_b64)?;
-    let plain = tail_protocol::seal::open(box_sk, &sealed, domain::SEAL_BATCH)
+    let plain = tail_protocol::seal::open(box_sk, &sealed, tail_protocol::domain::BATCH)
         .map_err(|e| format!("does not open with the referee box key ({e:?})"))?;
     borsh::from_slice(&plain).map_err(|e| format!("not a BatchEnvelope ({e})"))
+}
+
+/// The variant name only: the amounts some reasons carry (a lock count, a head) are the
+/// player's to see in their HUD, not the relay's.
+fn variant<T: std::fmt::Debug>(v: &T) -> String {
+    let s = format!("{v:?}");
+    s.split([' ', '(', '{']).next().unwrap_or_default().to_owned()
+}
+
+fn rejected_json(r: &Rejection) -> Value {
+    json!({ "player": r.player, "seq": r.seq, "reason": r.reason.code() })
+}
+
+fn refused_json(r: &Refusal) -> Value {
+    let action = match r.action {
+        ActionKind::Strike => "strike",
+        ActionKind::Hint(_) => "hint",
+    };
+    json!({ "player": r.player, "nonce": r.nonce, "action": action, "reason": variant(&r.reason) })
 }
 
 pub fn run(input: Value) -> Result<Value, String> {
@@ -66,8 +91,10 @@ pub fn run(input: Value) -> Result<Value, String> {
         }
     }
     let accepted_input = batches.len();
+    let receipts = receipts(&st.box_sk, &match_id, &i.receipts)?;
 
     let tick_no = st.tick_no.checked_add(1).ok_or("tick counter overflow")?;
+    let first = st.core.log_size();
     let out = referee_core::tick(
         st.core,
         referee_core::TickInput {
@@ -75,60 +102,36 @@ pub fn run(input: Value) -> Result<Value, String> {
             now_ms,
             call_id,
             batches,
-            receipts: receipts(&i.receipts)?,
+            receipts,
         },
     )
     // A refused tick changes nothing; the caller retries with the same blob.
     .map_err(|e| format!("tick refused: {e:?}"))?;
-
-    let verdicts = sign_all(match_id, call_id, out.verdicts)?;
-    let mut huds = Vec::with_capacity(out.huds.len());
-    for (player, hud) in &out.huds {
-        let pk = st
-            .box_pks
-            .get(usize::from(*player))
-            .ok_or(format!("engine produced a HUD for unknown player {player}"))?;
-        let eph: [u8; 32] = host::random();
-        let sealed = tail_protocol::seal::seal_with(&eph, pk, &to_borsh(hud), domain::SEAL_HUD);
-        huds.push(json!({ "player": player, "sealed": b64(&sealed) }));
-    }
-    let rejected: Vec<Value> = out
-        .rejected
-        .iter()
-        .map(|r| json!({ "player": r.player, "seq": r.seq, "reason": format!("{:?}", r.reason) }))
-        .collect();
-    let refused: Vec<Value> = out
-        .refused
-        .iter()
-        .map(|r| {
-            json!({
-                "player": r.player,
-                "nonce": r.nonce,
-                "action": format!("{:?}", r.action),
-                "reason": format!("{:?}", r.reason),
-            })
-        })
-        .collect();
-    let hints: Vec<Value> = out
-        .hints
-        .iter()
-        .map(|h| {
-            json!({
-                "hint_id": h.hint_id,
-                "from": h.from,
-                "to": h.to,
-                "amount": h.amount.to_string(),
-                "hint": h.fact.hint,
-                "value": h.fact.value,
-                "nonce": h.nonce,
-                "text": h.text,
-            })
-        })
-        .collect();
-
     st.core = out.state;
     st.tick_no = tick_no;
-    let blob = state::seal(&st, domain::STATE, &match_id)?;
+
+    let verdicts = sign_all(match_id, call_id, out.verdicts)?;
+    let huds = seal_huds(&st, out.huds)?;
+    let (leaves, log_sealed) = log_out(&st.box_sk, &match_id, first, &out.log);
+    // Who asked is public anyway (the Hint verdict names them); what they learn is not.
+    let hints: Vec<Value> = out
+        .hints
+        .into_iter()
+        .map(|h| {
+            let blob = HintBlob {
+                match_id,
+                hint_id: h.hint_id,
+                player: h.from,
+                hint: h.fact.hint,
+                value: h.fact.value,
+                question: h.text,
+            };
+            let sealed = vault::seal(&st.box_sk, Purpose::Hint, &match_id, &[], &to_borsh(&blob));
+            // The match id goes in front so `voice` knows which state blob to open.
+            json!({ "player": h.from, "blob": b64(&[match_id.as_slice(), &sealed].concat()) })
+        })
+        .collect();
+    let blob = state::seal(&st, crate::records::domain::STATE, &match_id)?;
 
     Ok(json!({
         "call_id": uuid_string(&call_id),
@@ -139,14 +142,16 @@ pub fn run(input: Value) -> Result<Value, String> {
         "state": b64(&blob),
         "state_bytes": blob.len(),
         "verdicts": verdicts,
+        "proofs": proofs_json(&out.proofs),
         "huds": huds,
-        "log": log_b64(&out.log),
+        "leaves": leaves,
+        "log_sealed": log_sealed,
         "log_size": st.core.log_size(),
         "log_root": hex::encode(st.core.log_root()),
         "hints": hints,
         "opened": accepted_input,
         "unopened": unopened,
-        "rejected": rejected,
-        "refused": refused,
+        "rejected": out.rejected.iter().map(rejected_json).collect::<Vec<_>>(),
+        "refused": out.refused.iter().map(refused_json).collect::<Vec<_>>(),
     }))
 }

@@ -12,7 +12,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use tail_protocol::MatchId;
 
 /// Bumped when the layout changes; an old blob is refused rather than misread.
-pub const VERSION: u8 = 3;
+pub const VERSION: u8 = 4;
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, PartialEq)]
 pub struct MatchState {
@@ -126,6 +126,7 @@ mod tests {
                 account_id: a.into(),
                 key,
                 counter: 0,
+                attested: true,
             })
             .to_vec();
         let started = referee_core::init(cfg, devices, &[1; 32], &[2; 64], 1_000, [3; 16]).unwrap();

@@ -3,7 +3,7 @@
 use crate::state::State;
 use borsh::{BorshDeserialize, BorshSerialize};
 use tail_protocol::{
-    BatchEnvelope, CallId, Hash, HintFact, Hud, LogEntry, MatchId, PlayerKeys, VerdictPayload,
+    reject_code, BatchEnvelope, CallId, Hash, HintFact, Hud, LogEntry, MatchId, PlayerKeys, VerdictPayload,
 };
 
 /// A circle on the map: the play zone or a safehouse.
@@ -28,7 +28,7 @@ pub struct MatchConfig {
     pub safehouses: Vec<Circle>,
 }
 
-/// An enrolled player: account id and the App Attest key the relay verified at enrolment (4.4).
+/// An enrolled player: account id and the App Attest key the referee checked at enrolment (4.4).
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Device {
     pub account_id: String,
@@ -36,6 +36,9 @@ pub struct Device {
     pub key: [u8; 65],
     /// Counter of the last assertion seen at enrolment (0 straight after attestation).
     pub counter: u32,
+    /// Whether Apple's attestation of `key` was verified at enrolment. False only for a ghost
+    /// (a simulated phone) enrolled on testnet; the `Enrolled` log entry says which.
+    pub attested: bool,
 }
 
 /// A NEAR AI Cloud signature over a Handler line, produced by the `voice` command after the
@@ -100,6 +103,27 @@ pub enum Reject {
     },
 }
 
+impl Reject {
+    /// The protocol's `reject_code` for this reason: what `LogEntry::Rejected` and the HUD carry.
+    /// `TooOld` has no code of its own in the protocol yet; a batch dated before the kept
+    /// evidence is outside the window the referee clock accepts, so it shares `CLOCK_SKEW`.
+    pub fn code(&self) -> u8 {
+        match self {
+            Reject::UnknownPlayer => reject_code::UNKNOWN_PLAYER,
+            Reject::WrongMatch => reject_code::WRONG_MATCH,
+            Reject::PlayerOut => reject_code::PLAYER_OUT,
+            Reject::Seq { .. } => reject_code::SEQ,
+            Reject::Prev => reject_code::PREV,
+            Reject::Assertion(_) => reject_code::ASSERTION,
+            Reject::ClockSkew { .. } | Reject::TooOld { .. } => reject_code::CLOCK_SKEW,
+            Reject::BatchOrder { .. } => reject_code::TIME_ORDER,
+            Reject::FixFlags { .. } => reject_code::FIX_FLAGS,
+            Reject::FixOrder => reject_code::FIX_ORDER,
+            Reject::Teleport { .. } => reject_code::TELEPORT,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rejection {
     pub player: u16,
@@ -161,11 +185,22 @@ pub struct HintIssued {
     pub text: Option<String>,
 }
 
+/// RFC 9162 consistency proof from the log size the previous Checkpoint anchored (0 before the
+/// first) to the `log_size` of verdict `seq`, a Checkpoint or End. The contract checks it against
+/// the roots it holds before it anchors the new one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsistencyProof {
+    pub seq: u32,
+    pub from_size: u64,
+    pub path: Vec<Hash>,
+}
+
 #[derive(Debug)]
 pub struct Started {
     pub state: State,
     /// `[Start]`, seq 1.
     pub verdicts: Vec<VerdictPayload>,
+    /// One `Enrolled` per player, then the Start verdict's entry.
     pub log: Vec<LogEntry>,
     /// Per-player keys and target, to be sealed to each player's box key.
     pub keys: Vec<(u16, PlayerKeys)>,
@@ -176,8 +211,11 @@ pub struct TickOutput {
     pub state: State,
     /// Unsigned, in seq order; sign each and submit in that order.
     pub verdicts: Vec<VerdictPayload>,
+    /// One per Checkpoint in `verdicts`.
+    pub proofs: Vec<ConsistencyProof>,
+    /// Unsigned; the wrapper signs each with `hud_sig_digest`.
     pub huds: Vec<(u16, Hud)>,
-    /// New log entries, in log order (append them to the stored log).
+    /// New log entries, in log order, starting with this tick's `Tick`.
     pub log: Vec<LogEntry>,
     pub rejected: Vec<Rejection>,
     pub refused: Vec<Refusal>,
@@ -191,6 +229,8 @@ pub struct Finished {
     pub state: State,
     /// `[End]`.
     pub verdicts: Vec<VerdictPayload>,
+    /// The End verdict's.
+    pub proofs: Vec<ConsistencyProof>,
     pub log: Vec<LogEntry>,
 }
 

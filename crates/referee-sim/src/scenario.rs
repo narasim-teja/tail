@@ -225,6 +225,19 @@ pub struct Expect {
     /// Verdicts (by the same spelling) that must land within `[from, to]` seconds.
     #[serde(default)]
     pub verdict_times: Vec<VerdictTime>,
+    /// `Evidence` log entries that must appear, exactly as listed.
+    #[serde(default)]
+    pub evidence: Vec<EvidenceCheck>,
+}
+
+/// The contact epochs a tag's `Evidence` entry must list.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceCheck {
+    pub hunter: String,
+    pub target: String,
+    pub strike_epoch: u32,
+    pub epochs: Vec<u32>,
 }
 
 fn yes() -> bool {
@@ -237,6 +250,9 @@ fn yes() -> bool {
 pub struct Occurs {
     pub player: String,
     pub reason: String,
+    /// Rejections only: the `reject_code` its `Rejected` log entry and the HUD carry.
+    #[serde(default)]
+    pub code: Option<u8>,
     #[serde(default)]
     pub from: u64,
     #[serde(default = "forever")]
@@ -262,6 +278,10 @@ pub struct HudCheck {
     /// `hunting`, `out` or `won`.
     pub status: Option<String>,
     pub target: Option<String>,
+    /// Tags this player has made.
+    pub tags: Option<u8>,
+    /// `reject_code` of the player's latest refused authentic batch, 0 for none.
+    pub rejected: Option<u8>,
 }
 
 #[derive(Deserialize, Clone, Debug)]

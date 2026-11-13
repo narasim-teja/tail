@@ -26,6 +26,11 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 base64 = "=0.22.1"
 hex = "=0.4.3"
+# The referee's own blobs (src/vault.rs): log entries and hint facts that only it can open or
+# make, and the local test referee's state key. The versions tail-protocol's sealing uses.
+chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
+hkdf = "=0.12.4"
+sha2 = { version = "=0.10.9", default-features = false }
 
 # The OutLayer backend (src/host/enclave.rs, src/http/wasi_http.rs).
 [target.'cfg(target_family = "wasm")'.dependencies]
@@ -37,12 +42,13 @@ wasi = "=0.13.3"
 # The local test referee backend (src/host/local.rs): keys on disk instead of the worker's.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 ed25519-dalek = "=2.2.0"
-chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
 getrandom = "=0.4.3"
 
-# Only the native integration test (tests/local.rs) needs it: P-256 device keys to enrol.
+# Only the native integration test (tests/local.rs) needs them: P-256 device keys to enrol, and
+# App Attest-format assertions over the batches it plays.
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 p256 = { version = "=0.14.0", features = ["ecdsa"] }
+appattest = { path = "../appattest", features = ["signer"] }
 
 # Mirror of the root workspace lint table (this crate is its own workspace, so it cannot inherit).
 [lints.rust]

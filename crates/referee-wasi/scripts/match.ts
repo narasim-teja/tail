@@ -9,10 +9,9 @@
 // clock and the whole match takes a couple of minutes of wall time. The verdicts are not
 // submitted to the contract (the relay does that).
 //
-// Run from the repo root: `bun crates/referee-wasi/scripts/match.ts`.
+// Run from the repo root: `bun crates/referee-wasi/scripts/match.ts`, or against the local test
+// referee: `REFEREE_MODE=local bun crates/referee-wasi/scripts/match.ts` (build it first).
 import { createPublicKey, generateKeyPairSync, randomBytes, verify } from "node:crypto";
-// Already installed under the protocol package; imported by path rather than installed here.
-import { p256 } from "../../../packages/protocol/node_modules/@noble/curves/nist.js";
 import {
   type Action,
   type Batch,
@@ -21,22 +20,24 @@ import {
   beaconToken,
   boxPublicKey,
   buildRing,
-  concat,
-  decodeHud,
   decodeLogEntry,
-  decodePlayerKeys,
   decodeSignedVerdict,
   encodeBatchEnvelope,
   epochAt,
   equal,
   fromHex,
+  type Bytes as Hash,
   type Hud,
   type LogEntry,
+  merkleEmptyRoot,
   merkleLeaf,
   merkleRoot,
-  open,
+  openSignedHud,
+  openSignedPlayerKeys,
+  openSignedVoiceLine,
   type PlayerKeys,
   ringCommit,
+  SealContext,
   type Sighting,
   type SignedVerdict,
   seal,
@@ -44,11 +45,12 @@ import {
   sortAccounts,
   toHex,
   utf8,
+  verdictChainBreak,
   verdictDigest,
+  verifyConsistency,
 } from "../../../packages/protocol/src/index.ts";
-import { balance, type Call, type Json, OWNER, ok, refused, spend } from "./lib.ts";
+import { assertion, balance, type Call, type Json, OWNER, ok, p256, refused, spend } from "./lib.ts";
 
-const APP_ID = "LKABS9RZAC.com.lkabs9rzac.tail";
 const STAKE = 1_000_000n;
 const DURATION_MS = 180_000;
 const TICK_MS = 10_000;
@@ -72,32 +74,6 @@ const ed25519Verify = (pk: Uint8Array, msg: Uint8Array, sig: Uint8Array) =>
     }),
     sig,
   );
-
-// ── App Attest assertion, byte for byte as the Secure Enclave builds it ──────────
-const cborHead = (major: number, len: number) =>
-  len < 24
-    ? [(major << 5) | len]
-    : len < 256
-      ? [(major << 5) | 24, len]
-      : [(major << 5) | 25, len >> 8, len & 0xff];
-const cborBytes = (b: Uint8Array) => [...cborHead(2, b.length), ...b];
-const cborText = (s: string) => [...cborHead(3, utf8(s).length), ...utf8(s)];
-const u32be = (n: number) => Uint8Array.of(n >>> 24, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff);
-
-/** authenticatorData = SHA256(app_id) ‖ flags 0 ‖ u32be(counter); ECDSA over SHA256(SHA256(auth ‖ cdh)). */
-function assertion(sk: Uint8Array, clientDataHash: Uint8Array, counter: number): Uint8Array {
-  const auth = concat(sha256(utf8(APP_ID)), Uint8Array.of(0), u32be(counter));
-  const nonce = sha256(concat(auth, clientDataHash));
-  // prehash: the verifier's ECDSA hashes its message (the nonce) with SHA-256 once more.
-  const sig = p256.sign(nonce, sk, { prehash: true, format: "der" });
-  return Uint8Array.from([
-    0xa2,
-    ...cborText("signature"),
-    ...cborBytes(sig),
-    ...cborText("authenticatorData"),
-    ...cborBytes(auth),
-  ]);
-}
 
 // ── ghosts ───────────────────────────────────────────────────────────────────────
 type Ghost = {
@@ -154,15 +130,17 @@ function batchFor(g: Ghost, ghosts: Ghost[], fromMs: number, toMs: number, start
   g.actions = [];
   g.counter++;
   const env = { batch, assertion: assertion(g.sk, batchClientDataHash(batch), g.counter) };
+  sentHashes.add(toHex(batchHash(batch)));
   g.seq++;
   g.prev = batchHash(batch);
-  const sealedB64 = b64(seal(boxPk, encodeBatchEnvelope(env), "tail/batch"));
+  const sealedB64 = b64(seal(boxPk, encodeBatchEnvelope(env), SealContext.batch));
   // The relay keeps every sealed batch it forwarded, for declassify_batches after End.
   keptSealed.push(sealedB64);
   return sealedB64;
 }
 
 const keptSealed: string[] = [];
+const sentHashes = new Set<string>();
 
 // ── keys, enrolment ─────────────────────────────────────────────────────────────
 console.log(`balance before: ${await balance()}`);
@@ -214,16 +192,36 @@ const { result: st, call: startCall } = await ok("start", {
   stake: STAKE.toString(),
   zone: ZONE,
 });
-const log: LogEntry[] = st.log.map((e: string) => decodeLogEntry(unb64(e)));
+// What the relay keeps during play: leaf hashes and the log sealed to the referee, never the
+// plaintext; every anchored root with the consistency proof that came with it.
+const leaves: Hash[] = [];
+const logSealed: string[] = [];
+const anchors: { from: number; size: number; root: Hash; path: Hash[] }[] = [];
 const verdicts: { v: SignedVerdict; call: string }[] = [];
-const take = (list: string[], c: Call) => {
-  for (const s of list) verdicts.push({ v: decodeSignedVerdict(unb64(s)), call: c.id });
+const take = (r: Json, c: Call) => {
+  if (r.log !== undefined) throw new Error("FAIL: a plaintext log left the referee during play");
+  leaves.push(...r.leaves.map(unb64));
+  logSealed.push(r.log_sealed);
+  for (const s of r.verdicts) {
+    const v = decodeSignedVerdict(unb64(s));
+    verdicts.push({ v, call: c.id });
+    if (v.body.kind === "Checkpoint" || v.body.kind === "End") {
+      const p = r.proofs.find((x: Json) => x.seq === v.seq);
+      if (!p) throw new Error(`FAIL: verdict ${v.seq} has no consistency proof`);
+      anchors.push({
+        from: p.from_size,
+        size: Number(v.body.logSize),
+        root: v.body.root,
+        path: p.path.map(unb64),
+      });
+    }
+  }
 };
-take(st.verdicts, startCall);
+take(st, startCall);
 for (const g of ghosts) {
   g.index = sorted.indexOf(g.account);
   const entry = st.keys.find((k: Json) => k.account_id === g.account);
-  g.keys = decodePlayerKeys(open(g.boxSk, unb64(entry.sealed), "tail/keys"));
+  g.keys = openSignedPlayerKeys(g.boxSk, unb64(entry.sealed), refereePk);
 }
 const hunter = ghosts.find((g) => g.index === 0) as Ghost;
 const target = ghosts.find((g) => g.account === hunter.keys?.target) as Ghost;
@@ -249,6 +247,7 @@ let over = false;
 let hinted = false;
 let struck = false;
 let voiceRow = "";
+let signedText: string | null = null;
 for (let k = 1; !over; k++) {
   const now = startMs + k * TICK_MS;
   if (k === 2) {
@@ -274,30 +273,29 @@ for (let k = 1; !over; k++) {
   state = t.state;
   seq = t.seq;
   over = t.over;
-  take(t.verdicts, c);
+  take(t, c);
   // A tagged player stops sending; its batches would only be rejected as PlayerOut.
   for (const s of t.verdicts) {
     const body = decodeSignedVerdict(unb64(s)).body;
     if (body.kind === "Tag") for (const g of ghosts) if (g.index === body.target) g.out = true;
   }
-  log.push(...t.log.map((e: string) => decodeLogEntry(unb64(e))));
   if (t.unopened.length || t.rejected.length)
     throw new Error(`tick ${k}: ${JSON.stringify([t.unopened, t.rejected])}`);
   for (const h of t.huds) {
     const g = ghosts.find((x) => x.index === h.player) as Ghost;
-    const hud = decodeHud(open(g.boxSk, unb64(h.sealed), "tail/hud"));
+    const hud = openSignedHud(g.boxSk, unb64(h.sealed), refereePk);
+    if (hud.logSize !== BigInt(leaves.length) || !equal(hud.root, merkleRoot(leaves)))
+      throw new Error(`FAIL: ${g.account}'s HUD names another log`);
     g.huds.push(hud);
     if (hud.status === 1) g.out = true;
   }
   for (const h of t.hints) {
-    const { result: v, call: vc } = await ok("voice", {
-      hint_id: h.hint_id,
-      hint: h.hint,
-      value: h.value,
-      question: h.text,
-    });
-    receipts.push(v.receipt);
-    voiceRow = `"${v.text}" (${v.source}, model ${v.latency_ms} ms, call ${vc.wall.toFixed(0)} ms, ${v.signature_kind ?? v.signature_error ?? v.fallback_reason})`;
+    const { result: v, call: vc } = await ok("voice", { state: t.state, blob: h.blob });
+    const asker = ghosts.find((x) => x.index === h.player) as Ghost;
+    const line = openSignedVoiceLine(asker.boxSk, unb64(v.sealed), refereePk);
+    receipts.push(v.log_sealed);
+    signedText = v.signed_text;
+    voiceRow = `"${line.text}" (${v.source}, model ${v.latency_ms} ms, call ${vc.wall.toFixed(0)} ms, ${v.signed_text ? "signed" : (v.signature_error ?? v.fallback_reason)})`;
   }
   const kinds = t.verdicts.map((s: string) => decodeSignedVerdict(unb64(s)).body.kind).join(",");
   rows.push({
@@ -325,9 +323,10 @@ const { result: e, call: endCall } = await ok("end", {
   last_seq: seq,
   receipts,
 });
-take(e.verdicts, endCall);
-log.push(...e.log.map((x: string) => decodeLogEntry(unb64(x))));
-const { result: d } = await ok("declassify", { match_id: b64(matchId) });
+take(e, endCall);
+const dropped = await refused("declassify", { match_id: b64(matchId), log_sealed: logSealed.slice(0, -1) });
+const { result: d } = await ok("declassify", { match_id: b64(matchId), log_sealed: logSealed });
+const log: LogEntry[] = d.log.map((x: string) => decodeLogEntry(unb64(x)));
 
 // Trails: every kept sealed batch, plus one sealed for another match and one garbage blob.
 const foreign: Batch = {
@@ -403,6 +402,26 @@ check(
   verdicts.every(({ v }) => ed25519Verify(refereePk, verdictDigest(v), v.sig)),
   "every verdict signature verifies with referee_pk over verdictDigest",
 );
+check(
+  verdictChainBreak(
+    verdicts.map(({ v }) => v),
+    refereePk,
+  ) === undefined,
+  "every verdict's prev is the digest of the one before (zeros for Start)",
+);
+let anchored: { size: number; root: Hash } = { size: 0, root: merkleEmptyRoot() };
+const consistent = anchors.every((a) => {
+  const good =
+    a.from === anchored.size &&
+    equal(merkleRoot(leaves.slice(0, a.size)), a.root) &&
+    verifyConsistency(a.from, a.size, anchored.root, a.root, a.path);
+  anchored = a;
+  return good;
+});
+check(
+  consistent && anchors.length >= 2,
+  `${anchors.length} anchored roots, each proved consistent with the last`,
+);
 const kinds = verdicts.map(({ v }) => v.body.kind);
 console.log(`  verdicts: ${kinds.join(", ")}`);
 const startV = verdicts[0]?.v.body;
@@ -417,7 +436,8 @@ check(
     hintV?.kind === "Hint" &&
     hintV.from === hunter.index &&
     hintV.to === target.index &&
-    hintV.amount === price,
+    hintV.amount === price &&
+    hintV.hint === 0,
   `Hint verdict: ${hunter.index} → ${target.index}, ${price}`,
 );
 const tagV = verdicts.find(({ v }) => v.body.kind === "Tag")?.v.body;
@@ -447,6 +467,11 @@ check(
 check(stalePrev.includes("rollback"), "an old state blob is refused as a rollback");
 const endV = verdicts.at(-1)?.v.body;
 if (endV?.kind !== "End") throw new Error("FAIL: last verdict is not End");
+check(dropped.includes("End verdict signed"), "declassify refuses a log with a blob missing");
+check(
+  log.length === leaves.length && log.every((x, i) => equal(merkleLeaf(x), leaves[i] as Hash)),
+  "the declassified log is exactly the leaves the relay held during play",
+);
 const before = log.slice(0, Number(endV.logSize));
 check(
   log.length === Number(endV.logSize) + 1,
@@ -473,13 +498,40 @@ check(
   log.some((x) => x.kind === "HintReceipt"),
   "the voice receipt joined the log",
 );
+check(
+  log
+    .slice(0, ghosts.length)
+    .every((x, i) => x.kind === "Enrolled" && x.player === i && x.account === sorted[i] && !x.attested),
+  "the log opens with one Enrolled per player, in index order (ghosts: attested false)",
+);
+const tagAt = log.findIndex(
+  (x) => x.kind === "Verdict" && verdicts.find(({ v }) => v.seq === x.seq)?.v.body.kind === "Tag",
+);
+const ev = log[tagAt - 1];
+const pair = [Math.min(hunter.index, target.index), Math.max(hunter.index, target.index)];
+check(
+  ev?.kind === "Evidence" &&
+    ev.hunter === hunter.index &&
+    ev.target === target.index &&
+    ev.epochs.length >= LOCK_EPOCHS &&
+    ev.epochs.every((x) =>
+      log.some((c) => c.kind === "Contact" && c.epoch === x && c.a === pair[0] && c.b === pair[1]),
+    ),
+  `the Tag follows its Evidence (${ev?.kind === "Evidence" ? ev.epochs.join(" ") : "?"}), each a logged contact`,
+);
+check(log.filter((x) => x.kind === "Tick").length === rows.length, "one Tick entry per tick");
+check(
+  signedText === null || /^.+:[0-9a-f]{64}:[0-9a-f]{64}$/.test(signedText),
+  `signed_text is model:sha256(request):sha256(response) (${signedText === null ? "template line" : "model line"})`,
+);
 const logged = new Set(log.flatMap((x) => (x.kind === "Batch" ? [toHex(x.hash)] : [])));
 const returned = trails.batches.map((b: string) => toHex(sha256(unb64(b))));
 check(
   returned.length === keptSealed.length &&
-    returned.every((h: string) => logged.has(h)) &&
-    logged.size === returned.length,
-  `declassify_batches: all ${returned.length} batches returned, each SHA256 is a LogEntry::Batch hash`,
+    returned.every((h: string) => logged.has(h) && sentHashes.has(h)) &&
+    logged.size === returned.length &&
+    trails.assertions.length === returned.length,
+  `declassify_batches: all ${returned.length} batches returned with their assertions, each SHA256 a LogEntry::Batch hash`,
 );
 check(
   trails.refused.length === 2 &&

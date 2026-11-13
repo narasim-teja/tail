@@ -11,8 +11,9 @@ The rules are `crates/referee-core`. This crate does what the engine cannot:
 - host keys, randomness and the VRF
 - storage
 - opening sealed batches
-- signing the engine's verdicts
-- sealing HUDs, player keys and the tick state
+- signing the engine's verdicts, HUDs, player keys and Handler lines
+- sealing HUDs, player keys and Handler lines to players, and the tick state, log entries and
+  hint facts to itself
 - the Handler voice (NEAR AI Cloud)
 
 App Attest is checked here, not by the relay (`crates/appattest`): `enroll` verifies the
@@ -25,46 +26,126 @@ Only the project owner (the relay's account) may call. The worker-set `NEAR_SEND
 `NEAR_USER_ACCOUNT_ID` must both equal `OUTLAYER_PROJECT_OWNER`, and the call may name no
 secret rows. `call_id` is the OutLayer call UUID.
 
-`verdicts` is a list of borsh `SignedVerdict`s, signed over `verdictDigest`, in seq order. The
-engine sets their `seq` and `call_id`. `log` is a list of borsh `LogEntry`s in log order.
-`state` is the sealed tick state.
+Protocol v2 (`packages/protocol/README.md`). `verdicts` is a list of borsh `SignedVerdict`s
+with `prev` (the digest of the match's previous verdict, zeros for Start), signed over
+`verdictDigest`, in seq order. The engine sets `seq`, `prev` and `call_id`. `state` is the
+sealed tick state. No plaintext log entry leaves the referee during play. Each call that adds
+to the log returns instead:
 
-| cmd                  | input                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | result                                                                                                                                                                                                                                                                                                                                           |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `pubkeys`            | `{}`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | `{referee_pk, referee_pk_hex, referee_box_pk, box_pk_sig, vrf_pk}`. `box_pk_sig` = ed25519(referee_sk, SHA256(`"tail/referee-box/v1"` ‖ box_pk)). `vrf_pk` is hex.                                                                                                                                                                               |
-| `enroll`             | `{account_id, app_attest_pk, player_box_pk, near_pk, attestation?, challenge?}`. `app_attest_pk` is SEC1 P-256, 33 or 65 bytes. `attestation` is the CBOR object the phone got from `attestKey`, `challenge` the 32 bytes it covers. The referee verifies the chain to Apple's root, the App ID `LKABS9RZAC.com.lkabs9rzac.tail` (development aaguid), counter 0, and the nonce over `enroll_client_data_hash(challenge, account_id, player_box_pk, near_pk)`, and requires the attested key to be `app_attest_pk`. Without both, it enrols only when `ALLOW_UNATTESTED=1` (ghosts). A low-order `player_box_pk` is refused. | `{account_id, app_attest_pk (65 B), attested, call_id, receipt, sig}`. `receipt` = borsh `Device {account_id, app_attest_pk: [u8;65], attested: bool, player_box_pk: [u8;32], near_pk: [u8;32], call_id: [u8;16]}`; `sig` = ed25519 over SHA256(`"tail/enroll-receipt/v1"` ‖ receipt).                                                           |
-| `start`              | `{match_id (16 B), players: [account_id], start_ms?, duration_ms, stake ("u128"), zone: {lat_e7, lon_e7, radius_m}, safehouses?: [circle], app_id?}`. `start_ms` defaults to the host clock; `app_id` defaults to `LKABS9RZAC.com.lkabs9rzac.tail`.                                                                                                                                                                                                                                                                                                                                                                          | `{call_id, seq: 1, verdicts: [Start], players_hash, ring_commit (hex), players (sorted), start_ms, end_ms, keys: [{player, account_id, sealed}], state, state_bytes, log}`. `sealed` = seal(player_box_pk, borsh `PlayerKeys`, `"tail/keys"`). `end_ms = start_ms + duration_ms`.                                                                |
-| `tick`               | `{match_id, state, last_seq, now_ms?, batches: [sealed], receipts: [HintReceipt]}`. Each batch is seal(referee_box_pk, borsh `BatchEnvelope`, `"tail/batch"`), at most 256.                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `{call_id, tick_no, now_ms, seq, over, state, state_bytes, verdicts, huds: [{player, sealed}], log, log_size, log_root, hints: [{hint_id, from, to, amount, hint, value, nonce, text}], opened, unopened: [{index, reason}], rejected: [{player, seq, reason}], refused: [{player, nonce, action, reason}]}`. HUDs are sealed with `"tail/hud"`. |
-| `voice`              | `{hint_id, hint, value, question?}`, one entry of a tick's `hints`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | `{text, source: "model"\|"template", fact, model, latency_ms, fallback_reason, chat_id, text_sha256, request_sha256, response_sha256, signature, signing_address, signature_kind, signed_text, signature_error, hint_id, receipt}`. `receipt` is a borsh `referee_core::HintReceipt` for the next tick's `receipts`.                             |
-| `end`                | `{match_id, state, last_seq, receipts?}`, only after a tick returned `over`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `{call_id, seq, verdicts: [End], log_size, root (hex), state, log}`. The End log size and root are the engine's own.                                                                                                                                                                                                                             |
-| `declassify`         | `{match_id}`, only after End                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `{match_id, start_ms, end_ms, players: [{account_id, app_attest_pk, attested, player_box_pk, near_pk, enroll_call_id}], ring, k_m (hex), vrf_alpha, vrf_signature (hex), start_call_id, end: {seq, log_size, root, call_id}}`                                                                                                                    |
-| `declassify_batches` | `{match_id, state?, sealed: [sealed BatchEnvelope]}`, only after End (the stored match record says so), at most 500 per call. `state` is the End state blob; when given, it saves a storage read.                                                                                                                                                                                                                                                                                                                                                                                                                            | `{batches: [borsh Batch], refused: [{index, reason}]}`. Batches come back in input order, without their assertion. One that does not open, does not decode or belongs to another match is refused on its own; the rest of the call goes on.                                                                                                      |
-| `bench_state`        | `{mode: "sealed"\|"storage", size, state?, last_seq?}`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `{state, bytes, seq, enclave_ms}`. This is the tick's state round trip alone, for measuring. It touches no match.                                                                                                                                                                                                                                |
+- `leaves`: `[b64 32 B]`, the RFC 6962 leaf hashes of its new entries, in log order;
+- `log_sealed`: b64, the same entries (borsh `Vec<LogEntry>`) sealed to the referee itself
+  ([referee-only blobs](#referee-only-blobs)), bound to the log index of the first; opaque to
+  the relay.
+
+`proofs` is `[{seq, from_size, path: [b64 32 B]}]`, one per Checkpoint or End verdict in
+`verdicts`: the RFC 9162 consistency proof from the previous anchored log size (0 for the
+first) to that verdict's `log_size`. `from_size` is a JSON number. The relay passes it to the
+contract's `apply` unchanged.
+
+**`pubkeys`** `{}` → `{referee_pk, referee_pk_hex, referee_box_pk, box_pk_sig, vrf_pk}`.
+`box_pk_sig` = ed25519(referee_sk, SHA256(`"tail/referee-box/v1"` ‖ box_pk)). `vrf_pk` is hex.
+
+**`enroll`** `{account_id, app_attest_pk, player_box_pk, near_pk, attestation?, challenge?}`.
+`app_attest_pk` is SEC1 P-256, 33 or 65 bytes. `attestation` is the CBOR object the phone got
+from `attestKey`, `challenge` the 32 bytes it covers. The referee verifies the chain to Apple's
+root, the App ID `LKABS9RZAC.com.lkabs9rzac.tail` (development aaguid), counter 0, and the nonce
+over `enroll_client_data_hash(challenge, account_id, player_box_pk, near_pk)`, and requires the
+attested key to be `app_attest_pk`. Without both, it enrols only when `ALLOW_UNATTESTED=1`
+(ghosts). A low-order `player_box_pk` is refused. → `{account_id, app_attest_pk (65 B),
+attested, call_id, receipt, sig}`. `receipt` = borsh `Device {account_id, app_attest_pk:
+[u8;65], attested: bool, player_box_pk: [u8;32], near_pk: [u8;32], call_id: [u8;16]}`; `sig` =
+ed25519 over SHA256(`"tail/enroll-receipt/v1"` ‖ receipt).
+
+**`start`** `{match_id (16 B), players: [account_id], start_ms?, duration_ms, stake ("u128"),
+zone: {lat_e7, lon_e7, radius_m}, safehouses?: [circle], app_id?}`. `start_ms` defaults to the
+host clock; `app_id` to `LKABS9RZAC.com.lkabs9rzac.tail`. → `{call_id, seq: 1, verdicts:
+[Start], players_hash, ring_commit (hex), players (sorted), start_ms, end_ms, keys: [{player,
+account_id, sealed}], state, state_bytes, leaves, log_sealed, log_size, log_root (hex)}`.
+`sealed` = seal(player_box_pk, borsh `SignedPlayerKeys`, `"tail/keys/v2"`), signed with
+`keys_sig_digest`. The log so far: one `Enrolled` per player (`attested` from the device
+record), then Start.
+
+**`tick`** `{match_id, state, last_seq, now_ms?, batches: [sealed], receipts: [b64]}`. Each
+batch is seal(referee_box_pk, borsh `BatchEnvelope`, `"tail/batch"`), at most 256. `receipts`
+are the `log_sealed` blobs `voice` returned since the last tick, in the order received. →
+
+```text
+{call_id, tick_no, now_ms, seq, over, state, state_bytes,
+ verdicts, proofs, huds: [{player, sealed}], leaves, log_sealed, log_size, log_root (hex),
+ hints: [{player, blob}], opened, unopened: [{index, reason}],
+ rejected: [{player, seq, reason: <RejectCode>}],
+ refused: [{player, nonce, action: "strike" | "hint", reason: <variant name>}]}
+```
+
+`sealed` = seal(player_box_pk, borsh `SignedHud`, `"tail/hud/v2"`), signed with
+`hud_sig_digest`. `log_size` / `log_root` are the log after this tick; every HUD carries the
+same pair. A hint leaves only as its asker's index and `blob` = `match_id ‖` a referee-only
+blob of the fact and the question, for `voice`. `rejected[].reason` is the protocol
+`RejectCode` number. `refused[].reason` is the engine's `Refuse` variant name (`Lock`,
+`NoContact`, `Cooldown`, `InsufficientHead`, …) without its numbers: the protocol has no code
+table for refused actions. The first log entry of a tick is always its `Tick`; receipts that
+open are logged after it (once per hint, within 120 s).
+
+**`voice`** `{state, blob}`, one entry of a tick's `hints` plus any state blob of the match
+(voice changes no state and appends nothing). → `{player, hint_id, sealed, signed_text, leaves,
+log_sealed, source: "model"|"template", model, latency_ms, fallback_reason, signature_error}`.
+`sealed` = seal(asker's box key, borsh `SignedVoiceLine`, `"tail/voice/v1"`), signed with
+`voice_sig_digest`. `signed_text` is the exact text NEAR AI signed
+(`model:sha256(request):sha256(response)`), or null for a template line; the replay needs it to
+check the signature in the logged receipt. `log_sealed` is the `HintReceipt`, sealed to the
+referee; pass it in the next tick's (or `end`'s) `receipts`. `leaves` is the leaf hash that
+receipt's entry will have once a tick logs it; it is not a log append.
+
+**`end`** `{match_id, state, last_seq, receipts?}`, only after a tick returned `over`. →
+`{call_id, seq, verdicts: [End], proofs, log_size, root (hex), state, leaves, log_sealed}`.
+Here `log_size` and `root` are the End verdict's, the log before End's own entry.
+
+**`declassify`** `{match_id, log_sealed: [b64]}`, only after End, with every `log_sealed` blob
+of `start`, each `tick` and `end`, in order. It refuses unless the blobs open in sequence, the
+entries before End hash to the End root and the last entry is End's. → `{match_id, start_ms,
+end_ms, players: [{account_id, app_attest_pk, attested, player_box_pk, near_pk,
+enroll_call_id}], ring, k_m (hex), vrf_alpha, vrf_signature (hex), start_call_id, end: {seq,
+log_size, root, call_id}, log: [b64 borsh LogEntry]}`.
+
+**`declassify_batches`** `{match_id, state?, sealed: [sealed BatchEnvelope]}`, only after End
+(the stored match record says so), at most 500 per call. `state` is the End state blob; when
+given, it saves a storage read. → `{batches: [borsh Batch], assertions: [b64], refused:
+[{index, reason}]}`. `assertions[i]` is the App Attest assertion of `batches[i]`, so a verifier
+can run the referee's checks again. One that does not open, does not decode or belongs to
+another match is refused on its own; the rest of the call goes on.
+
+**`bench_state`** `{mode: "sealed"|"storage", size, state?, last_seq?}` → `{state, bytes, seq,
+enclave_ms}`. This is the tick's state round trip alone, for measuring. It touches no match.
 
 Player numbers are positions in the byte-sorted account list. `ring[k]` hunts `ring[k+1 mod n]`.
 The engine's rules are in `crates/referee-core/README.md`.
 
 ### What the relay must do
 
-- **Store the log.** Append every `log` entry from `start`, each `tick` and `end`, in order. The
-  engine keeps only a Merkle frontier, and `declassify` returns secrets, not the log. A tick's
-  `log_size` and `log_root` let the relay check that its copy is complete. `End` carries the
-  size and root of the log before End's own entry, so the final log has `End.log_size + 1`
-  entries.
+- **Store the leaves and the sealed log.** Append every `leaves` list from `start`, each
+  `tick` and `end`, in order (not `voice`'s), and keep every `log_sealed` blob of those calls in
+  order. The leaves serve inclusion and consistency proofs during play; after End, `declassify`
+  with all the blobs returns the plaintext log. A tick's `log_size` and `log_root` let the relay
+  check that its leaves are complete. `End` carries the size and root of the log before End's
+  own entry, so the final log has `End.log_size + 1` entries.
+- **Pass each proof to `apply` with its verdict.** The referee anchors a root when it signs a
+  Checkpoint, so a Checkpoint the contract does not apply leaves every later proof starting from
+  the wrong size.
 - **Submit verdicts in seq order.** The seq is contiguous across `start`, every `tick` and `end`.
   Pass the last seq it holds as `last_seq`.
 - **Keep exactly the state blob that came with that seq.** A failed call changes nothing; retry
   it with the same blob.
-- **Voice every hint.** For each entry in a tick's `hints`, call `voice`, then pass its `receipt`
-  in the next tick's `receipts` (or in `end`'s). The engine logs a receipt only for a hint it
-  issued, once, within 120 s of referee time. `voice` takes the fact from the caller. The
-  sealed HUD's `hint_fact` is the one the player can rely on.
+- **Voice every hint.** For each entry in a tick's `hints`, call `voice` with its blob and a
+  state blob, send `sealed` to the asker, keep `signed_text` for the replay, and pass
+  `log_sealed` in the next tick's `receipts` (or `end`'s). The engine logs a receipt only for a
+  hint it issued, once, within 120 s of referee time. The fact never leaves the referee in the
+  clear: `voice` reads it from the blob, which only the referee can make.
 - **Keep every sealed batch it forwards.** After End, it sends them back through
   `declassify_batches` in chunks of at most 500 (a 60-minute 12-player match is about 8,600
   batches, so about 18 calls) and serves the trails only to viewers `public_replay` allows.
   The replay checks each returned batch's SHA256 against the log's `LogEntry::Batch` hashes, so
-  the referee cannot add a trail. Only valid batches are logged; rejected ones come back too
-  but match no log entry.
+  the referee cannot add a trail. A rejected batch comes back too and matches a
+  `LogEntry::Rejected` hash.
 - **Tick in real time, and call `end` after `over`.** `now_ms` may lag the host clock but never
   run more than `CLOCK_SKEW_MS` (20 s) ahead of it. A relay that withholds or delays ticks gains
   nothing it could not get by not calling. Nothing here stops a backdated `start_ms` (that is
@@ -99,8 +180,11 @@ worker (wasmtime 36) cannot instantiate. Before deploying, check that
 - the wrapper's tick counter
 - the referee box secret
 - each player's box key
-- the engine's `State`: players, heads, App Attest counters, contacts, the log frontier and the
-  verdict seq
+- the engine's `State`: players, heads, App Attest counters, contacts, the verdict seq and the
+  last verdict digest, and the log frontier (the peaks at the last anchored size plus the leaf
+  hashes since, so up to one Checkpoint's worth: about 12 KB for 12 players)
+
+`state::VERSION` is 4 (protocol v2); a blob of another version is refused.
 
 One source of truth: the wrapper keeps no copy of anything the engine owns.
 
@@ -117,14 +201,27 @@ Storage holds:
   so a match never gets two Start or two End verdicts. It holds K_m, the VRF alpha and
   signature, the ring and the devices.
 
-| Domain                                | Used for                                    |
-| ------------------------------------- | ------------------------------------------- |
-| `tail/verdict/v1` (protocol)          | verdicts                                    |
-| `tail/referee-box/v1`                 | `box_pk_sig`                                |
-| `tail/enroll-receipt/v1`              | enrolment receipt                           |
-| `tail/state/v1` ‖ match_id            | aad of the tick state                       |
-| `tail/bench-state/v1` ‖ 0¹⁶           | aad of `bench_state` blobs                  |
-| `tail/keys`, `tail/hud`, `tail/batch` | seal contexts for PlayerKeys, HUDs, batches |
+| Domain                                         | Used for                                                                  |
+| ---------------------------------------------- | ------------------------------------------------------------------------- |
+| `tail/verdict/v2` (protocol)                   | verdicts                                                                  |
+| `tail/hud/v2`, `tail/keys/v2`, `tail/voice/v1` | signature digest and seal context of HUDs, keys, Handler lines (protocol) |
+| `tail/batch` (protocol)                        | seal context of batches                                                   |
+| `tail/referee-box/v1`                          | `box_pk_sig`                                                              |
+| `tail/enroll-receipt/v1`                       | enrolment receipt                                                         |
+| `tail/state/v1` ‖ match_id                     | aad of the tick state                                                     |
+| `tail/bench-state/v1` ‖ 0¹⁶                    | aad of `bench_state` blobs                                                |
+| `tail/referee-vault/v1` ‖ purpose ‖ match_id   | HKDF info of the referee-only blob keys (below)                           |
+
+### Referee-only blobs
+
+The log entries, hint facts and voice receipts the relay carries during play are sealed by the
+referee to itself (`src/vault.rs`): `nonce (24 B) ‖ XChaCha20-Poly1305(key, aad = bind)`, with
+`key = HKDF-SHA256(referee box secret, "tail/referee-vault/v1" ‖ purpose ‖ match_id)` and
+purpose `log`, `hint` or `receipt`. Sealing to the box _public_ key would hide them too, but
+anyone can seal to a public key, the relay included. A key derived from the box secret means a
+blob that opens was made here, so the relay can neither read nor forge a hint fact, a receipt
+or a log entry. A log blob's `bind` is u64le of the log index of its first entry, so blobs
+cannot be reordered. It is computation inside the module: no extra host call per tick.
 
 ## Handler voice
 
@@ -138,6 +235,11 @@ for up to 10 s, and its signed text must end in `sha256(request):sha256(response
 bytes.
 
 ## Measured (hosted testnet, 2026-11-12)
+
+These runs are of the protocol v1 referee (before the verdict chain, consistency proofs, signed
+HUDs and the sealed log). The v2 build has not run on OutLayer yet; `scripts/match.ts` and
+`scripts/smoke.ts` pass against the local test referee (below). v2 adds one signing call per
+HUD per tick (12 for 12 players) on OutLayer's `signing_keys`, whose latency is not measured.
 
 `scripts/match.ts` runs 3 ghost phones and starts the match 4 minutes in the past so it can
 fast-forward: 3 minutes long, 10 s ticks.
@@ -236,10 +338,18 @@ How it differs from the enclave:
 
 `tests/local.rs` runs the built binary in a temporary directory, offline. It covers
 `pubkeys` (`box_pk_sig` under `referee_pk`, the same keys from a second process and from 8
-concurrent first calls), `enroll` ×3 and `start` (signature over the verdict digest, a second
-`start` refused). It then runs a tick with no batches, a tick that ends the match, `voice`
-(the template), two racing `end`s of which exactly one wins, the VRF reveal under `vrf_pk`
-with the contract's alpha checks, `declassify` and the file modes.
+concurrent first calls), `enroll` ×3 and `start` (signature over the verdict digest, signed
+and sealed player keys, a second `start` refused). It then plays three ticks: a hint, a forged
+batch refused with `ASSERTION`, signed HUDs naming the log, `voice` (the template, sealed and
+signed to the asker; a forged hint blob refused), the receipt joining the next tick's leaves, a
+Checkpoint, and the end. Then two racing `end`s of which exactly one wins, the verdict chain,
+every consistency proof, the VRF reveal under `vrf_pk` with the contract's alpha checks,
+`declassify` (refused with a blob missing; the log equals the leaves, with `Enrolled`, `Tick`,
+`Rejected` and the receipt), `declassify_batches` with assertions, and the file modes.
+
+`REFEREE_MODE=local bun crates/referee-wasi/scripts/smoke.ts` (and `match.ts`) run the same
+scripts as on OutLayer against `target/release/tail-referee`, checked with `packages/protocol`,
+with keys in `TAIL_LOCAL_REFEREE_DIR` or a fresh temp directory.
 
 ## Build, deploy, test
 
@@ -266,6 +376,7 @@ active.
 
 Active version on OutLayer: wasm sha256 `20446c643bd4b1cc8a017669596ed361506ad557c99464ecfe19beead6d08664`
 (HUDs carry `tagged_by`). It was built before the host split for the local test referee. The
-current source builds `920a67d9…`: the same imports and the same commands on OutLayer, but a
-different hash, because `voice.rs` and the host code moved. It is not deployed yet: OutLayer
-testnet was not running calls on 2026-11-12. Upload it and pin the new hash once it is.
+current source is protocol v2 and builds `04d93c90…` (720 KB; WASI imports 0.2.6, HTTP
+0.2.4). It is not deployed: OutLayer testnet was not running calls on 2026-11-12. The v1
+version on OutLayer does not speak protocol v2; upload this one and pin its hash once OutLayer
+runs calls again.

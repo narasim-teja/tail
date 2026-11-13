@@ -9,23 +9,31 @@ caller. `referee-wasi` unseals, calls, signs and seals; `referee-sim` drives it 
 ```rust
 init(cfg: MatchConfig, devices: Vec<Device>, k_m: &[u8; 32], vrf_signature: &[u8; 64],
      start_ms: u64, call_id: CallId) -> Result<Started, InitError>
+  // Device  { account_id, key, counter, attested }
   // Started { state, verdicts: [Start], log, keys: Vec<(u16, PlayerKeys)> }
 tick(state: State, input: TickInput) -> Result<TickOutput, TickError>
   // TickInput  { tick_no, now_ms, call_id, batches: Vec<BatchEnvelope>, receipts: Vec<HintReceipt> }
-  // TickOutput { state, verdicts, huds: Vec<(u16, Hud)>, log, rejected, refused, hints, over }
+  // TickOutput { state, verdicts, proofs, huds: Vec<(u16, Hud)>, log, rejected, refused, hints, over }
 finish(state: State, alpha: String, vrf_signature: &[u8; 64], call_id: CallId,
        receipts: Vec<HintReceipt>) -> Result<Finished, FinishError>
-  // Finished { state, verdicts: [End], log }
+  // Finished { state, verdicts: [End], proofs, log }
 ```
 
-- Verdicts come out as unsigned `VerdictPayload`s with `seq` and `call_id` already set; the
-  wrapper signs `verdict_digest(payload)` and submits them in order. The engine needs `call_id`
-  because each verdict's log entry is that digest.
+- Verdicts come out as unsigned protocol v2 `VerdictPayload`s with `seq`, `prev` and `call_id`
+  already set; the wrapper signs `verdict_digest(payload)` and submits them in order. `prev` is
+  the digest of the match's previous verdict (zeros for Start, seq 1); the state keeps the last
+  digest. The engine needs `call_id` because each verdict's log entry is that digest.
+- `proofs` holds one `ConsistencyProof { seq, from_size, path }` per Checkpoint or End: the RFC
+  9162 proof from the log size the previous Checkpoint anchored (0 for the first) to that
+  verdict's `log_size`. The contract checks it before it anchors the new root.
+- HUDs come out unsigned; the wrapper signs them with `hud_sig_digest`.
 - `State` is borsh. It holds `K_tag`, every `K_p`, the VRF signature and recent positions, so it
   must only leave the enclave sealed. Its `Debug` prints none of that. A `TickError` changes
   nothing: retry with the same sealed blob.
-- The engine keeps the log as a Merkle frontier, not the log itself. Every call returns its new
-  `LogEntry`s; the relay appends them to the stored log for `declassify` and inclusion proofs.
+- The engine keeps the log as a Merkle frontier, not the log itself: the peaks at the last
+  anchored size plus the leaf hashes appended since, which every Checkpoint clears. That is
+  enough for the root and for the next proof (`merkle::consistency_proof_from_frontier`). Every
+  call returns its new `LogEntry`s; the wrapper seals them for the relay.
 
 ## Ordering (what referee-wasi and the contract rely on)
 
@@ -39,9 +47,25 @@ finish(state: State, alpha: String, vrf_signature: &[u8; 64], call_id: CallId,
   with `NotRunning`. Call `finish` next. It emits `End` and passes in receipts for the last
   hints first.
 - `Checkpoint` and `End` carry `(log_size, root)` of the log before their own entry. That entry is
-  then appended, so the final log holds `End.log_size + 1` entries.
-- Log order within a tick: hint receipts, accepted batches (by player, then seq), new contacts
-  (by epoch, a, b), verdicts.
+  then appended, so the final log holds `End.log_size + 1` entries. The log grows strictly from
+  one anchor to the next (every tick logs at least its `Tick`), which the contract requires.
+  The k-th Checkpoint lands at the first tick at or after `k × CHECKPOINT_MS` of referee time,
+  twice the contract's spacing rule (`k × CHECKPOINT_MS / 2`), which leaves room for clock skew.
+- Log order of `init`: one `Enrolled { player, account, key_hash, attested }` per player in
+  index order, then the Start verdict. `key_hash` = SHA256 of the 65-byte device key (App
+  Attest's key id); `attested` is the device record's.
+- Log order within a tick: **`Tick { tick_no, now_ms, call_id }` first, always, empty ticks
+  included**; then hint receipts; then `Rejected` for batches refused at authentication (by
+  player, then seq); then, batch by batch in that order, `Batch` for an accepted one or
+  `Rejected` for one refused at validity; then new contacts (by epoch, a, b); then verdicts.
+  A Tag's `Verdict` entry comes right after its `Evidence`.
+- `Rejected { player, seq, hash, code }` is written for every batch the engine refuses, with
+  `hash = batch_hash` and `code = Reject::code()` (protocol `reject_code`). `TooOld` has no code
+  of its own yet and is logged as `CLOCK_SKEW`.
+- `Evidence { hunter, target, strike_seq, strike_epoch, epochs }`: `strike_seq` is the batch
+  that carried the strike, `strike_epoch` the epoch of that batch's `t_ms`, and `epochs` exactly
+  the contact epochs that make up the lock at that epoch (ascending; see the lock rule below):
+  at least `LOCK_EPOCHS`, all ≥ `lock_from`, one of them the strike epoch or the one before.
 
 ## Rules as implemented
 
@@ -70,7 +94,10 @@ for the other's epoch-e token, both have a usable fix (`acc ≤ MAX_ACC_M`) with
 vehicle-frozen at the midpoint. Once established, a contact is never withdrawn.
 
 **Lock, heat, strike (4.6).** `lock(h→t, e)` = contact epochs in `(e − WINDOW_EPOCHS, e]` that
-are not before `lock_from`, the epoch after h was assigned t (0 for the starting ring). Contact
+are not before `lock_from`, the epoch after h was assigned t: 0 for the starting ring, and when
+h inherits t (a Tag or a Forfeit) in a tick, `lock_from = epoch_at(min(now_ms, end_ms)) + 1`
+with `now_ms` that tick's (the `Tick` entry's). The `min` only matters past `end_ms`, when
+nothing can be tagged any more. Contact
 a hunter had with a player before hunting them never fills the lock on an inherited target.
 Heat is the same number seen from the target. HUDs carry the count (0..8); the phone divides
 by `LOCK_EPOCHS`. A strike is judged at the epoch of its batch's `t_ms`: it needs `lock ≥
@@ -117,7 +144,9 @@ not held; it drains as the window slides.
 
 **End.** A tick ends the match at `end_ms` or when one player is left. Actions with
 `t_ms ≥ end_ms` are refused with `TimeUp`. Survivors keep their heads, and their HUD status
-becomes `WON`. An out player's HUD carries `tagged_by`, the account that took their head: the
+becomes `WON`. HUD v2 also carries `match_id`, `player`, `next_seq` and `chain_tip` (the hash
+of the last authenticated batch), cumulative `dark_ms`, `tags` (Tag verdicts this player won),
+and `log_size` / `root` of the log at the end of the tick. An out player's HUD carries `tagged_by`, the account that took their head: the
 hunter for a `Tag`, the receiver for a `Forfeit`. The sum of heads is constant from `Start` to `End`, and the simulator checks
 that after every tick.
 
@@ -154,7 +183,7 @@ Local to the engine (`referee_core::*`):
 2. **Fix order** (strictly increasing, not after the batch) is an extra validity rule. Honest
    phones always meet it, and it stops a batch from rewriting the past.
 3. **Teleport**: the implied speed is measured against the last accepted usable fix, beyond
-   both accuracies. "Strike logged" means the batch shows up in `TickOutput.rejected`. There is
+   both accuracies. "Strike logged" means a `Rejected` log entry (code `TELEPORT`) and `TickOutput.rejected`. There is
    no other penalty, but the gap counts as dark.
 4. **Clock per player**: each phone's batches are judged against the referee clock alone, not
    against the other phones, so in a 2-player match one clock cannot widen the window for the
@@ -168,8 +197,12 @@ Local to the engine (`referee_core::*`):
 8. **Zero-price hints** (stake under 50 units) are allowed and emit `Hint` with amount 0.
 9. **finish** checks the VRF signature against the ring commitment. It does not check that
    `alpha` names this match; the contract must (`alpha` ends with `:` + hex(match_id)).
-10. **Rejections and refusals** are not in the HUD wire format. `TickOutput.rejected` and
-    `TickOutput.refused` carry them for the relay or UI (for example "simulated location rejected").
+10. **Rejections in the HUD**: `Hud.rejected` is the `(seq, code)` of the player's latest
+    refused batch that passed the App Attest check. A batch refused before that (wrong match,
+    seq, prev, assertion) may not be the player's at all, since anyone can seal one naming a
+    player index, so it is logged but not put in that player's signed HUD; `next_seq` and
+    `chain_tip` tell an honest phone where its chain stands. Action refusals are not in the
+    HUD wire format; `TickOutput.refused` carries them.
 11. A device clock up to `CLOCK_SKEW_MS` ahead is accepted. If it is then set right, its
     batches fail `BatchOrder` (and then the fix-order rule) until device time passes the last
     accepted one. That costs only the player whose clock was wrong.

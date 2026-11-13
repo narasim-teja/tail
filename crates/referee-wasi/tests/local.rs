@@ -11,12 +11,20 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tail_protocol::digest::{sha256, verdict_digest};
+use tail_protocol::digest::{
+    batch_client_data_hash, batch_hash, hud_sig_digest, keys_sig_digest, sha256, verdict_digest,
+    voice_sig_digest,
+};
 use tail_protocol::ring::{build_ring, players_hash, ring_commit};
-use tail_protocol::{SignedVerdict, Verdict};
+use tail_protocol::{
+    domain, merkle, reject_code, seal, Action, Batch, BatchEnvelope, Fix, Hash, Hud, LogEntry, PlayerKeys,
+    SignedHud, SignedPlayerKeys, SignedVerdict, SignedVoiceLine, Verdict, VoiceLine,
+};
 
 const BIN: &str = env!("CARGO_BIN_EXE_tail-referee");
 const OWNER: &str = "relay.test.near";
+const APP_ID: &str = "LKABS9RZAC.com.lkabs9rzac.tail";
+const ZONE: (i32, i32) = (423_601_000, -710_589_000);
 
 /// A key directory that is removed when the test ends, pass or fail.
 struct TempDir(PathBuf);
@@ -106,6 +114,10 @@ fn device_key(name: &str) -> DeviceKey {
         .unwrap()
 }
 
+fn box_sk(name: &str) -> [u8; 32] {
+    sha256(&[b"tail/test/box", name.as_bytes()])
+}
+
 fn wall_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
 }
@@ -138,7 +150,7 @@ fn enroll_all(dir: &Path, referee_pk: &VerifyingKey, accounts: &[&str]) {
                 "cmd": "enroll",
                 "account_id": account,
                 "app_attest_pk": b64(&pk),
-                "player_box_pk": b64(&[n as u8 + 1; 32]),
+                "player_box_pk": b64(&seal::public_key(&box_sk(account))),
                 "near_pk": b64(&[n as u8 + 10; 32]),
             }),
         );
@@ -206,6 +218,7 @@ fn check_start(
         "Start is signed by referee_pk over the verdict digest"
     );
     assert_eq!(start.match_id, match_id);
+    assert_eq!(start.prev, [0; 32], "Start has no predecessor");
     assert_eq!(start.call_id, uuid(&started["call_id"]));
     let Verdict::Start {
         players_hash: ph,
@@ -219,100 +232,327 @@ fn check_start(
     assert_eq!((s, e), window);
     assert_eq!(ph, players_hash(accounts));
     assert_eq!(started["keys"].as_array().unwrap().len(), 3);
+    assert!(
+        started.get("log").is_none(),
+        "no plaintext log leaves the referee"
+    );
     rc
 }
 
-/// No network here, so the template line, saying why.
-fn check_voice(dir: &Path) {
-    let v = call(
-        dir,
-        &json!({ "cmd": "voice", "hint_id": 0, "hint": 0, "value": 0 }),
-    );
-    assert_eq!(v["source"], "template");
-    assert!(
-        v["fallback_reason"]
-            .as_str()
-            .unwrap()
-            .contains("local test referee"),
-        "{}",
-        v["fallback_reason"]
-    );
+/// A phone: its index, keys and batch chain.
+struct Phone {
+    account: String,
+    index: u16,
+    keys: PlayerKeys,
+    seq: u32,
+    prev: Hash,
 }
 
-#[test]
-fn plays_a_match_with_keys_on_disk() {
-    let tmp = TempDir::new("match");
-    let dir = tmp.0.as_path();
-    let (keys, referee_pk, vrf_pk) = pubkeys(dir);
-    let accounts = ["carol.test.near", "alice.test.near", "bob.test.near"];
-    enroll_all(dir, &referee_pk, &accounts);
+impl Phone {
+    /// Opens this player's sealed, signed keys from the `start` answer.
+    fn open(started: &Value, account: &str, referee_pk: &VerifyingKey) -> Self {
+        let entry = started["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|k| k["account_id"] == account)
+            .unwrap();
+        let plain = seal::open(&box_sk(account), &unb64(&entry["sealed"]), domain::KEYS).unwrap();
+        let signed: SignedPlayerKeys = borsh::from_slice(&plain).unwrap();
+        assert!(
+            verifies(referee_pk, &keys_sig_digest(&signed.keys), &signed.sig),
+            "{account}: keys signed by referee_pk"
+        );
+        Self {
+            account: account.into(),
+            index: signed.keys.player,
+            keys: signed.keys,
+            seq: 0,
+            prev: [0; 32],
+        }
+    }
 
-    // ── start: two minutes ago, one minute long, so a tick at end_ms ends it ──
-    let match_id = [7u8; 16];
-    let start_ms = wall_ms() - 120_000;
-    let end_ms = start_ms + 60_000;
-    let started = call(
-        dir,
-        &json!({
-            "cmd": "start",
-            "match_id": b64(&match_id),
-            "players": accounts,
-            "start_ms": start_ms,
-            "duration_ms": 60_000,
-            "stake": "1000000",
-            "zone": { "lat_e7": 423_601_000, "lon_e7": -710_589_000, "radius_m": 500 },
-        }),
-    );
-    let rc = check_start(&started, &referee_pk, match_id, &accounts, (start_ms, end_ms));
-    let twice = refused(
-        Some(dir),
-        &json!({ "cmd": "start", "match_id": b64(&match_id), "players": accounts, "duration_ms": 60_000,
-                 "stake": "1", "zone": { "lat_e7": 0, "lon_e7": 0, "radius_m": 500 } }),
-    );
-    assert!(twice.contains("already started"), "{twice}");
+    /// One batch with a fix in the zone, sealed to the referee box key; returns it and its hash.
+    fn batch(&mut self, box_pk: &[u8; 32], t_ms: u64, actions: Vec<Action>, counter: u32) -> (String, Hash) {
+        let batch = Batch {
+            match_id: self.keys.match_id,
+            player: self.index,
+            seq: self.seq,
+            prev: self.prev,
+            t_ms,
+            fixes: vec![Fix {
+                t_ms: t_ms - 1_000,
+                lat_e7: ZONE.0 + i32::from(self.index) * 100,
+                lon_e7: ZONE.1,
+                acc_m: 5,
+                speed_cmps: 0,
+                flags: 0,
+            }],
+            sightings: Vec::new(),
+            actions,
+        };
+        let assertion = appattest::sign_assertion(
+            &device_key(&self.account),
+            &batch_client_data_hash(&batch),
+            APP_ID,
+            counter,
+        );
+        self.seq += 1;
+        self.prev = batch_hash(&batch);
+        let hash = self.prev;
+        let env = BatchEnvelope { batch, assertion };
+        let sealed = seal::seal_with(
+            &[self.index as u8 + 1; 32],
+            box_pk,
+            &borsh::to_vec(&env).unwrap(),
+            domain::BATCH,
+        )
+        .unwrap();
+        (b64(&sealed), hash)
+    }
 
-    // ── tick with no batches, then at end_ms ──
-    let t1 = call(
-        dir,
-        &json!({ "cmd": "tick", "match_id": b64(&match_id), "state": started["state"], "last_seq": 1,
-                 "now_ms": start_ms + 10_000, "batches": [] }),
-    );
-    assert_eq!(t1["tick_no"], 1);
-    assert_eq!(t1["over"], false);
-    assert_eq!(t1["opened"], 0);
-    assert_eq!(t1["huds"].as_array().unwrap().len(), 3);
-    let stale = refused(
-        Some(dir),
-        &json!({ "cmd": "tick", "match_id": b64(&[8u8; 16]), "state": t1["state"], "last_seq": t1["seq"] }),
-    );
-    assert!(stale.contains("does not open"), "{stale}");
-    let t2 = call(
-        dir,
-        &json!({ "cmd": "tick", "match_id": b64(&match_id), "state": t1["state"], "last_seq": t1["seq"],
-                 "now_ms": end_ms }),
-    );
-    assert_eq!(t2["over"], true);
+    fn hud(&self, out: &Value, referee_pk: &VerifyingKey) -> Hud {
+        let entry = out["huds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["player"] == self.index)
+            .unwrap();
+        let plain = seal::open(&box_sk(&self.account), &unb64(&entry["sealed"]), domain::HUD).unwrap();
+        let signed: SignedHud = borsh::from_slice(&plain).unwrap();
+        assert!(
+            verifies(referee_pk, &hud_sig_digest(&signed.hud), &signed.sig),
+            "{}: HUD signed by referee_pk",
+            self.account
+        );
+        signed.hud
+    }
+}
 
-    check_voice(dir);
+/// What the relay keeps of every call: the leaf hashes and the sealed log blobs, in order, and
+/// each anchored `(size, root)` with the proof that came with it.
+#[derive(Default)]
+struct Kept {
+    leaves: Vec<Hash>,
+    sealed: Vec<String>,
+    anchored: Vec<(u64, Hash)>,
+    proofs: Vec<(u64, u64, Vec<Hash>)>,
+}
 
-    // ── end: the VRF reveal verifies under vrf_pk and opens the ring commit ──
-    let ended = end_once(
+impl Kept {
+    /// Each proof leads from the root anchored before to its own, as the contract checks it.
+    fn check_proofs(&self) {
+        let mut prev = (0u64, merkle::empty_root());
+        for ((from, size, path), (s, root)) in self.proofs.iter().zip(&self.anchored) {
+            assert_eq!((*from, *size), (prev.0, *s));
+            assert_eq!(merkle::root(&self.leaves[..*s as usize]), *root);
+            assert!(merkle::verify_consistency(*from, *size, &prev.1, root, path));
+            prev = (*size, *root);
+        }
+    }
+
+    fn take(&mut self, out: &Value) {
+        assert!(out.get("log").is_none(), "no plaintext log during play");
+        self.leaves
+            .extend(out["leaves"].as_array().unwrap().iter().map(fixed::<32>));
+        self.sealed.push(out["log_sealed"].as_str().unwrap().to_owned());
+        // `start` and `tick` name the log after the call; `end` names the End verdict's.
+        if let Some(root) = out.get("log_root") {
+            assert_eq!(
+                out["log_size"],
+                self.leaves.len(),
+                "log_size counts every leaf so far"
+            );
+            assert_eq!(root.as_str().unwrap(), hex::encode(merkle::root(&self.leaves)));
+        }
+        for v in out["verdicts"].as_array().unwrap() {
+            let v = verdict(v);
+            if let Verdict::Checkpoint { log_size, root } | Verdict::End { log_size, root, .. } = v.body {
+                let p = out["proofs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|p| p["seq"] == v.seq)
+                    .expect("a proof for every anchored root");
+                let from = p["from_size"].as_u64().unwrap();
+                let path: Vec<Hash> = p["path"].as_array().unwrap().iter().map(fixed::<32>).collect();
+                self.proofs.push((from, log_size, path));
+                self.anchored.push((log_size, root));
+            }
+        }
+    }
+}
+
+/// `voice` on the tick's sealed hint: the line comes back signed and sealed to the asker, and
+/// nothing the relay sees names the fact or the words. Returns the answer.
+fn check_voice(
+    dir: &Path,
+    referee_pk: &VerifyingKey,
+    t1: &Value,
+    asker: &Phone,
+    match_id: [u8; 16],
+) -> Value {
+    let hints = t1["hints"].as_array().unwrap();
+    let v = call(
         dir,
-        &json!({ "cmd": "end", "match_id": b64(&match_id), "state": t2["state"], "last_seq": t2["seq"] }),
+        &json!({ "cmd": "voice", "state": t1["state"], "blob": hints[0]["blob"] }),
     );
-    let end = verdict(&ended["verdicts"][0]);
+    assert_eq!(v["source"], "template");
+    assert!(v["fallback_reason"]
+        .as_str()
+        .unwrap()
+        .contains("local test referee"));
+    assert!(v["signed_text"].is_null(), "no model, so nothing NEAR AI signed");
     assert!(
-        verifies(&referee_pk, &verdict_digest(&end.payload()), &end.sig),
+        v.get("text").is_none() && v.get("fact").is_none(),
+        "the words stay sealed"
+    );
+    let plain = seal::open(&box_sk(&asker.account), &unb64(&v["sealed"]), domain::VOICE).unwrap();
+    let line: SignedVoiceLine = borsh::from_slice(&plain).unwrap();
+    assert!(verifies(referee_pk, &voice_sig_digest(&line.line), &line.sig));
+    assert_eq!(
+        line.line,
+        VoiceLine {
+            match_id,
+            player: 0,
+            hint_id: 0,
+            text: line.line.text.clone()
+        }
+    );
+    assert!(!line.line.text.is_empty());
+    let forged_blob = refused(
+        Some(dir),
+        &json!({ "cmd": "voice", "state": t1["state"], "blob": b64(&[match_id.as_slice(), &[0; 60]].concat()) }),
+    );
+    assert!(forged_blob.contains("not made by this referee"), "{forged_blob}");
+
+    v
+}
+
+/// The declassified log is exactly what the leaves committed to: one `Enrolled` per player, a
+/// `Tick` per tick, the forged batch as `Rejected`, and the hint's receipt.
+fn check_log(d: &Value, kept: &Kept, phones: &[Phone], forger: u16, forged_hash: Hash) {
+    let log: Vec<LogEntry> = d["log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| borsh::from_slice(&unb64(e)).unwrap())
+        .collect();
+    assert_eq!(log.iter().map(merkle::leaf).collect::<Vec<_>>(), kept.leaves);
+    for (i, p) in phones.iter().enumerate() {
+        let pk = appattest::public_key_bytes(device_key(&p.account).verifying_key());
+        assert_eq!(
+            log[i],
+            LogEntry::Enrolled {
+                player: p.index,
+                account: p.account.clone(),
+                key_hash: sha256(&[&pk]),
+                attested: false
+            }
+        );
+    }
+    let ticks: Vec<u32> = log
+        .iter()
+        .filter_map(|e| match e {
+            LogEntry::Tick { tick_no, .. } => Some(*tick_no),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ticks, [1, 2, 3]);
+    assert!(log.contains(&LogEntry::Rejected {
+        player: forger,
+        seq: 0,
+        hash: forged_hash,
+        code: reject_code::ASSERTION
+    }));
+    assert!(log
+        .iter()
+        .any(|e| matches!(e, LogEntry::HintReceipt { hint_id: 0, .. })));
+}
+
+/// Tick 1: the hint is charged and handed out as an opaque blob, the forged batch is refused
+/// with its code, and the hunter's signed HUD names the log and its chain. Returns the digest
+/// of the Hint verdict.
+fn check_tick1(
+    t1: &Value,
+    kept: &Kept,
+    phones: &[Phone],
+    other: usize,
+    referee_pk: &VerifyingKey,
+    start_digest: Hash,
+) -> Hash {
+    let (hunter, match_id) = (0, phones[0].keys.match_id);
+    assert_eq!(
+        (t1["tick_no"].as_u64(), t1["opened"].as_u64()),
+        (Some(1), Some(3))
+    );
+    assert_eq!(
+        t1["rejected"],
+        json!([{ "player": other, "seq": 0, "reason": reject_code::ASSERTION }])
+    );
+    let hint_v = verdict(&t1["verdicts"][0]);
+    assert_eq!(hint_v.prev, start_digest, "the Hint verdict chains to Start");
+    assert!(matches!(
+        hint_v.body,
+        Verdict::Hint {
+            from: 0,
+            hint: 0,
+            hint_id: 0,
+            ..
+        }
+    ));
+    let hints = t1["hints"].as_array().unwrap();
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0]["player"], 0);
+    assert_eq!(
+        hints[0].as_object().unwrap().len(),
+        2,
+        "only who asked, and an opaque blob"
+    );
+    let hud = phones[hunter].hud(t1, referee_pk);
+    assert_eq!((hud.match_id, hud.player, hud.next_seq), (match_id, 0, 1));
+    assert_eq!(
+        (hud.chain_tip, hud.log_size),
+        (phones[hunter].prev, kept.leaves.len() as u64)
+    );
+    assert_eq!(hud.root, merkle::root(&kept.leaves));
+    assert!(hud.hint_fact.is_some_and(|f| f.hint == 0));
+    assert_eq!(
+        phones[other].hud(t1, referee_pk).rejected,
+        None,
+        "a forgery is not the player's"
+    );
+
+    verdict_digest(&hint_v.payload())
+}
+
+/// The End verdict chains to `prev` and is signed, and its VRF reveal verifies under `vrf_pk`
+/// with the alpha the contract checks. Returns it with its alpha and VRF signature.
+fn check_end(
+    ended: &Value,
+    started: &Value,
+    (referee_pk, vrf_pk): (&VerifyingKey, &VerifyingKey),
+    prev: Hash,
+) -> (SignedVerdict, String, [u8; 64]) {
+    let digest = prev;
+    let match_id = verdict(&started["verdicts"][0]).match_id;
+    let end = verdict(&ended["verdicts"][0]);
+    assert_eq!(
+        end.prev, digest,
+        "End chains to the last checkpoint (no verdict since)"
+    );
+    assert!(
+        verifies(referee_pk, &verdict_digest(&end.payload()), &end.sig),
         "End signature"
     );
     let Verdict::End {
         alpha, vrf_signature, ..
-    } = end.body
+    } = end.body.clone()
     else {
         panic!("end verdict is not End")
     };
     assert!(
-        verifies(&vrf_pk, alpha.as_bytes(), &vrf_signature),
+        verifies(vrf_pk, alpha.as_bytes(), &vrf_signature),
         "VRF signature over alpha"
     );
     let start_call = started["call_id"].as_str().unwrap();
@@ -326,12 +566,173 @@ fn plays_a_match_with_keys_on_disk() {
         Some(hex::encode(match_id).as_str())
     );
     assert!(alpha.len() <= 192);
+
+    (end, alpha, vrf_signature)
+}
+
+/// `declassify_batches` returns every batch sent, each with its assertion.
+fn check_trails(dir: &Path, match_id: [u8; 16], sent: &[String]) {
+    let trails = call(
+        dir,
+        &json!({ "cmd": "declassify_batches", "match_id": b64(&match_id), "sealed": sent }),
+    );
+    assert_eq!(trails["batches"].as_array().unwrap().len(), sent.len());
+    for (b, a) in trails["batches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(trails["assertions"].as_array().unwrap())
+    {
+        let batch: Batch = borsh::from_slice(&unb64(b)).unwrap();
+        assert!(!unb64(a).is_empty(), "seq {} has its assertion", batch.seq);
+    }
+}
+
+/// `start` of a two-minute match that is over by now, so ticks can run its whole time; a
+/// second `start` of the same id is refused. Returns the answer, the window and the ring commit.
+fn start_match(
+    dir: &Path,
+    referee_pk: &VerifyingKey,
+    accounts: &[&str],
+    match_id: [u8; 16],
+) -> (Value, u64, u64, [u8; 32]) {
+    let start_ms = wall_ms() - 200_000;
+    let end_ms = start_ms + 120_000;
+    let started = call(
+        dir,
+        &json!({
+            "cmd": "start",
+            "match_id": b64(&match_id),
+            "players": accounts,
+            "start_ms": start_ms,
+            "duration_ms": 120_000,
+            "stake": "1000000",
+            "zone": { "lat_e7": ZONE.0, "lon_e7": ZONE.1, "radius_m": 500 },
+        }),
+    );
+    let rc = check_start(&started, referee_pk, match_id, accounts, (start_ms, end_ms));
+    let twice = refused(
+        Some(dir),
+        &json!({ "cmd": "start", "match_id": b64(&match_id), "players": accounts, "duration_ms": 60_000,
+                 "stake": "1", "zone": { "lat_e7": 0, "lon_e7": 0, "radius_m": 500 } }),
+    );
+    assert!(twice.contains("already started"), "{twice}");
+    (started, start_ms, end_ms, rc)
+}
+
+#[test]
+fn plays_a_match_with_keys_on_disk() {
+    let tmp = TempDir::new("match");
+    let dir = tmp.0.as_path();
+    let (keys, referee_pk, vrf_pk) = pubkeys(dir);
+    let box_pk: [u8; 32] = fixed(&keys["referee_box_pk"]);
+    let accounts = ["carol.test.near", "alice.test.near", "bob.test.near"];
+    enroll_all(dir, &referee_pk, &accounts);
+
+    // ── start ──
+    let match_id = [7u8; 16];
+    let (started, start_ms, end_ms, rc) = start_match(dir, &referee_pk, &accounts, match_id);
+    let mut kept = Kept::default();
+    kept.take(&started);
+    let mut phones: Vec<Phone> = accounts
+        .iter()
+        .map(|a| Phone::open(&started, a, &referee_pk))
+        .collect();
+    phones.sort_by_key(|p| p.index);
+    let hunter = 0usize;
+    let target = phones
+        .iter()
+        .position(|p| p.account == phones[0].keys.target)
+        .unwrap();
+    let other = 3 - hunter - target;
+    let mut digest = verdict_digest(&verdict(&started["verdicts"][0]).payload());
+
+    // ── tick 1: the hunter asks a hint; the third phone's batch is forged ──
+    let t1_ms = start_ms + 10_000;
+    let hint = vec![Action::Hint {
+        hint: 0,
+        nonce: 1,
+        text: Some("close?".into()),
+    }];
+    let (hb, _) = phones[hunter].batch(&box_pk, t1_ms - 1_000, hint, 1);
+    let (tb, _) = phones[target].batch(&box_pk, t1_ms - 1_000, Vec::new(), 1);
+    // Signed with another device key than the one this player enrolled: a forgery.
+    let mut forger = Phone::open(&started, &phones[other].account, &referee_pk);
+    forger.account = phones[hunter].account.clone();
+    let (fb, forged_hash) = forger.batch(&box_pk, t1_ms - 1_000, Vec::new(), 1);
+    let mut sent = vec![hb.clone(), tb.clone(), fb.clone()];
+    let t1 = call(
+        dir,
+        &json!({ "cmd": "tick", "match_id": b64(&match_id), "state": started["state"], "last_seq": 1,
+                 "now_ms": t1_ms, "batches": [hb, tb, fb] }),
+    );
+    kept.take(&t1);
+    digest = check_tick1(&t1, &kept, &phones, other, &referee_pk, digest);
+
+    // ── voice: the line comes back sealed to the asker and signed ──
+    let v = check_voice(dir, &referee_pk, &t1, &phones[hunter], match_id);
+
+    // ── tick 2 at one minute: the receipt joins the log, and a checkpoint lands ──
+    let t2_ms = start_ms + 60_000;
+    let (hb2, _) = phones[hunter].batch(&box_pk, t2_ms - 1_000, Vec::new(), 2);
+    sent.push(hb2.clone());
+    let t2 = call(
+        dir,
+        &json!({ "cmd": "tick", "match_id": b64(&match_id), "state": t1["state"], "last_seq": t1["seq"],
+                 "now_ms": t2_ms, "batches": [hb2], "receipts": [v["log_sealed"]] }),
+    );
+    kept.take(&t2);
+    assert!(
+        t2["leaves"].as_array().unwrap().contains(&v["leaves"][0]),
+        "the receipt joins the log in the tick that takes it, with the leaf voice named"
+    );
+    let cp = verdict(&t2["verdicts"][0]);
+    assert!(matches!(cp.body, Verdict::Checkpoint { .. }) && cp.prev == digest);
+    digest = verdict_digest(&cp.payload());
+    let stale = refused(
+        Some(dir),
+        &json!({ "cmd": "tick", "match_id": b64(&[8u8; 16]), "state": t2["state"], "last_seq": t2["seq"] }),
+    );
+    assert!(stale.contains("does not open"), "{stale}");
+    let t3 = call(
+        dir,
+        &json!({ "cmd": "tick", "match_id": b64(&match_id), "state": t2["state"], "last_seq": t2["seq"],
+                 "now_ms": end_ms }),
+    );
+    kept.take(&t3);
+    assert_eq!(t3["over"], true);
+
+    // ── end: the VRF reveal verifies under vrf_pk and opens the ring commit ──
+    let ended = end_once(
+        dir,
+        &json!({ "cmd": "end", "match_id": b64(&match_id), "state": t3["state"], "last_seq": t3["seq"] }),
+    );
+    kept.take(&ended);
+    let (end, alpha, vrf_signature) = check_end(&ended, &started, (&referee_pk, &vrf_pk), digest);
     assert_eq!(rc, ring_commit(&vrf_signature));
 
-    let d = call(dir, &json!({ "cmd": "declassify", "match_id": b64(&match_id) }));
+    // ── every anchored root is consistent with the one before, as the contract checks ──
+    assert_eq!(kept.proofs.len(), 2, "one Checkpoint and End");
+    kept.check_proofs();
+
+    // ── declassify: the plaintext log, checked against the leaves and the End root ──
+    let short = refused(
+        Some(dir),
+        &json!({ "cmd": "declassify", "match_id": b64(&match_id), "log_sealed": kept.sealed[1..] }),
+    );
+    assert!(short.contains("log index 0"), "{short}");
+    let d = call(
+        dir,
+        &json!({ "cmd": "declassify", "match_id": b64(&match_id), "log_sealed": kept.sealed }),
+    );
     assert_eq!(d["vrf_alpha"], alpha);
     let ring: Vec<String> = serde_json::from_value(d["ring"].clone()).unwrap();
     assert_eq!(ring, build_ring(&accounts, &vrf_signature));
+    check_log(&d, &kept, &phones, other as u16, forged_hash);
+
+    // ── declassify_batches: every batch with its assertion ──
+    check_trails(dir, match_id, &sent);
+
     let again = refused(
         Some(dir),
         &json!({ "cmd": "end", "match_id": b64(&match_id), "state": ended["state"], "last_seq": end.seq }),

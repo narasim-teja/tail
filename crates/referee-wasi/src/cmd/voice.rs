@@ -1,13 +1,22 @@
 //! `voice`: one Handler line for a hint, from NEAR AI Cloud with its TEE signature, or a
 //! template sentence when the model misses the 3 s budget.
+//!
+//! The hint comes as the sealed blob `tick` returned, so the fact is the referee's own and the
+//! relay never learns it. The line goes back signed and sealed to the asker, so the relay can
+//! neither read nor swap it, and its receipt goes back sealed for the next tick to log.
 
-use crate::codec::{b64, parse, to_borsh};
+use super::seal_to;
+use crate::codec::{b64, from_b64, parse, to_borsh};
 use crate::host;
 use crate::http::{self, deadline_in, encode_component, passed, sleep_ms, Method};
+use crate::records::{domain, HintBlob};
+use crate::state;
+use crate::vault::{self, Purpose};
 use crate::voice::{self, ChatSignature, Fact};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tail_protocol::digest::sha256;
+use tail_protocol::digest::{sha256, voice_sig_digest};
+use tail_protocol::{merkle, LogEntry, MatchId, SignedVoiceLine, VoiceLine};
 
 const AUTHORITY: &str = "cloud-api.near.ai";
 const DEFAULT_MODEL: &str = "deepseek-ai/DeepSeek-V4.1-Flash-1017";
@@ -18,17 +27,35 @@ const COMPLETION_BUDGET_MS: u64 = 3_000;
 const SIGNATURE_BUDGET_MS: u64 = 10_000;
 const SIGNATURE_RETRY_MS: u64 = 500;
 
-/// One hint from a tick's `hints` list: the referee computed the fact; this only voices it.
+/// One entry of a tick's `hints` list, plus any state blob of the match (for the asker's box
+/// key and the referee's own; voice changes no state, so any blob of the match will do).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Input {
-    hint_id: u32,
-    /// `hint_kind`: 0 NEAR, 1 BEARING, 2 TREND.
-    hint: u8,
-    /// The computed fact (`HintFact.value`).
-    value: u8,
-    #[serde(default)]
-    question: Option<String>,
+    state: String,
+    /// `match_id ‖ sealed HintBlob`, as `tick` returned it.
+    blob: String,
+}
+
+/// The hint and the asker's box key, from the blob and the state.
+fn open_hint(i: &Input) -> Result<(HintBlob, [u8; 32], [u8; 32]), String> {
+    let blob = from_b64("blob", &i.blob)?;
+    if blob.len() < 16 {
+        return Err("blob is too short to name a match".into());
+    }
+    let (id, sealed) = blob.split_at(16);
+    let match_id: MatchId = id.try_into().expect("16 bytes");
+    let st = state::open(&from_b64("state", &i.state)?, domain::STATE, &match_id)?;
+    let plain = vault::open(&st.box_sk, Purpose::Hint, &match_id, &[], sealed)?;
+    let hint: HintBlob = borsh::from_slice(&plain).map_err(|e| format!("hint blob: {e}"))?;
+    if hint.match_id != match_id {
+        return Err("hint blob names another match".into());
+    }
+    let asker = *st
+        .box_pks
+        .get(usize::from(hint.player))
+        .ok_or("hint blob names an unknown player")?;
+    Ok((hint, asker, st.box_sk))
 }
 
 struct Completion {
@@ -93,8 +120,9 @@ fn fetch_signature(key: &str, model: &str, c: &Completion) -> Result<ChatSignatu
 
 pub fn run(input: Value) -> Result<Value, String> {
     let i: Input = parse(input)?;
-    let fact = Fact::new(i.hint, i.value)?;
-    let question = i.question.as_deref().map(voice::clean_question).transpose()?;
+    let (hint, asker_pk, box_sk) = open_hint(&i)?;
+    let fact = Fact::new(hint.hint, hint.value)?;
+    let question = hint.question.as_deref().map(voice::clean_question).transpose()?;
     // A missing key or a refused model is a broken deployment, not a slow model: say so
     // instead of quietly serving templates. Without a network (the local test referee) no
     // model is asked, so no key is needed; `Err` carries why.
@@ -130,7 +158,7 @@ pub fn run(input: Value) -> Result<Value, String> {
     // The relay passes this to the next tick (or to `end`), where the engine logs it. A
     // template line gets a receipt too: the log then shows which lines no model signed.
     let receipt = referee_core::HintReceipt {
-        hint_id: i.hint_id,
+        hint_id: hint.hint_id,
         chat_id: chat.as_ref().map_or_else(String::new, |c| c.chat_id.clone()),
         text_hash,
         signature: match &signature {
@@ -142,23 +170,50 @@ pub fn run(input: Value) -> Result<Value, String> {
             .map_or_else(String::new, |s| s.signing_address.clone()),
     };
 
+    let line = VoiceLine {
+        match_id: hint.match_id,
+        player: hint.player,
+        hint_id: hint.hint_id,
+        text,
+    };
+    let sig = host::sign_digest(&voice_sig_digest(&line))?;
+    let sealed = seal_to(
+        &asker_pk,
+        &to_borsh(&SignedVoiceLine { line, sig }),
+        tail_protocol::domain::VOICE,
+    )?;
+    // The leaf the receipt's log entry will have. Voice changes no state and appends nothing:
+    // the entry joins the log in the tick (or `end`) that takes `log_sealed` as a receipt, and
+    // shows up in that call's own `leaves` and `log_sealed`.
+    let leaf = merkle::leaf(&LogEntry::HintReceipt {
+        hint_id: receipt.hint_id,
+        chat_id: receipt.chat_id.clone(),
+        text_hash: receipt.text_hash,
+        signature: receipt.signature.clone(),
+        signing_address: receipt.signing_address.clone(),
+    });
+    let receipt = vault::seal(
+        &box_sk,
+        Purpose::Receipt,
+        &hint.match_id,
+        &[],
+        &to_borsh(&receipt),
+    );
+
+    // Nothing here names the fact or the words. `signed_text` is what NEAR AI signed
+    // (`model:sha256(request):sha256(response)`); the replay needs it to check the signature
+    // that the receipt carries into the log.
     Ok(json!({
-        "text": text,
+        "player": hint.player,
+        "hint_id": hint.hint_id,
+        "sealed": b64(&sealed),
+        "signed_text": signature.as_ref().map(|s| s.text.clone()),
+        "leaves": [b64(&leaf)],
+        "log_sealed": b64(&receipt),
         "source": if chat.is_some() { "model" } else { "template" },
-        "fact": fact.statement(),
         "model": model,
         "latency_ms": latency_ms,
         "fallback_reason": fallback_reason,
-        "chat_id": chat.as_ref().map(|c| c.chat_id.clone()),
-        "text_sha256": hex::encode(text_hash),
-        "request_sha256": chat.as_ref().map(|c| c.request_sha.clone()),
-        "response_sha256": chat.as_ref().map(|c| c.response_sha.clone()),
-        "signature": signature.as_ref().map(|s| s.signature.clone()),
-        "signing_address": signature.as_ref().map(|s| s.signing_address.clone()),
-        "signature_kind": signature.as_ref().and_then(|s| s.signature_kind.clone()),
-        "signed_text": signature.as_ref().map(|s| s.text.clone()),
         "signature_error": signature_error,
-        "hint_id": i.hint_id,
-        "receipt": b64(&to_borsh(&receipt)),
     }))
 }

@@ -1,38 +1,51 @@
 // Smoke test of the deployed referee on hosted OutLayer testnet: calls every command once and
 // checks what it returns with the TS protocol package (the same bytes the contract and the
-// phones use). Run from the repo root: `bun crates/referee-wasi/scripts/smoke.ts`.
+// phones use). Run from the repo root: `bun crates/referee-wasi/scripts/smoke.ts`, or against the
+// local test referee: `REFEREE_MODE=local bun crates/referee-wasi/scripts/smoke.ts`.
 import { createPublicKey, generateKeyPairSync, randomBytes, verify } from "node:crypto";
 // Only for checking the model's TEE signature (Ethereum personal_sign); already installed
 // under the protocol package, so imported by path rather than installed here.
 import { secp256k1 } from "../../../packages/protocol/node_modules/@noble/curves/secp256k1.js";
 import { keccak_256 } from "../../../packages/protocol/node_modules/@noble/hashes/sha3.js";
 import {
+  type Batch,
+  batchClientDataHash,
+  batchHash,
   boxPublicKey,
   buildRing,
   concat,
   decodeLogEntry,
-  decodePlayerKeys,
   decodeSignedVerdict,
   derivePlayerKey,
   deriveTagKey,
   encodeBatchEnvelope,
   equal,
+  type Fix,
   fromHex,
+  type Bytes as Hash,
   type LogEntry,
+  merkleEmptyRoot,
   merkleLeaf,
   merkleRoot,
-  open,
+  openSignedHud,
+  openSignedPlayerKeys,
+  openSignedVoiceLine,
+  type PlayerKeys,
   playersHash,
+  RejectCode,
   ringCommit,
+  SealContext,
   seal,
   sha256,
   sortAccounts,
   toHex,
   utf8,
+  verdictChainBreak,
   verdictDigest,
+  verifyConsistency,
   Writer,
 } from "../../../packages/protocol/src/index.ts";
-import { balance, type Json, OWNER, ok, refused, spend } from "./lib.ts";
+import { assertion, balance, type Json, OWNER, ok, p256, refused, spend } from "./lib.ts";
 
 const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
 const unb64 = (s: string) => new Uint8Array(Buffer.from(s, "base64"));
@@ -73,13 +86,13 @@ console.log(`  referee_pk ${keys.referee_pk}  box_pk ${keys.referee_box_pk}  vrf
 // ── enroll three test players ───────────────────────────────────────────────────
 console.log("enroll");
 const run = toHex(randomBytes(3));
-type Player = { account: string; boxSk: Uint8Array; appAttestPk: Uint8Array };
+type Player = { account: string; boxSk: Uint8Array; sk: Uint8Array; appAttestPk: Uint8Array };
 const players: Player[] = [];
 for (const name of ["ana", "bo", "cy"]) {
   const account = `${name}-${run}.${OWNER}`;
   const boxSk = new Uint8Array(randomBytes(32));
-  const p256 = generateKeyPairSync("ec", { namedCurve: "prime256v1" }).publicKey.export({ format: "jwk" });
-  const appAttestPk = concat(Uint8Array.of(4), jwkBytes(p256.x), jwkBytes(p256.y));
+  const sk = p256.utils.randomSecretKey();
+  const appAttestPk = p256.getPublicKey(sk, false);
   const ed = generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" });
   const nearPk = jwkBytes(ed.x);
   const { result: r, call: c } = await ok("enroll", {
@@ -103,7 +116,7 @@ for (const name of ["ana", "bo", "cy"]) {
     ed25519Verify(refereePk, sha256(concat(utf8("tail/enroll-receipt/v1"), receipt)), unb64(r.sig)),
     `${account}: receipt signed by referee_pk`,
   );
-  players.push({ account, boxSk, appAttestPk });
+  players.push({ account, boxSk, sk, appAttestPk });
 }
 
 // ── start ───────────────────────────────────────────────────────────────────────
@@ -141,56 +154,110 @@ if (startV.body.kind !== "Start") throw new Error("unreachable");
 check(equal(startV.body.playersHash, playersHash(accounts)), "players_hash matches the TS playersHash");
 check(startV.body.startMs === startMs && startV.body.endMs === endMs, "end_ms = start_ms + duration_ms");
 const sorted = sortAccounts(accounts);
-const opened = new Map<string, ReturnType<typeof decodePlayerKeys>>();
+const opened = new Map<string, PlayerKeys>();
 for (const p of players) {
   const entry = st.keys.find((k: Json) => k.account_id === p.account);
-  const pk = decodePlayerKeys(open(p.boxSk, unb64(entry.sealed), "tail/keys"));
+  const pk = openSignedPlayerKeys(p.boxSk, unb64(entry.sealed), refereePk);
   check(
     pk.player === sorted.indexOf(p.account) &&
       equal(pk.matchId, matchId) &&
       accounts.includes(pk.target) &&
       pk.target !== p.account,
-    `${p.account}: sealed PlayerKeys open with the player's box key (player ${pk.player}, target ${pk.target})`,
+    `${p.account}: sealed, signed PlayerKeys open with the player's box key (player ${pk.player}, target ${pk.target})`,
   );
   opened.set(p.account, pk);
 }
 const kTags = [...opened.values()].map((k) => toHex(k.kTag));
 check(new Set(kTags).size === 1, "every player got the same k_tag");
-const log: LogEntry[] = st.log.map((e: string) => decodeLogEntry(unb64(e)));
+// The relay keeps the leaf hashes and the sealed log; the plaintext comes from declassify.
+check(
+  st.log === undefined && st.leaves.length === players.length + 1,
+  "start: leaves for 3 Enrolled + Start, no plaintext log",
+);
+const leaves: Hash[] = [...st.leaves.map(unb64)];
+const logSealed: string[] = [st.log_sealed];
+const proofs: { seq: number; from_size: number; path: string[] }[] = [];
+const keep = (r: Json) => {
+  leaves.push(...r.leaves.map(unb64));
+  logSealed.push(r.log_sealed);
+  proofs.push(...r.proofs);
+};
 
-// ── tick: a batch with no App Attest assertion, and garbage ─────────────────────
+// ── tick: a hint, three real batches, one without an App Attest assertion, and garbage ──
 console.log("tick");
 const ana = players[0] as Player;
-const batch = {
-  matchId,
-  player: sorted.indexOf(ana.account),
-  seq: 0,
-  prev: new Uint8Array(32),
-  tMs: startMs + 10_000n,
-  fixes: [],
-  sightings: [],
-  actions: [],
-};
-const sealedBatch = seal(boxPk, encodeBatchEnvelope({ batch, assertion: new Uint8Array(0) }), "tail/batch");
+const asker = sorted.indexOf(ana.account);
+const fix = (t: bigint, i: number): Fix => ({
+  tMs: t - 1000n,
+  latE7: 423_601_000 + i * 100,
+  lonE7: -710_589_000,
+  accM: 5,
+  speedCmps: 0,
+  flags: 0,
+});
+const sealBatch = (batch: Batch, a: Uint8Array) =>
+  b64(seal(boxPk, encodeBatchEnvelope({ batch, assertion: a }), SealContext.batch));
+const t1Ms = startMs + 10_000n;
+const firstBatches = players.map((p) => {
+  const player = sorted.indexOf(p.account);
+  const batch: Batch = {
+    matchId,
+    player,
+    seq: 0,
+    prev: new Uint8Array(32),
+    tMs: t1Ms,
+    fixes: [fix(t1Ms, player)],
+    sightings: [],
+    actions: p === ana ? [{ kind: "Hint", hint: 0, nonce: 1, text: "am I close?" }] : [],
+  };
+  return { batch, sealed: sealBatch(batch, assertion(p.sk, batchClientDataHash(batch), 1)) };
+});
+const last = firstBatches[2] as (typeof firstBatches)[number];
+const unasserted: Batch = { ...last.batch, seq: 1, prev: batchHash(last.batch), fixes: [], actions: [] };
 const { result: t1, call: t1Call } = await ok("tick", {
   match_id: b64(matchId),
   state: st.state,
   last_seq: 1,
-  now_ms: Number(startMs + 10_000n),
-  batches: [b64(sealedBatch), b64(randomBytes(80))],
+  now_ms: Number(t1Ms),
+  batches: [
+    ...firstBatches.map((b) => b.sealed),
+    sealBatch(unasserted, new Uint8Array(0)),
+    b64(randomBytes(80)),
+  ],
 });
 console.log(
   `  tick 1: wall ${t1Call.wall.toFixed(0)} ms, enclave ${t1Call.enclave} ms, state ${t1.state_bytes} B`,
 );
+keep(t1);
 check(
-  t1.opened === 1 && t1.unopened.length === 1 && t1.unopened[0].index === 1,
-  "the sealed batch opens; the garbage one does not",
+  t1.opened === 4 && t1.unopened.length === 1 && t1.unopened[0].index === 4,
+  "the sealed batches open; the garbage one does not",
 );
 check(
-  t1.rejected.length === 1 && String(t1.rejected[0].reason).startsWith("Assertion"),
-  `the engine rejects the unasserted batch (${t1.rejected[0]?.reason})`,
+  t1.rejected.length === 1 && t1.rejected[0].reason === RejectCode.Assertion && t1.rejected[0].seq === 1,
+  `the engine rejects the unasserted batch with RejectCode.Assertion (${t1.rejected[0]?.reason})`,
 );
-log.push(...t1.log.map((e: string) => decodeLogEntry(unb64(e))));
+const hintV = decodeSignedVerdict(unb64(t1.verdicts[0]));
+check(
+  hintV.body.kind === "Hint" && hintV.body.from === asker && hintV.body.hint === 0,
+  "a Hint verdict for the asker, with its kind",
+);
+check(
+  t1.hints.length === 1 && t1.hints[0].player === asker && Object.keys(t1.hints[0]).length === 2,
+  "the hint leaves as {player, blob} and nothing else",
+);
+const anaHud = openSignedHud(
+  ana.boxSk,
+  unb64(t1.huds.find((h: Json) => h.player === asker).sealed),
+  refereePk,
+);
+check(
+  anaHud.hintFact?.hint === 0 &&
+    anaHud.logSize === BigInt(leaves.length) &&
+    equal(anaHud.root, merkleRoot(leaves)) &&
+    anaHud.nextSeq === 1,
+  "the asker's signed HUD carries the fact, the log so far and its next seq",
+);
 const ahead = await refused("tick", {
   match_id: b64(matchId),
   state: t1.state,
@@ -198,15 +265,35 @@ const ahead = await refused("tick", {
   now_ms: Date.now() + 3_600_000,
 });
 check(ahead.includes("ahead of the referee clock"), "now_ms ahead of the referee clock is refused");
+
+// ── voice ───────────────────────────────────────────────────────────────────────
+console.log("voice");
+const { result: v, call: vCall } = await ok("voice", { state: t1.state, blob: t1.hints[0].blob });
+const line = openSignedVoiceLine(ana.boxSk, unb64(v.sealed), refereePk);
+console.log(
+  `  "${line.text}" (${v.source}, model ${v.latency_ms} ms, call wall ${vCall.wall.toFixed(0)} ms)`,
+);
+check(
+  line.player === asker && line.hintId === 0 && equal(line.matchId, matchId) && line.text.length > 0,
+  "the Handler line opens with the asker's box key and is signed by referee_pk",
+);
+check(v.text === undefined && v.fact === undefined, "nothing the relay sees names the fact or the words");
+if (v.source !== "model") console.log(`  template fallback: ${v.fallback_reason}`);
+
 const { result: t2, call: t2Call } = await ok("tick", {
   match_id: b64(matchId),
   state: t1.state,
   last_seq: t1.seq,
   now_ms: Number(endMs),
+  receipts: [v.log_sealed],
 });
 console.log(`  tick 2: wall ${t2Call.wall.toFixed(0)} ms, enclave ${t2Call.enclave} ms`);
 check(t2.tick_no === 2 && t2.over === true, "tick 2 at end_ms continues from tick 1 and ends the match");
-log.push(...t2.log.map((e: string) => decodeLogEntry(unb64(e))));
+keep(t2);
+check(
+  t2.leaves.some((l: string) => l === v.leaves[0]),
+  "the receipt's leaf, as voice named it, joins the log in the tick that took it",
+);
 const otherMatch = await refused("tick", {
   match_id: b64(randomBytes(16)),
   state: t2.state,
@@ -214,32 +301,67 @@ const otherMatch = await refused("tick", {
 });
 check(otherMatch.includes("does not open"), "a state blob does not open for another match id");
 
-// ── voice ───────────────────────────────────────────────────────────────────────
-console.log("voice");
-const { result: v, call: vCall } = await ok("voice", {
-  hint_id: 0,
-  hint: 0,
-  value: 0,
-  question: "am I close?",
-});
-console.log(
-  `  "${v.text}" (${v.source}, model ${v.latency_ms} ms, call wall ${vCall.wall.toFixed(0)} ms, kind ${v.signature_kind})`,
-);
-check(v.text_sha256 === toHex(sha256(utf8(v.text))), "text_sha256 = sha256(text)");
-// borsh HintReceipt: u32 hint_id ‖ string chat_id ‖ [u8;32] text_hash ‖ bytes signature ‖ string address
-const receipt = unb64(v.receipt);
-const chatLen = new DataView(receipt.buffer, receipt.byteOffset).getUint32(4, true);
+// ── end ─────────────────────────────────────────────────────────────────────────
+console.log("end");
+const { result: e } = await ok("end", { match_id: b64(matchId), state: t2.state, last_seq: t2.seq });
+const endV = decodeSignedVerdict(unb64(e.verdicts[0]));
+check(endV.seq === t2.seq + 1 && endV.body.kind === "End", `End verdict, seq ${t2.seq + 1}`);
+check(ed25519Verify(refereePk, verdictDigest(endV), endV.sig), "End signature verifies with referee_pk");
+if (endV.body.kind !== "End") throw new Error("unreachable");
+keep(e);
 check(
-  toHex(receipt.slice(8 + chatLen, 8 + chatLen + 32)) === v.text_sha256,
-  "the HintReceipt carries the text hash",
+  equal(ringCommit(endV.body.vrfSignature), startV.body.ringCommit),
+  "ring_commit = SHA256(tail/ring ‖ revealed vrf_signature)",
 );
-if (v.source === "model") {
-  check(v.signature, `model TEE signature fetched (${v.signature_error ?? "no error"})`);
+check(endV.body.alpha.endsWith(`:${toHex(matchId)}`), "VRF alpha ends with the match id hex seed");
+check(
+  ed25519Verify(fromHex(keys.vrf_pk), utf8(endV.body.alpha), endV.body.vrfSignature),
+  "VRF signature verifies over alpha with the OutLayer VRF key",
+);
+check(
+  leaves.length === Number(endV.body.logSize) + 1 &&
+    equal(endV.body.root, merkleRoot(leaves.slice(0, Number(endV.body.logSize)))),
+  "End root = Merkle root of the leaves before End",
+);
+check(
+  proofs.length === 1 &&
+    proofs[0]?.from_size === 0 &&
+    verifyConsistency(0, Number(endV.body.logSize), merkleEmptyRoot(), endV.body.root, []),
+  "End carries the consistency proof from size 0 (no checkpoint in a one-minute match)",
+);
+
+const stale = await refused("tick", { match_id: b64(matchId), state: t1.state, last_seq: endV.seq });
+check(stale.includes("rollback"), "an old state blob after End is refused as a rollback");
+const ended = await refused("tick", { match_id: b64(matchId), state: e.state, last_seq: endV.seq });
+check(ended.includes("NotRunning"), "the End state blob refuses further ticks");
+
+// ── declassify ──────────────────────────────────────────────────────────────────
+console.log("declassify");
+const { result: d } = await ok("declassify", { match_id: b64(matchId), log_sealed: logSealed });
+const log: LogEntry[] = d.log.map((x: string) => decodeLogEntry(unb64(x)));
+check(
+  log.length === leaves.length && log.every((x, i) => equal(merkleLeaf(x), leaves[i] as Hash)),
+  "the declassified log is exactly the leaves held during play",
+);
+check(
+  log.filter((x) => x.kind === "Tick").length === 2 &&
+    log.some((x) => x.kind === "Rejected" && x.code === RejectCode.Assertion) &&
+    log.slice(0, 3).every((x) => x.kind === "Enrolled" && !x.attested),
+  "the log has 3 Enrolled (unattested ghosts), 2 Ticks and the Rejected batch",
+);
+check(
+  verdictChainBreak([startV, hintV, endV], refereePk) === undefined,
+  "Start → Hint → End are chained by prev",
+);
+// The Handler's signature as the replay checks it: the logged receipt and `signed_text`.
+const receiptEntry = log.find((x) => x.kind === "HintReceipt");
+check(receiptEntry?.kind === "HintReceipt", "the voice receipt joined the log");
+if (receiptEntry?.kind === "HintReceipt" && v.signed_text) {
   check(
-    v.signed_text.endsWith(`:${v.request_sha256}:${v.response_sha256}`),
-    "signed text covers the exact request and response",
+    /^.+:[0-9a-f]{64}:[0-9a-f]{64}$/.test(v.signed_text),
+    "signed text is model:sha256(request):sha256(response)",
   );
-  const sig = fromHex(v.signature.replace(/^0x/, ""));
+  const sig = receiptEntry.signature;
   const msg = utf8(v.signed_text);
   const digest = keccak_256(concat(utf8(`\x19Ethereum Signed Message:\n${msg.length}`), msg));
   const recovered = secp256k1.recoverPublicKey(
@@ -250,44 +372,11 @@ if (v.source === "model") {
   const uncompressed = secp256k1.Point.fromBytes(recovered).toBytes(false);
   const address = `0x${toHex(keccak_256(uncompressed.slice(1)).slice(12))}`;
   check(
-    address === String(v.signing_address).toLowerCase(),
-    `ECDSA signature recovers signing_address ${v.signing_address}`,
+    address === receiptEntry.signingAddress.toLowerCase(),
+    `the logged ECDSA signature over signed_text recovers ${receiptEntry.signingAddress}`,
   );
-} else {
-  console.log(`  template fallback: ${v.fallback_reason}`);
 }
 
-// ── end ─────────────────────────────────────────────────────────────────────────
-console.log("end");
-const { result: e } = await ok("end", { match_id: b64(matchId), state: t2.state, last_seq: t2.seq });
-const endV = decodeSignedVerdict(unb64(e.verdicts[0]));
-check(endV.seq === t2.seq + 1 && endV.body.kind === "End", `End verdict, seq ${t2.seq + 1}`);
-check(ed25519Verify(refereePk, verdictDigest(endV), endV.sig), "End signature verifies with referee_pk");
-if (endV.body.kind !== "End") throw new Error("unreachable");
-log.push(...e.log.map((x: string) => decodeLogEntry(unb64(x))));
-check(
-  equal(ringCommit(endV.body.vrfSignature), startV.body.ringCommit),
-  "ring_commit = SHA256(tail/ring ‖ revealed vrf_signature)",
-);
-check(endV.body.alpha.endsWith(`:${toHex(matchId)}`), "VRF alpha ends with the match id hex seed");
-check(
-  ed25519Verify(fromHex(keys.vrf_pk), utf8(endV.body.alpha), endV.body.vrfSignature),
-  "VRF signature verifies over alpha with the OutLayer VRF key",
-);
-const before = log.slice(0, Number(endV.body.logSize));
-check(
-  log.length === Number(endV.body.logSize) + 1 && equal(endV.body.root, merkleRoot(before.map(merkleLeaf))),
-  "End root = Merkle root of the returned log before End",
-);
-
-const stale = await refused("tick", { match_id: b64(matchId), state: t1.state, last_seq: endV.seq });
-check(stale.includes("rollback"), "an old state blob after End is refused as a rollback");
-const ended = await refused("tick", { match_id: b64(matchId), state: e.state, last_seq: endV.seq });
-check(ended.includes("NotRunning"), "the End state blob refuses further ticks");
-
-// ── declassify ──────────────────────────────────────────────────────────────────
-console.log("declassify");
-const { result: d } = await ok("declassify", { match_id: b64(matchId) });
 const km = fromHex(d.k_m);
 const ring = buildRing(accounts, endV.body.vrfSignature);
 check(

@@ -14,8 +14,8 @@
   "expect": {
     "verdicts": ["Start", "End"],
     "rejections": [
-      { "player": "bob", "reason": "FixFlags", "from": 60, "to": 120 },
-      { "player": "carol", "reason": "FixFlags", "from": 200, "to": 210 }
+      { "player": "bob", "reason": "FixFlags", "code": 8, "from": 60, "to": 120 },
+      { "player": "carol", "reason": "FixFlags", "code": 8, "from": 200, "to": 210 }
     ],
     "huds": [
       { "t": 90, "player": "alice", "leak": false },

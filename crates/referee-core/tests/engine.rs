@@ -9,7 +9,7 @@ use referee_core::{
     State, TickError, TickInput, TickOutput,
 };
 use tail_protocol::beacon::{beacon_token, derive_player_key, derive_tag_key, epoch_at};
-use tail_protocol::digest::{batch_client_data_hash, batch_hash, verdict_digest};
+use tail_protocol::digest::{batch_client_data_hash, batch_hash, sha256, verdict_digest};
 use tail_protocol::{
     ring, target_status, Action, Batch, BatchEnvelope, Fix, Hash, Hud, LogEntry, Sighting, Verdict, EPOCH_MS,
 };
@@ -62,6 +62,7 @@ impl Phone {
             account_id: name.into(),
             key: appattest::public_key_bytes(self.sk.verifying_key()),
             counter: 0,
+            attested: true,
         }
     }
 
@@ -192,13 +193,24 @@ fn the_start_verdict_is_seq_1_and_commits_to_the_players_and_the_ring() {
             end_ms: START + 600_000,
         }
     );
-    assert_eq!(
-        s.log,
-        vec![LogEntry::Verdict {
-            seq: 1,
-            digest: verdict_digest(v)
-        }]
-    );
+    assert_eq!(v.prev, [0; 32], "the first verdict has no predecessor");
+    let mut want: Vec<LogEntry> = accounts
+        .iter()
+        .zip(&phones)
+        .enumerate()
+        .map(|(i, (a, p))| LogEntry::Enrolled {
+            player: i as u16,
+            account: (*a).into(),
+            key_hash: sha256(&[&p.device(a).key]),
+            attested: true,
+        })
+        .collect();
+    want.push(LogEntry::Verdict {
+        seq: 1,
+        digest: verdict_digest(v),
+    });
+    assert_eq!(s.log, want, "one Enrolled per player in index order, then Start");
+    assert_eq!(s.state.last_verdict_digest(), verdict_digest(v));
     assert_eq!(s.state.next_verdict_seq(), 2);
 
     let order = ring::build_ring(&accounts, &VRF);
@@ -930,4 +942,242 @@ fn the_hint_cooldown_runs_on_the_referee_clock_whatever_the_device_says() {
     now += 20_000;
     let out = tick(out.state, input(3, now, batches(&mut ph, now, now + 19_000, 3))).unwrap();
     assert_eq!(out.hints.len(), 1);
+}
+
+// ── protocol v2: the log, the verdict chain, proofs, HUD v2 ──────────────────────
+
+#[test]
+fn every_tick_logs_its_tick_first_even_an_empty_one_and_verdicts_chain_by_prev() {
+    let (mut st, _) = three();
+    let mut prev = st.last_verdict_digest();
+    for k in 1..=7u32 {
+        let now = START + u64::from(k) * 10_000;
+        let out = tick(st, input(k, now, Vec::new())).unwrap();
+        assert_eq!(
+            out.log[0],
+            LogEntry::Tick {
+                tick_no: k,
+                now_ms: now,
+                call_id: [k as u8; 16]
+            }
+        );
+        for v in &out.verdicts {
+            assert_eq!(v.prev, prev, "verdict {} links to the one before", v.seq);
+            prev = verdict_digest(v);
+        }
+        assert_eq!(out.state.last_verdict_digest(), prev);
+        st = out.state;
+    }
+}
+
+#[test]
+fn a_refused_batch_is_logged_with_its_hash_and_code_and_only_an_authentic_one_reaches_the_hud() {
+    use tail_protocol::reject_code;
+    let (st, mut ph) = three();
+    let t = START + 10_000;
+    // Player 1's batch is forged (another device's assertion); player 2's is authentic but
+    // dated 30 s ahead.
+    let b = ph[1].unsigned(t, Vec::new(), Vec::new());
+    let forged = BatchEnvelope {
+        batch: b.clone(),
+        assertion: appattest::sign_assertion(&ph[0].sk, &batch_client_data_hash(&b), APP, 1),
+    };
+    let ahead = ph[2].next(t + 30_000, Vec::new(), Vec::new());
+    let ahead_hash = batch_hash(&ahead.batch);
+    let out = tick(st, input(1, t, vec![forged, ahead])).unwrap();
+    let logged: Vec<&LogEntry> = out
+        .log
+        .iter()
+        .filter(|e| matches!(e, LogEntry::Rejected { .. }))
+        .collect();
+    assert_eq!(
+        logged,
+        vec![
+            &LogEntry::Rejected {
+                player: 1,
+                seq: 0,
+                hash: batch_hash(&b),
+                code: reject_code::ASSERTION
+            },
+            &LogEntry::Rejected {
+                player: 2,
+                seq: 0,
+                hash: ahead_hash,
+                code: reject_code::CLOCK_SKEW
+            },
+        ]
+    );
+    assert_eq!(
+        hud_of(&out, 1).rejected,
+        None,
+        "a forged batch says nothing about player 1"
+    );
+    assert_eq!(hud_of(&out, 2).rejected, Some((0, reject_code::CLOCK_SKEW)));
+    // The authentic batch moved player 2's chain on; the HUD says where it stands.
+    assert_eq!(
+        (hud_of(&out, 2).next_seq, hud_of(&out, 2).chain_tip),
+        (1, ph[2].prev)
+    );
+    assert_eq!(
+        (hud_of(&out, 1).next_seq, hud_of(&out, 1).chain_tip),
+        (0, [0; 32])
+    );
+}
+
+#[test]
+fn every_checkpoint_and_the_end_carry_a_proof_from_the_last_anchor_that_the_full_log_confirms() {
+    use tail_protocol::merkle;
+    let mut ph = vec![Phone::new(0, "a"), Phone::new(1, "b"), Phone::new(2, "c")];
+    let devices = ["a", "b", "c"]
+        .iter()
+        .zip(&ph)
+        .map(|(n, p)| p.device(n))
+        .collect();
+    let started = init(cfg(), devices, &K_M, &VRF, START, [0; 16]).unwrap();
+    let mut leaves: Vec<Hash> = started.log.iter().map(merkle::leaf).collect();
+    let mut anchored = (0u64, merkle::empty_root());
+    let mut check = |verdicts: &[tail_protocol::VerdictPayload],
+                     proofs: &[referee_core::ConsistencyProof],
+                     log: &[LogEntry],
+                     leaves: &mut Vec<Hash>| {
+        leaves.extend(log.iter().map(merkle::leaf));
+        let roots: Vec<_> = verdicts
+            .iter()
+            .filter_map(|v| match &v.body {
+                Verdict::Checkpoint { log_size, root } | Verdict::End { log_size, root, .. } => {
+                    Some((v.seq, *log_size, *root))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(roots.len(), proofs.len(), "one proof per anchored root");
+        for ((seq, size, root), p) in roots.into_iter().zip(proofs) {
+            assert_eq!(p.seq, seq);
+            assert_eq!(p.from_size, anchored.0, "from the last anchored size");
+            let n = usize::try_from(size).unwrap();
+            assert_eq!(merkle::root(&leaves[..n]), root);
+            assert!(merkle::verify_consistency(
+                p.from_size,
+                size,
+                &anchored.1,
+                &root,
+                &p.path
+            ));
+            let m = usize::try_from(p.from_size).unwrap();
+            assert_eq!(p.path, merkle::consistency_proof(&leaves[..n], m));
+            assert!(size > anchored.0, "the log size grows from anchor to anchor");
+            anchored = (size, root);
+        }
+    };
+    let mut st = started.state;
+    let mut checkpoints = 0;
+    for k in 1..=30u32 {
+        let now = START + u64::from(k) * 10_000;
+        // Everyone stays present, apart and out of contact, so the match runs its full time.
+        let batches = (0..3)
+            .zip([0, 400, 800])
+            .map(|(i, north_m)| walk(&mut ph[i], now, north_m, Vec::new(), Vec::new()))
+            .collect();
+        let out = tick(st, input(k, now, batches)).unwrap();
+        checkpoints += out.proofs.len();
+        check(&out.verdicts, &out.proofs, &out.log, &mut leaves);
+        st = out.state;
+    }
+    assert_eq!(checkpoints, 5);
+    let out = tick(st, input(60, START + 600_000, Vec::new())).unwrap();
+    assert!(out.over && out.proofs.is_empty());
+    check(&out.verdicts, &out.proofs, &out.log, &mut leaves);
+    let alpha = "vrf:1:relay.testnet:01010101010101010101010101010101".to_owned();
+    let fin = finish(out.state, alpha, &VRF, [1; 16], Vec::new()).unwrap();
+    assert_eq!(fin.proofs.len(), 1);
+    check(&fin.verdicts, &fin.proofs, &fin.log, &mut leaves);
+    assert_eq!(fin.state.log_size(), leaves.len() as u64);
+}
+
+#[test]
+fn a_tag_is_logged_right_after_the_evidence_that_justifies_its_lock() {
+    use tail_protocol::{LOCK_EPOCHS, WINDOW_EPOCHS};
+    let (mut st, mut ph) = three();
+    let [h, t, by] = ring_order();
+    let mut log = Vec::new();
+    for n in 1..=30u32 {
+        let now = START + u64::from(n) * 10_000;
+        let strike = if n >= 6 {
+            vec![Action::Strike { nonce: n }]
+        } else {
+            Vec::new()
+        };
+        let batches = vec![
+            walk(&mut ph[h as usize], now, 0, heard(t, now), strike),
+            walk(&mut ph[t as usize], now, 3, heard(h, now), Vec::new()),
+            walk(&mut ph[by as usize], now, 800, Vec::new(), Vec::new()),
+        ];
+        let out = tick(st, input(n, now, batches)).unwrap();
+        log.extend(out.log.iter().cloned());
+        let tagged = out
+            .verdicts
+            .iter()
+            .find(|v| v.body == Verdict::Tag { hunter: h, target: t });
+        if let Some(v) = tagged {
+            let at = log
+                .iter()
+                .position(|e| matches!(e, LogEntry::Verdict { seq, .. } if *seq == v.seq))
+                .unwrap();
+            let LogEntry::Evidence {
+                hunter,
+                target,
+                strike_seq,
+                strike_epoch,
+                epochs,
+            } = &log[at - 1]
+            else {
+                panic!("the entry before the Tag is {:?}", log[at - 1]);
+            };
+            assert_eq!((*hunter, *target), (h, t));
+            assert_eq!(
+                *strike_seq,
+                ph[h as usize].seq - 1,
+                "the batch that carried the strike"
+            );
+            assert!(epochs.len() as u32 >= LOCK_EPOCHS, "{epochs:?}");
+            let (a, b) = (h.min(t), h.max(t));
+            for e in epochs {
+                assert!(
+                    *e <= *strike_epoch && strike_epoch - e < WINDOW_EPOCHS,
+                    "{e} in the window"
+                );
+                assert!(
+                    log.contains(&LogEntry::Contact { a, b, epoch: *e }),
+                    "contact in epoch {e} is logged"
+                );
+            }
+            assert!(epochs.contains(strike_epoch) || epochs.contains(&(strike_epoch - 1)));
+            assert_eq!(hud_of(&out, h).tags, 1);
+            assert_eq!(hud_of(&out, t).tags, 0);
+            return;
+        }
+        st = out.state;
+    }
+    panic!("the hunter never landed the tag");
+}
+
+#[test]
+fn the_hud_carries_the_log_at_the_end_of_its_tick() {
+    let (st, mut ph) = three();
+    let t = START + 10_000;
+    let out = tick(
+        st,
+        input(1, t, vec![ph[0].next(t, vec![fix(t - 1_000, 0)], Vec::new())]),
+    )
+    .unwrap();
+    for p in 0..3u16 {
+        let hud = hud_of(&out, p);
+        assert_eq!((hud.match_id, hud.player), (MATCH, p));
+        assert_eq!(
+            (hud.log_size, hud.root),
+            (out.state.log_size(), out.state.log_root())
+        );
+    }
+    assert_eq!(hud_of(&out, 0).next_seq, 1);
+    assert_eq!(hud_of(&out, 0).chain_tip, ph[0].prev);
 }

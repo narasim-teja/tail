@@ -3,9 +3,13 @@
 //! The loop advances one second at a time: phones take fixes and scan, every `BATCH_MS` they
 //! send a real batch (tokens, borsh, hash chain, P-256 App Attest assertion), and every
 //! `TICK_MS` the referee ticks. Between ticks the state goes through borsh exactly as the relay
-//! round-trips it sealed. After every tick the simulator checks the invariants: the sum of
-//! heads never changes, verdict seqs are contiguous, and every checkpoint root equals the
-//! RFC 6962 root of the log so far.
+//! round-trips it sealed. After every call the simulator checks the invariants: the sum of
+//! heads never changes; verdict seqs are contiguous and each verdict's `prev` is the digest of
+//! the one before; every Checkpoint / End root is the RFC 6962 root of the log so far and comes
+//! with a consistency proof from the previous anchor that verifies and equals the full-log
+//! proof; every tick's log starts with its `Tick`; every refused batch has a `Rejected` entry
+//! with its hash and code; every Tag follows an `Evidence` entry whose epochs justify the lock;
+//! and every HUD names the log as it stands after its tick.
 // Sim positions are metres and seconds; their f64 conversions are well inside 2^52.
 #![allow(
     clippy::cast_precision_loss,
@@ -18,15 +22,17 @@ pub mod scenario;
 
 use phone::{device_key, Phone};
 use referee_core::{
-    Circle, Device, HintIssued, HintReceipt, MatchConfig, Refusal, Rejection, State, TickInput,
+    Circle, ConsistencyProof, Device, HintIssued, HintReceipt, MatchConfig, Refusal, Rejection, State,
+    TickInput,
 };
 use scenario::{BotMode, Dir, Event, Expect, Scenario};
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
 use std::time::Instant;
-use tail_protocol::digest::{sha256, verdict_digest};
+use tail_protocol::digest::{batch_hash, sha256, verdict_digest};
 use tail_protocol::{
-    constants::hint_kind, merkle, ring, target_status, Fix, Hud, LogEntry, Verdict, VerdictPayload,
+    constants::hint_kind, merkle, ring, target_status, CallId, Fix, Hash, Hud, LogEntry, Verdict,
+    VerdictPayload, LOCK_EPOCHS, WINDOW_EPOCHS,
 };
 
 /// Sim matches start at a fixed instant so runs are reproducible.
@@ -221,8 +227,29 @@ struct Sim<'a> {
     speed: Vec<f64>,
     rng: Rng,
     report: Report,
-    leaves: Vec<tail_protocol::Hash>,
+    leaves: Vec<Hash>,
     next_seq: u32,
+    /// Digest of the last verdict (the next one's `prev`).
+    last_digest: Hash,
+    /// `(log_size, root)` of the last Checkpoint, as the contract holds it.
+    anchored: (u64, Hash),
+    /// Tags each player has made, by referee index.
+    tags: Vec<u8>,
+}
+
+/// Which call produced a batch of verdicts and log entries.
+#[derive(Clone, Copy)]
+enum Call {
+    Start,
+    Tick {
+        tick_no: u32,
+        now_ms: u64,
+        call_id: CallId,
+    },
+    /// `finish`, reported under the tick number after the last tick.
+    End {
+        tick_no: u32,
+    },
 }
 
 /// Runs a scenario to its end and checks the invariants after every tick.
@@ -269,6 +296,7 @@ pub fn run_seeded(sc: &Scenario, seed: u64) -> Result<Report, String> {
             account_id: p.name.clone(),
             key: appattest::public_key_bytes(device_key(&p.name).verifying_key()),
             counter: 0,
+            attested: true,
         })
         .collect();
     let k_m = sha256(&[b"tail/sim/k_m", sc.name.as_bytes()]);
@@ -307,8 +335,12 @@ pub fn run_seeded(sc: &Scenario, seed: u64) -> Result<Report, String> {
         },
         leaves: Vec::new(),
         next_seq: 1,
+        last_digest: [0; 32],
+        anchored: (0, merkle::empty_root()),
+        tags: vec![0; n],
     };
-    sim.record(0, 0, &started.verdicts, &started.log)?;
+    sim.check_enrolled(&started.log)?;
+    sim.record(0, Call::Start, &started.verdicts, &[], &started.log)?;
     sim.run(started.state, &vrf)?;
     Ok(sim.report)
 }
@@ -588,6 +620,12 @@ impl Sim<'_> {
             }
             let tick_no = (s / 10) as u32;
             self.report.batches_sent += outbox.len();
+            let sent: Vec<Hash> = outbox.iter().map(|e| batch_hash(&e.batch)).collect();
+            let call = Call::Tick {
+                tick_no,
+                now_ms: t_ms,
+                call_id: call_id(tick_no),
+            };
             let input = TickInput {
                 tick_no,
                 now_ms: t_ms,
@@ -598,7 +636,10 @@ impl Sim<'_> {
             let t0 = Instant::now();
             let out = referee_core::tick(state, input).map_err(|e| format!("tick {tick_no}: {e:?}"))?;
             self.report.tick_us.push(t0.elapsed().as_micros());
-            self.record(s, tick_no, &out.verdicts, &out.log)?;
+            self.record(s, call, &out.verdicts, &out.proofs, &out.log)?;
+            check_rejected(&out.log, &out.rejected, &sent).map_err(|e| format!("tick {tick_no}: {e}"))?;
+            self.check_huds(&out.huds)
+                .map_err(|e| format!("tick {tick_no}: {e}"))?;
             self.report
                 .rejections
                 .extend(out.rejected.into_iter().map(|r| (s, r)));
@@ -629,7 +670,13 @@ impl Sim<'_> {
                     std::mem::take(&mut receipts),
                 )
                 .map_err(|e| format!("finish: {e:?}"))?;
-                self.record(s, tick_no + 1, &fin.verdicts, &fin.log)?;
+                self.record(
+                    s,
+                    Call::End { tick_no: tick_no + 1 },
+                    &fin.verdicts,
+                    &fin.proofs,
+                    &fin.log,
+                )?;
                 self.check_heads(&fin.state)?;
                 self.report.final_heads = fin.state.players().iter().map(|p| p.head).collect();
                 return Ok(());
@@ -659,15 +706,52 @@ impl Sim<'_> {
         }
     }
 
-    /// Verdict seqs are contiguous, each verdict's log entry carries its digest, and every
-    /// Checkpoint / End root is the RFC 6962 root of the log before it.
+    /// One `Enrolled` per player, in index order, before anything else.
+    fn check_enrolled(&self, log: &[LogEntry]) -> Result<(), String> {
+        for (i, name) in self.report.names.iter().enumerate() {
+            let want = LogEntry::Enrolled {
+                player: i as u16,
+                account: name.clone(),
+                key_hash: sha256(&[&appattest::public_key_bytes(device_key(name).verifying_key())]),
+                attested: true,
+            };
+            if log.get(i) != Some(&want) {
+                return Err(format!("start log entry {i} is {:?}, want {want:?}", log.get(i)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Verdict seqs are contiguous and chained by `prev`, each verdict's log entry carries its
+    /// digest, every Checkpoint / End root is the RFC 6962 root of the log before it with a
+    /// consistency proof from the previous anchor, and every Tag follows its `Evidence`.
     fn record(
         &mut self,
         s: u64,
-        tick_no: u32,
+        call: Call,
         verdicts: &[VerdictPayload],
+        proofs: &[ConsistencyProof],
         log: &[LogEntry],
     ) -> Result<(), String> {
+        let tick_no = match call {
+            Call::Tick {
+                tick_no,
+                now_ms,
+                call_id,
+            } => {
+                let want = LogEntry::Tick {
+                    tick_no,
+                    now_ms,
+                    call_id,
+                };
+                if log.first() != Some(&want) {
+                    return Err(format!("tick {tick_no} log starts with {:?}", log.first()));
+                }
+                tick_no
+            }
+            Call::Start => 0,
+            Call::End { tick_no } => tick_no,
+        };
         let mut by_seq = BTreeMap::new();
         for e in log {
             if let LogEntry::Verdict { seq, digest } = e {
@@ -676,25 +760,162 @@ impl Sim<'_> {
             self.leaves.push(merkle::leaf(e));
             self.report.log.push(e.clone());
         }
+        let mut proofs = proofs.iter();
         for v in verdicts {
             if v.seq != self.next_seq {
                 return Err(format!("verdict seq {} after {}", v.seq, self.next_seq - 1));
             }
+            if v.prev != self.last_digest {
+                return Err(format!("verdict {} does not chain to the one before", v.seq));
+            }
             self.next_seq += 1;
-            let (digest, at) = by_seq.get(&v.seq).ok_or("verdict missing from the log")?;
-            if *digest != verdict_digest(v) {
+            self.last_digest = verdict_digest(v);
+            let (digest, at) = *by_seq.get(&v.seq).ok_or("verdict missing from the log")?;
+            if digest != self.last_digest {
                 return Err("log digest differs from the verdict".into());
             }
-            if let Verdict::Checkpoint { log_size, root } | Verdict::End { log_size, root, .. } = &v.body {
-                let size = usize::try_from(*log_size).map_err(|e| e.to_string())?;
-                if size != *at || merkle::root(&self.leaves[..size]) != *root {
-                    return Err(format!("root at log size {log_size} does not match the log"));
+            match &v.body {
+                Verdict::Checkpoint { log_size, root } | Verdict::End { log_size, root, .. } => {
+                    let size = usize::try_from(*log_size).map_err(|e| e.to_string())?;
+                    if size != at || merkle::root(&self.leaves[..size]) != *root {
+                        return Err(format!("root at log size {log_size} does not match the log"));
+                    }
+                    let p = proofs.next().ok_or(format!("verdict {} has no proof", v.seq))?;
+                    self.check_proof(v.seq, *log_size, root, p)?;
                 }
+                Verdict::Tag { hunter, target } => {
+                    self.check_evidence(*hunter, *target, at)?;
+                    self.tags[*hunter as usize] += 1;
+                }
+                _ => {}
             }
             self.report.verdicts.push((s, tick_no, v.clone()));
         }
+        if proofs.next().is_some() {
+            return Err("a proof without its Checkpoint or End".into());
+        }
         Ok(())
     }
+
+    /// What the contract checks before it anchors a root, and that the referee's frontier proof
+    /// is the one the full log gives.
+    fn check_proof(&mut self, seq: u32, size: u64, root: &Hash, p: &ConsistencyProof) -> Result<(), String> {
+        let (from, old_root) = self.anchored;
+        if p.seq != seq || p.from_size != from {
+            return Err(format!(
+                "proof for seq {} from {}, want seq {seq} from {from}",
+                p.seq, p.from_size
+            ));
+        }
+        if size <= from {
+            return Err(format!("log size {size} does not grow past the anchor {from}"));
+        }
+        if !merkle::verify_consistency(from, size, &old_root, root, &p.path) {
+            return Err(format!("consistency proof {from} → {size} does not verify"));
+        }
+        let full = merkle::consistency_proof(&self.leaves[..size as usize], from as usize);
+        if p.path != full {
+            return Err(format!(
+                "frontier proof {from} → {size} differs from the full-log proof"
+            ));
+        }
+        self.anchored = (size, *root);
+        Ok(())
+    }
+
+    /// The entry before a Tag's verdict entry is its `Evidence`: at least `LOCK_EPOCHS` contact
+    /// epochs of this pair in the window ending at the strike's epoch, every one of them a
+    /// logged `Contact`, one of them the strike's epoch or the one before, and the strike's
+    /// batch logged for the hunter.
+    fn check_evidence(&self, hunter: u16, target: u16, verdict_at: usize) -> Result<(), String> {
+        let log = &self.report.log;
+        let Some(LogEntry::Evidence {
+            hunter: ev_hunter,
+            target: ev_target,
+            strike_seq,
+            strike_epoch,
+            epochs,
+        }) = verdict_at.checked_sub(1).map(|i| &log[i])
+        else {
+            return Err(format!("Tag {hunter} → {target} has no Evidence before it"));
+        };
+        let pair = (hunter.min(target), hunter.max(target));
+        let logged = |epoch: u32| {
+            log[..verdict_at].contains(&LogEntry::Contact {
+                a: pair.0,
+                b: pair.1,
+                epoch,
+            })
+        };
+        let justified = (*ev_hunter, *ev_target) == (hunter, target)
+            && epochs.len() as u32 >= LOCK_EPOCHS
+            && epochs.windows(2).all(|w| w[0] < w[1])
+            && epochs
+                .iter()
+                .all(|x| x <= strike_epoch && strike_epoch - x < WINDOW_EPOCHS)
+            && epochs.iter().all(|x| logged(*x))
+            && (epochs.contains(strike_epoch) || epochs.contains(&strike_epoch.wrapping_sub(1)))
+            && log[..verdict_at]
+                .iter()
+                .any(|x| matches!(x, LogEntry::Batch { player, seq, .. } if *player == hunter && seq == strike_seq));
+        if justified {
+            Ok(())
+        } else {
+            Err(format!(
+                "Evidence for Tag {hunter} → {target} does not justify it: {:?}",
+                log[verdict_at - 1]
+            ))
+        }
+    }
+
+    /// HUD v2: the log at the end of the tick, and the tags each player made.
+    fn check_huds(&self, huds: &[(u16, Hud)]) -> Result<(), String> {
+        let root = merkle::root(&self.leaves);
+        for (p, h) in huds {
+            if h.player != *p || h.log_size != self.leaves.len() as u64 || h.root != root {
+                return Err(format!("HUD of player {p} names another log or player"));
+            }
+            if h.tags != self.tags[*p as usize] {
+                return Err(format!(
+                    "HUD of player {p} says {} tags, not {}",
+                    h.tags, self.tags[*p as usize]
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Every refused batch is logged, in the order refused, with its code and the hash of a batch
+/// that was sent this tick.
+fn check_rejected(log: &[LogEntry], rejected: &[Rejection], sent: &[Hash]) -> Result<(), String> {
+    let logged: Vec<(u16, u32, Hash, u8)> = log
+        .iter()
+        .filter_map(|e| match e {
+            LogEntry::Rejected {
+                player,
+                seq,
+                hash,
+                code,
+            } => Some((*player, *seq, *hash, *code)),
+            _ => None,
+        })
+        .collect();
+    if logged.len() != rejected.len() {
+        return Err(format!(
+            "{} Rejected entries for {} rejections",
+            logged.len(),
+            rejected.len()
+        ));
+    }
+    for ((player, seq, hash, code), r) in logged.iter().zip(rejected) {
+        if (*player, *seq, *code) != (r.player, r.seq, r.reason.code()) || !sent.contains(hash) {
+            return Err(format!(
+                "Rejected entry {player}/{seq} code {code} does not match {r:?}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn call_id(tick_no: u32) -> [u8; 16] {
@@ -720,53 +941,14 @@ fn status_name(s: u8) -> &'static str {
     }
 }
 
-fn occurs(spec: &scenario::Occurs, r: &Report, player: u16, t: u64, reason: &str) -> bool {
-    r.index(&spec.player) == Some(player) && spec.reason == reason && (spec.from..=spec.to).contains(&t)
+fn occurs(spec: &scenario::Occurs, r: &Report, player: u16, t: u64, reason: &str, code: Option<u8>) -> bool {
+    r.index(&spec.player) == Some(player)
+        && spec.reason == reason
+        && spec.code.is_none_or(|c| Some(c) == code)
+        && (spec.from..=spec.to).contains(&t)
 }
 
-/// Every way the report differs from what the scenario expects.
-pub fn check(e: &Expect, r: &Report) -> Vec<String> {
-    let mut bad = Vec::new();
-    if let Some(want) = &e.verdicts {
-        let got = r.verdict_texts(e.checkpoints);
-        if &got != want {
-            bad.push(format!("verdicts: got {got:?}, want {want:?}"));
-        }
-    }
-    let rej: Vec<(u64, u16, String)> = r
-        .rejections
-        .iter()
-        .map(|(t, x)| (*t, x.player, variant(&x.reason)))
-        .collect();
-    let refu: Vec<(u64, u16, String)> = r
-        .refusals
-        .iter()
-        .map(|(t, x)| (*t, x.player, variant(&x.reason)))
-        .collect();
-    for (what, specs, got, only) in [
-        ("rejection", &e.rejections, &rej, e.only_listed_rejections),
-        ("refusal", &e.refusals, &refu, e.only_listed_refusals),
-    ] {
-        for spec in specs {
-            if !got.iter().any(|(t, p, why)| occurs(spec, r, *p, *t, why)) {
-                bad.push(format!("missing {what} {spec:?}"));
-            }
-        }
-        if only {
-            for (t, p, why) in got {
-                if !specs.iter().any(|spec| occurs(spec, r, *p, *t, why)) {
-                    bad.push(format!("unexpected {what} at {t}s: {} {why}", r.name(*p)));
-                }
-            }
-        }
-    }
-    for (name, want) in &e.heads {
-        if r.index(name).is_none() {
-            bad.push(format!("heads: unknown player {name}"));
-        } else if r.head(name) != u128::from(*want) {
-            bad.push(format!("head of {name}: got {}, want {want}", r.head(name)));
-        }
-    }
+fn check_huds(e: &Expect, r: &Report, bad: &mut Vec<String>) {
     for c in &e.huds {
         let Some(h) = r.hud(c.t, &c.player) else {
             bad.push(format!("no HUD for {} at {}s", c.player, c.t));
@@ -799,7 +981,85 @@ pub fn check(e: &Expect, r: &Report) -> Vec<String> {
         if let Some(v) = &c.target {
             diff("target", &h.target == v, h.target.clone());
         }
+        if let Some(v) = c.tags {
+            diff("tags", h.tags == v, h.tags.to_string());
+        }
+        if let Some(v) = c.rejected {
+            let code = h.rejected.map_or(0, |(_, code)| code);
+            diff("rejected", code == v, format!("{:?}", h.rejected));
+        }
     }
+}
+
+fn check_evidence(e: &Expect, r: &Report, bad: &mut Vec<String>) {
+    for ev in &e.evidence {
+        let (Some(h), Some(t)) = (r.index(&ev.hunter), r.index(&ev.target)) else {
+            bad.push(format!("evidence: unknown player in {ev:?}"));
+            continue;
+        };
+        let found = r.log.iter().any(|x| {
+            matches!(x, LogEntry::Evidence { hunter, target, strike_epoch, epochs, .. }
+                if (*hunter, *target, *strike_epoch) == (h, t, ev.strike_epoch) && *epochs == ev.epochs)
+        });
+        if !found {
+            let logged: Vec<&LogEntry> = r
+                .log
+                .iter()
+                .filter(|x| matches!(x, LogEntry::Evidence { .. }))
+                .collect();
+            bad.push(format!("missing {ev:?}; logged {logged:?}"));
+        }
+    }
+}
+
+/// Every way the report differs from what the scenario expects.
+pub fn check(e: &Expect, r: &Report) -> Vec<String> {
+    let mut bad = Vec::new();
+    if let Some(want) = &e.verdicts {
+        let got = r.verdict_texts(e.checkpoints);
+        if &got != want {
+            bad.push(format!("verdicts: got {got:?}, want {want:?}"));
+        }
+    }
+    let rej: Vec<(u64, u16, String, Option<u8>)> = r
+        .rejections
+        .iter()
+        .map(|(t, x)| (*t, x.player, variant(&x.reason), Some(x.reason.code())))
+        .collect();
+    let refu: Vec<(u64, u16, String, Option<u8>)> = r
+        .refusals
+        .iter()
+        .map(|(t, x)| (*t, x.player, variant(&x.reason), None))
+        .collect();
+    for (what, specs, got, only) in [
+        ("rejection", &e.rejections, &rej, e.only_listed_rejections),
+        ("refusal", &e.refusals, &refu, e.only_listed_refusals),
+    ] {
+        for spec in specs {
+            if !got
+                .iter()
+                .any(|(t, p, why, code)| occurs(spec, r, *p, *t, why, *code))
+            {
+                bad.push(format!("missing {what} {spec:?}"));
+            }
+        }
+        if only {
+            for (t, p, why, code) in got {
+                if !specs.iter().any(|spec| occurs(spec, r, *p, *t, why, *code)) {
+                    bad.push(format!("unexpected {what} at {t}s: {} {why}", r.name(*p)));
+                }
+            }
+        }
+    }
+    for (name, want) in &e.heads {
+        if r.index(name).is_none() {
+            bad.push(format!("heads: unknown player {name}"));
+        } else if r.head(name) != u128::from(*want) {
+            bad.push(format!("head of {name}: got {}, want {want}", r.head(name)));
+        }
+    }
+    check_huds(e, r, &mut bad);
+    check_evidence(e, r, &mut bad);
     for vt in &e.verdict_times {
         let hit = r
             .verdicts

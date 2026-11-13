@@ -16,10 +16,11 @@
       { "t": 50, "player": "alice", "lock": 0 },
       { "t": 100, "player": "alice", "lock": 4, "target": "bob" },
       { "t": 100, "player": "bob", "heat": 4, "lock": 0 },
-      { "t": 150, "player": "alice", "target": "carol", "head": 2000000 },
+      { "t": 150, "player": "alice", "target": "carol", "head": 2000000, "tags": 1 },
       { "t": 150, "player": "bob", "status": "out", "head": 0 },
       { "t": 300, "player": "alice", "status": "won" }
     ],
-    "heads": { "alice": 2000000, "bob": 0, "carol": 1000000 }
+    "heads": { "alice": 2000000, "bob": 0, "carol": 1000000 },
+    "evidence": [{ "hunter": "alice", "target": "bob", "strike_epoch": 10, "epochs": [3, 4, 5, 6, 7, 8, 9] }]
   }
 }

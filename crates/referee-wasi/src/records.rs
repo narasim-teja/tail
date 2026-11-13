@@ -1,8 +1,9 @@
 //! What the referee stores and signs besides verdicts, and the domains it signs them under.
 //!
 //! Every message the verdict key signs is `SHA256(domain ‖ borsh(body))` with a domain of its
-//! own, so a signature over one kind can never be read as another (`tail/verdict/v1` is the
-//! protocol's; the ones below belong to this module).
+//! own, so a signature over one kind can never be read as another. Verdicts, HUDs, player keys
+//! and Handler lines are signed and sealed under the protocol's domains
+//! (`tail_protocol::domain`); the ones below belong to this module.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use tail_protocol::digest::sha256;
@@ -17,11 +18,21 @@ pub mod domain {
     pub const STATE: &[u8] = b"tail/state/v1";
     /// AAD of a latency-benchmark state (never opens as a match's state).
     pub const BENCH_STATE: &[u8] = b"tail/bench-state/v1";
-    /// Seal contexts (aad) for what the referee seals to a player's box key.
-    pub const SEAL_KEYS: &[u8] = b"tail/keys";
-    pub const SEAL_HUD: &[u8] = b"tail/hud";
-    /// Seal context of a phone's batch to the referee (`packages/protocol` `Domain.batch`).
-    pub const SEAL_BATCH: &[u8] = tail_protocol::domain::BATCH;
+}
+
+/// A hint `tick` issued, as `voice` needs it: sealed to the referee (`vault::Purpose::Hint`)
+/// so the relay that carries it learns neither the fact nor the question.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct HintBlob {
+    pub match_id: MatchId,
+    pub hint_id: u32,
+    /// The asker, who gets the Handler's line.
+    pub player: u16,
+    /// `hint_kind`.
+    pub hint: u8,
+    /// `HintFact.value`.
+    pub value: u8,
+    pub question: Option<String>,
 }
 
 /// An enrolled phone. Also the body of the enrolment receipt.
@@ -88,6 +99,7 @@ mod tests {
 
     #[test]
     fn domains_are_distinct_from_the_protocol_ones() {
+        use tail_protocol::domain as p;
         let ours = [
             domain::REFEREE_BOX,
             domain::ENROLL_RECEIPT,
@@ -95,8 +107,17 @@ mod tests {
             domain::BENCH_STATE,
         ];
         for d in ours {
-            assert_ne!(d, tail_protocol::domain::VERDICT);
-            assert_ne!(d, tail_protocol::domain::ENROLL);
+            for theirs in [
+                p::VERDICT,
+                p::ENROLL,
+                p::HUD,
+                p::KEYS,
+                p::VOICE,
+                p::BATCH,
+                p::SEAL,
+            ] {
+                assert_ne!(d, theirs);
+            }
         }
     }
 

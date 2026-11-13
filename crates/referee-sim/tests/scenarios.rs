@@ -1,8 +1,11 @@
 //! The scripted matches of TECHNICAL.md 11. Each JSON trace in `scenarios/` carries its own
 //! `expect` block; every "this does not happen" trace has a twin where the deciding condition
-//! changes and it does happen. The simulator itself checks, after every tick, that the sum of
-//! heads is unchanged, verdict seqs are contiguous, the state survives its borsh round trip and
-//! every checkpoint root is the RFC 6962 root of the log so far.
+//! changes and it does happen. The simulator itself checks, after every call, that the sum of
+//! heads is unchanged, the state survives its borsh round trip, verdicts are contiguous and
+//! chained by `prev`, every checkpoint root is the RFC 6962 root of the log so far with a
+//! consistency proof that verifies and equals the full-log proof, every tick's log starts with
+//! its `Tick`, every refused batch is logged as `Rejected`, and every Tag follows an `Evidence`
+//! entry that justifies its lock (`referee_sim::run`).
 
 use referee_core::COIN_DOMAIN;
 use referee_sim::scenario::{BotMode, Scenario};
@@ -229,6 +232,45 @@ fn twelve_wandering_players_keep_the_state_small_and_all_invariants_for_ten_minu
     assert!(s.contacts > 0 && s.hints > 0, "{s:?}");
     assert!(s.state_bytes_max < 32 * 1024, "{s:?}");
     assert_eq!(r.final_heads.iter().sum::<u128>(), 12 * 1_000_000);
+}
+
+#[test]
+fn a_refused_batch_is_logged_as_rejected_with_its_code() {
+    let r = passes("teleport");
+    let codes: Vec<u8> = r
+        .log
+        .iter()
+        .filter_map(|e| match e {
+            LogEntry::Rejected { code, .. } => Some(*code),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(codes.len(), r.rejections.len());
+    assert!(!codes.is_empty() && codes.iter().all(|c| *c == tail_protocol::reject_code::TELEPORT));
+}
+
+#[test]
+fn a_whole_match_anchors_a_root_every_minute_each_proved_consistent_with_the_last() {
+    // `run` fails unless every proof verifies and equals the full-log one; here, how many.
+    let r = run(&random_walk(6, 10, 150, BotMode::Hunt)).unwrap();
+    let anchored = r
+        .verdicts
+        .iter()
+        .filter(|(_, _, v)| matches!(v.body, Verdict::Checkpoint { .. } | Verdict::End { .. }))
+        .count();
+    assert!(anchored >= 2, "{anchored}");
+    let ticks = r
+        .log
+        .iter()
+        .filter(|e| matches!(e, LogEntry::Tick { .. }))
+        .count();
+    assert_eq!(ticks, r.tick_us.len(), "one Tick entry per tick");
+    let enrolled = r
+        .log
+        .iter()
+        .take_while(|e| matches!(e, LogEntry::Enrolled { .. }))
+        .count();
+    assert_eq!(enrolled, 6);
 }
 
 #[test]

@@ -1,5 +1,6 @@
 //! The sealed match state. Everything the next tick needs and nothing more: per-epoch evidence
-//! is kept only for the trailing `KEEP_EPOCHS`, the log only as a Merkle frontier.
+//! is kept only for the trailing `KEEP_EPOCHS`, the log only as a Merkle frontier (the peaks at
+//! the last anchored size and the leaf hashes since).
 
 use crate::geo::Plane;
 use crate::log::Log;
@@ -61,6 +62,12 @@ pub(crate) struct Player {
     pub counter: u32,
     pub next_seq: u32,
     pub prev: Hash,
+    /// Tags this player has made.
+    pub tags: u8,
+    /// `(seq, reject_code)` of this player's latest authentic batch that was refused, for the
+    /// HUD. Only batches that passed the App Attest check count: anyone can seal a batch that
+    /// claims a player index, and the HUD must not repeat what a stranger made up.
+    pub last_rejected: Option<(u32, u8)>,
     /// Who took this player's head (hunter on a Tag, receiver on a Forfeit); `None` while
     /// they are in. One field rather than an `alive` flag beside it, so a player can never be
     /// out without the HUD being able to say who got them.
@@ -105,6 +112,8 @@ impl Player {
 #[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DeferredStrike {
     pub player: u16,
+    /// The batch that carried the strike, named in the `Evidence` entry if it lands.
+    pub seq: u32,
     pub t_ms: u64,
     pub nonce: u32,
 }
@@ -129,6 +138,8 @@ pub struct State {
     /// Established contacts in the trailing window, ascending.
     pub(crate) contacts: Vec<Contact>,
     pub(crate) next_verdict_seq: u32,
+    /// `verdict_digest` of the last verdict, the next one's `prev` (zeros before Start).
+    pub(crate) last_verdict_digest: Hash,
     pub(crate) log: Log,
     pub(crate) next_checkpoint_ms: u64,
     pub(crate) next_hint_id: u32,
@@ -162,6 +173,7 @@ pub struct PlayerView {
     pub head: u128,
     pub target: Option<u16>,
     pub dark_ms: u64,
+    pub tags: u8,
 }
 
 impl State {
@@ -190,6 +202,10 @@ impl State {
     pub fn next_verdict_seq(&self) -> u32 {
         self.next_verdict_seq
     }
+    /// Digest of the last verdict: the `prev` of the next one.
+    pub fn last_verdict_digest(&self) -> Hash {
+        self.last_verdict_digest
+    }
     pub fn players(&self) -> Vec<PlayerView> {
         self.players
             .iter()
@@ -201,6 +217,7 @@ impl State {
                 head: p.head,
                 target: p.target,
                 dark_ms: p.dark_ms,
+                tags: p.tags,
             })
             .collect()
     }

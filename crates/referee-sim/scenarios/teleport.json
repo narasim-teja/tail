@@ -9,6 +9,7 @@
   ],
   "expect": {
     "verdicts": ["Start", "End"],
-    "rejections": [{ "player": "bob", "reason": "Teleport", "from": 100, "to": 120 }]
+    "rejections": [{ "player": "bob", "reason": "Teleport", "code": 10, "from": 100, "to": 120 }],
+    "huds": [{ "t": 100, "player": "bob", "rejected": 0 }, { "t": 120, "player": "bob", "rejected": 10 }]
   }
 }

@@ -1,7 +1,7 @@
 //! `init`, `tick` and `finish`. Each tick runs in a fixed order so its output depends only on
-//! its inputs: receipts → batch authenticity → batch validity and ingestion → contacts →
-//! deferred strikes → actions (strikes, hints) → dark rules → end check → checkpoint → HUDs →
-//! pruning.
+//! its inputs: the `Tick` entry → receipts → batch authenticity → batch validity and ingestion →
+//! contacts → deferred strikes → actions (strikes, hints) → dark rules → end check → checkpoint →
+//! HUDs → pruning.
 // Millisecond spans and metre distances stay far below 2^52, so the f64 conversions are exact
 // where it matters, and speeds converted back are never negative.
 #![allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
@@ -10,8 +10,8 @@ use crate::geo::{bearing8, distance, Plane, Point};
 use crate::log::Log;
 use crate::state::{Contact, DeferredStrike, EpochData, Heard, Phase, Player, Secrets, State, StoredFix};
 use crate::types::{
-    ActionKind, Device, FinishError, Finished, HintIssued, HintReceipt, InitError, MatchConfig, Refusal,
-    Refuse, Reject, Rejection, Started, TickError, TickInput, TickOutput,
+    ActionKind, ConsistencyProof, Device, FinishError, Finished, HintIssued, HintReceipt, InitError,
+    MatchConfig, Refusal, Refuse, Reject, Rejection, Started, TickError, TickInput, TickOutput,
 };
 use crate::{
     COIN_DOMAIN, DARK_GRACE_MS, KEEP_EPOCHS, MAX_DURATION_MS, MAX_PLAYERS, MIN_PLAYERS, PRESENCE_ACC_M,
@@ -33,6 +33,7 @@ use tail_protocol::{
 struct Out {
     call_id: CallId,
     verdicts: Vec<VerdictPayload>,
+    proofs: Vec<ConsistencyProof>,
     log: Vec<LogEntry>,
 }
 
@@ -41,6 +42,7 @@ impl Out {
         Self {
             call_id,
             verdicts: Vec::new(),
+            proofs: Vec::new(),
             log: Vec::new(),
         }
     }
@@ -68,25 +70,7 @@ pub fn init(
     call_id: CallId,
 ) -> Result<Started, InitError> {
     let n = devices.len();
-    if !(MIN_PLAYERS..=MAX_PLAYERS).contains(&n) {
-        return Err(InitError::PlayerCount(n));
-    }
-    if cfg.stake == 0 {
-        return Err(InitError::ZeroStake);
-    }
-    if cfg.duration_ms == 0 || cfg.duration_ms > MAX_DURATION_MS {
-        return Err(InitError::Duration(cfg.duration_ms));
-    }
-    if cfg.zone.radius_m == 0 {
-        return Err(InitError::EmptyZone);
-    }
-    let end_ms = start_ms
-        .checked_add(cfg.duration_ms)
-        .ok_or(InitError::TimeOverflow)?;
-    // Every per-player head and the sum of all of them must fit, so money never overflows.
-    if cfg.stake.checked_mul(n as u128).is_none() {
-        return Err(InitError::StakeOverflow);
-    }
+    let end_ms = check_config(&cfg, n, start_ms)?;
     devices.sort_by(|a, b| a.account_id.cmp(&b.account_id));
     if let Some(w) = devices.windows(2).find(|w| w[0].account_id == w[1].account_id) {
         return Err(InitError::DuplicateAccount(w[0].account_id.clone()));
@@ -105,6 +89,7 @@ pub fn init(
 
     let k_tag = derive_tag_key(k_m);
     let k_players: Vec<[u8; 32]> = (0..n).map(|i| derive_player_key(k_m, i as u16)).collect();
+    let enrolled = enrolled(&devices);
     let players = devices
         .into_iter()
         .zip(&targets)
@@ -146,6 +131,7 @@ pub fn init(
         contacts: Vec::new(),
         // The contract starts at last_seq = 0 and accepts only last + 1.
         next_verdict_seq: 1,
+        last_verdict_digest: [0; 32],
         log: Log::default(),
         next_checkpoint_ms: start_ms + CHECKPOINT_MS,
         next_hint_id: 0,
@@ -155,6 +141,9 @@ pub fn init(
         phase: Phase::Running,
     };
     let mut out = Out::new(call_id);
+    for e in enrolled {
+        st.append(&mut out, e);
+    }
     let start = Verdict::Start {
         players_hash: ring::players_hash(&accounts),
         ring_commit: st.ring_commit,
@@ -214,9 +203,19 @@ pub fn tick(mut st: State, input: TickInput) -> Result<TickOutput, TickError> {
     let mut rejected = Vec::new();
     let mut refused = Vec::new();
 
+    // First in every tick, empty ones included: the log shows when the referee ran and under
+    // which OutLayer call, so a withheld tick shows as a gap in referee time.
+    st.append(
+        &mut out,
+        LogEntry::Tick {
+            tick_no,
+            now_ms: now,
+            call_id,
+        },
+    );
     st.log_receipts(&mut out, receipts, now);
 
-    let authentic = st.authenticate_all(batches, &mut rejected);
+    let authentic = st.authenticate_all(batches, &mut out, &mut rejected);
     let table = st.token_table(cur);
     let mut pending = Vec::new();
     // Authentic batches come sorted by player and seq, so each check sees the time of the
@@ -224,11 +223,10 @@ pub fn tick(mut st: State, input: TickInput) -> Result<TickOutput, TickError> {
     for b in authentic {
         match st.check(&b, now, cur) {
             Ok(()) => st.ingest(&b, now, cur, &table, &mut out, &mut pending),
-            Err(reason) => rejected.push(Rejection {
-                player: b.player,
-                seq: b.seq,
-                reason,
-            }),
+            Err(reason) => {
+                st.players[b.player as usize].last_rejected = Some((b.seq, reason.code()));
+                st.reject(&b, reason, &mut out, &mut rejected);
+            }
         }
     }
 
@@ -237,36 +235,14 @@ pub fn tick(mut st: State, input: TickInput) -> Result<TickOutput, TickError> {
     let hints = st.run_actions(tick_no, pending, now, cur, &mut out, &mut refused, &mut facts);
     st.dark_rules(now, cur, &mut out);
 
-    let over = now >= st.end_ms || st.alive_count() <= 1;
-    if over {
-        st.phase = Phase::Over;
-        // No tick follows, so a strike still waiting gets its answer now.
-        for d in std::mem::take(&mut st.deferred) {
-            let reason = st
-                .judge_strike(d.player, d.t_ms)
-                .err()
-                .unwrap_or(Refuse::MatchOver);
-            refused.push(Refusal {
-                player: d.player,
-                nonce: d.nonce,
-                action: ActionKind::Strike,
-                reason,
-            });
-        }
-    } else if now >= st.next_checkpoint_ms {
-        let cp = Verdict::Checkpoint {
-            log_size: st.log.size(),
-            root: st.log.root(),
-        };
-        st.verdict(&mut out, cp);
-        st.next_checkpoint_ms = st.start_ms + ((now - st.start_ms) / CHECKPOINT_MS + 1) * CHECKPOINT_MS;
-    }
+    let over = st.close_tick(now, &mut out, &mut refused);
     let huds = st.huds(tick_no, now, cur, &facts);
     st.prune(cur);
     debug_assert_eq!(st.total_heads(), total_before, "heads only move");
     Ok(TickOutput {
         state: st,
         verdicts: out.verdicts,
+        proofs: out.proofs,
         huds,
         log: out.log,
         rejected,
@@ -304,16 +280,54 @@ pub fn finish(
         log_size: st.log.size(),
         root: st.log.root(),
     };
+    st.anchor(&mut out);
     st.verdict(&mut out, end);
     st.phase = Phase::Ended;
     Ok(Finished {
         state: st,
         verdicts: out.verdicts,
+        proofs: out.proofs,
         log: out.log,
     })
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────────────
+
+impl State {
+    /// The end of a tick: the match is over (time up, or one player left), or a checkpoint is
+    /// due. Returns whether it is over.
+    fn close_tick(&mut self, now: u64, out: &mut Out, refused: &mut Vec<Refusal>) -> bool {
+        let over = now >= self.end_ms || self.alive_count() <= 1;
+        if over {
+            self.phase = Phase::Over;
+            // No tick follows, so a strike still waiting gets its answer now.
+            for d in std::mem::take(&mut self.deferred) {
+                let reason = self
+                    .judge_strike(d.player, d.t_ms)
+                    .err()
+                    .unwrap_or(Refuse::MatchOver);
+                refused.push(Refusal {
+                    player: d.player,
+                    nonce: d.nonce,
+                    action: ActionKind::Strike,
+                    reason,
+                });
+            }
+        } else if now >= self.next_checkpoint_ms {
+            let cp = Verdict::Checkpoint {
+                log_size: self.log.size(),
+                root: self.log.root(),
+            };
+            self.anchor(out);
+            self.verdict(out, cp);
+            // At most one per CHECKPOINT_MS of referee time, so the k-th lands after k minutes:
+            // twice the contract's spacing rule, which leaves room for clock skew to the chain.
+            self.next_checkpoint_ms =
+                self.start_ms + ((now - self.start_ms) / CHECKPOINT_MS + 1) * CHECKPOINT_MS;
+        }
+        over
+    }
+}
 
 fn epoch_mid_ms(start_ms: u64, epoch: u32) -> u64 {
     start_ms + u64::from(epoch) * EPOCH_MS + EPOCH_MS / 2
@@ -326,6 +340,46 @@ fn stored(f: &Fix) -> StoredFix {
         lon_e7: f.lon_e7,
         acc_m: f.acc_m,
     }
+}
+
+/// Refuses a match the engine cannot run safely; returns `end_ms`.
+fn check_config(cfg: &MatchConfig, n: usize, start_ms: u64) -> Result<u64, InitError> {
+    if !(MIN_PLAYERS..=MAX_PLAYERS).contains(&n) {
+        return Err(InitError::PlayerCount(n));
+    }
+    if cfg.stake == 0 {
+        return Err(InitError::ZeroStake);
+    }
+    if cfg.duration_ms == 0 || cfg.duration_ms > MAX_DURATION_MS {
+        return Err(InitError::Duration(cfg.duration_ms));
+    }
+    if cfg.zone.radius_m == 0 {
+        return Err(InitError::EmptyZone);
+    }
+    let end_ms = start_ms
+        .checked_add(cfg.duration_ms)
+        .ok_or(InitError::TimeOverflow)?;
+    // Every per-player head and the sum of all of them must fit, so money never overflows.
+    if cfg.stake.checked_mul(n as u128).is_none() {
+        return Err(InitError::StakeOverflow);
+    }
+    Ok(end_ms)
+}
+
+/// Who plays as which index, with which device key: the replay maps every later entry to an
+/// account through these, and sees which keys Apple attested. `key_hash` is SHA-256 of the
+/// 65-byte uncompressed key, which is also App Attest's key id (the attestation's credentialId).
+fn enrolled(devices: &[Device]) -> Vec<LogEntry> {
+    devices
+        .iter()
+        .enumerate()
+        .map(|(i, d)| LogEntry::Enrolled {
+            player: i as u16,
+            account: d.account_id.clone(),
+            key_hash: sha256(&[&d.key]),
+            attested: d.attested,
+        })
+        .collect()
 }
 
 fn pair(a: u16, b: u16) -> (u16, u16) {
@@ -361,15 +415,30 @@ impl State {
         out.log.push(e);
     }
 
+    /// Proof from the last anchored log size to now, for the Checkpoint or End verdict that
+    /// takes the current `(size, root)` next.
+    fn anchor(&mut self, out: &mut Out) {
+        let (from_size, path) = self.log.anchor();
+        out.proofs.push(ConsistencyProof {
+            seq: self.next_verdict_seq,
+            from_size,
+            path,
+        });
+    }
+
+    /// Chains, logs and emits one verdict. `prev` links it to the last one, so two verdicts
+    /// for the same seq cannot both extend the chain the contract holds.
     fn verdict(&mut self, out: &mut Out, body: Verdict) {
         let payload = VerdictPayload {
             match_id: self.cfg.match_id,
             seq: self.next_verdict_seq,
+            prev: self.last_verdict_digest,
             call_id: out.call_id,
             body,
         };
         self.next_verdict_seq += 1;
         let digest = verdict_digest(&payload);
+        self.last_verdict_digest = digest;
         self.append(
             out,
             LogEntry::Verdict {
@@ -404,6 +473,7 @@ impl State {
     fn authenticate_all(
         &mut self,
         mut envs: Vec<BatchEnvelope>,
+        out: &mut Out,
         rejected: &mut Vec<Rejection>,
     ) -> Vec<Batch> {
         envs.sort_by_key(|e| (e.batch.player, e.batch.seq));
@@ -411,14 +481,29 @@ impl State {
         for env in envs {
             match self.authenticate(&env) {
                 Ok(()) => ok.push(env.batch),
-                Err(reason) => rejected.push(Rejection {
-                    player: env.batch.player,
-                    seq: env.batch.seq,
-                    reason,
-                }),
+                Err(reason) => self.reject(&env.batch, reason, out, rejected),
             }
         }
         ok
+    }
+
+    /// Every batch the referee opened and refused is logged with its hash, so the replay can
+    /// match it to the sealed batch the relay kept and see why it did not count.
+    fn reject(&mut self, b: &Batch, reason: Reject, out: &mut Out, rejected: &mut Vec<Rejection>) {
+        self.append(
+            out,
+            LogEntry::Rejected {
+                player: b.player,
+                seq: b.seq,
+                hash: batch_hash(b),
+                code: reason.code(),
+            },
+        );
+        rejected.push(Rejection {
+            player: b.player,
+            seq: b.seq,
+            reason,
+        });
     }
 
     /// The cheap chain checks run first and nothing changes unless all pass, so a batch rejected
@@ -761,9 +846,9 @@ impl State {
         }
     }
 
-    /// lock(h→t, e) = contact epochs in (e − WINDOW_EPOCHS, e], from the epoch h was assigned
-    /// t on.
-    fn lock(&self, hunter: u16, target: u16, epoch: u32) -> u32 {
+    /// The contact epochs that make up lock(h→t, e): those in (e − WINDOW_EPOCHS, e], from the
+    /// epoch h was assigned t on. Ascending; a tag's `Evidence` entry lists exactly these.
+    fn lock_epochs(&self, hunter: u16, target: u16, epoch: u32) -> Vec<u32> {
         let (lo_player, hi_player) = pair(hunter, target);
         let first = epoch
             .saturating_add(1)
@@ -772,7 +857,12 @@ impl State {
         self.contacts
             .iter()
             .filter(|c| c.a == lo_player && c.b == hi_player && (first..=epoch).contains(&c.epoch))
-            .count() as u32
+            .map(|c| c.epoch)
+            .collect()
+    }
+
+    fn lock(&self, hunter: u16, target: u16, epoch: u32) -> u32 {
+        self.lock_epochs(hunter, target, epoch).len() as u32
     }
 
     // ── actions (4.6, 4.7) ──────────────────────────────────────────────────────────
@@ -803,7 +893,7 @@ impl State {
         facts: &mut [Option<HintFact>],
     ) -> Vec<HintIssued> {
         for d in std::mem::take(&mut self.deferred) {
-            if let Err(reason) = self.strike(d.player, d.t_ms, d.nonce, cur, false, out) {
+            if let Err(reason) = self.strike(d.player, d.seq, d.t_ms, d.nonce, cur, false, out) {
                 refused.push(Refusal {
                     player: d.player,
                     nonce: d.nonce,
@@ -825,7 +915,7 @@ impl State {
                 Action::Hint { hint, nonce, .. } => (*nonce, ActionKind::Hint(*hint)),
             };
             let result = match a.action {
-                Action::Strike { nonce } => self.strike(a.player, a.t_ms, nonce, cur, may_defer, out),
+                Action::Strike { nonce } => self.strike(a.player, a.seq, a.t_ms, nonce, cur, may_defer, out),
                 Action::Hint { hint, nonce, text } => {
                     self.hint(a.player, hint, nonce, text, a.t_ms, now, out).map(|h| {
                         facts[a.player as usize] = Some(h.fact);
@@ -900,10 +990,12 @@ impl State {
     }
 
     /// Tags the target, or refuses; with `may_defer`, a strike short only of the target's late
-    /// data waits for the next tick instead (once).
+    /// data waits for the next tick instead (once). `seq` is the batch that carried it.
+    #[allow(clippy::too_many_arguments)]
     fn strike(
         &mut self,
         h: u16,
+        seq: u32,
         t_ms: u64,
         nonce: u32,
         cur: u32,
@@ -912,13 +1004,28 @@ impl State {
     ) -> Result<(), Refuse> {
         match self.judge_strike(h, t_ms) {
             Ok(t) => {
+                let e = self.epoch(t_ms).expect("a strike that stands has an epoch");
+                // Taken before `eliminate` moves the hunter's lock start to its next target.
+                let epochs = self.lock_epochs(h, t, e);
                 self.eliminate(t, h, cur);
+                self.players[h as usize].tags = self.players[h as usize].tags.saturating_add(1);
+                self.append(
+                    out,
+                    LogEntry::Evidence {
+                        hunter: h,
+                        target: t,
+                        strike_seq: seq,
+                        strike_epoch: e,
+                        epochs,
+                    },
+                );
                 self.verdict(out, Verdict::Tag { hunter: h, target: t });
                 Ok(())
             }
             Err(Refuse::Lock { .. } | Refuse::NoContact) if may_defer && self.awaits_target(h, t_ms) => {
                 self.deferred.push(DeferredStrike {
                     player: h,
+                    seq,
                     t_ms,
                     nonce,
                 });
@@ -981,6 +1088,7 @@ impl State {
                 to: t,
                 amount: price,
                 hint_id,
+                hint: kind,
             },
         );
         Ok(HintIssued {
@@ -1083,47 +1191,53 @@ impl State {
 
     // ── HUD and pruning ─────────────────────────────────────────────────────────────
 
+    /// One HUD per player, every field about that player only. `log_size` and `root` are the
+    /// log at the end of this tick, so the phone can ask for an inclusion proof against them;
+    /// `next_seq` and `chain_tip` let a phone that lost its outbox rebuild its batch chain.
     fn huds(&self, tick_no: u32, now: u64, cur: u32, facts: &[Option<HintFact>]) -> Vec<(u16, Hud)> {
         let over = self.phase != Phase::Running;
+        let (log_size, root) = (self.log.size(), self.log.root());
         self.players
             .iter()
             .enumerate()
             .map(|(i, p)| {
                 let me = i as u16;
                 let lock_of = |h: u16, t: u16| self.lock(h, t, cur).min(u32::from(u8::MAX)) as u8;
-                let hud = if p.alive() {
-                    Hud {
-                        tick: tick_no,
-                        epoch: cur,
-                        lock: p.target.map_or(0, |t| lock_of(me, t)),
-                        heat: self.hunter_of(me).map_or(0, |h| lock_of(h, me)),
-                        head: p.head,
-                        status: if over {
-                            target_status::WON
-                        } else {
-                            target_status::HUNTING
-                        },
-                        target: p
-                            .target
-                            .map(|t| self.players[t as usize].account.clone())
-                            .unwrap_or_default(),
-                        leak: p.target.and_then(|t| self.leak(t, now)),
-                        hint_fact: facts[i],
-                        tagged_by: None,
-                    }
-                } else {
-                    Hud {
-                        tick: tick_no,
-                        epoch: cur,
-                        lock: 0,
-                        heat: 0,
-                        head: p.head,
-                        status: target_status::OUT,
-                        target: String::new(),
-                        leak: None,
-                        hint_fact: None,
-                        tagged_by: p.taken_by.map(|w| self.players[w as usize].account.clone()),
-                    }
+                let alive = p.alive();
+                let hud = Hud {
+                    match_id: self.cfg.match_id,
+                    player: me,
+                    tick: tick_no,
+                    epoch: cur,
+                    lock: p.target.filter(|_| alive).map_or(0, |t| lock_of(me, t)),
+                    heat: if alive {
+                        self.hunter_of(me).map_or(0, |h| lock_of(h, me))
+                    } else {
+                        0
+                    },
+                    head: p.head,
+                    status: if !alive {
+                        target_status::OUT
+                    } else if over {
+                        target_status::WON
+                    } else {
+                        target_status::HUNTING
+                    },
+                    target: p
+                        .target
+                        .filter(|_| alive)
+                        .map(|t| self.players[t as usize].account.clone())
+                        .unwrap_or_default(),
+                    leak: p.target.filter(|_| alive).and_then(|t| self.leak(t, now)),
+                    hint_fact: if alive { facts[i] } else { None },
+                    tagged_by: p.taken_by.map(|w| self.players[w as usize].account.clone()),
+                    next_seq: p.next_seq,
+                    chain_tip: p.prev,
+                    dark_ms: u32::try_from(p.dark_ms).unwrap_or(u32::MAX),
+                    tags: p.tags,
+                    log_size,
+                    root,
+                    rejected: p.last_rejected,
                 };
                 (me, hud)
             })
@@ -1154,6 +1268,8 @@ impl Player {
             counter: d.counter,
             next_seq: 0,
             prev: [0; 32],
+            tags: 0,
+            last_rejected: None,
             taken_by: None,
             target,
             lock_from: 0,

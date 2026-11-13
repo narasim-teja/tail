@@ -61,11 +61,28 @@ fn print_trace(r: &referee_sim::Report) {
     }
     for (t, x) in &r.rejections {
         println!(
-            "{t:>5}s rejected {} seq {} {:?}",
+            "{t:>5}s rejected {} seq {} {:?} (code {})",
             r.name(x.player),
             x.seq,
-            x.reason
+            x.reason,
+            x.reason.code()
         );
+    }
+    for e in &r.log {
+        if let tail_protocol::LogEntry::Evidence {
+            hunter,
+            target,
+            strike_seq,
+            strike_epoch,
+            epochs,
+        } = e
+        {
+            println!(
+                "evidence {} → {} strike seq {strike_seq} epoch {strike_epoch} contact epochs {epochs:?}",
+                r.name(*hunter),
+                r.name(*target)
+            );
+        }
     }
     for (t, x) in &r.refusals {
         println!(
