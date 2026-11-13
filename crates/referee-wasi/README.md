@@ -1,7 +1,8 @@
 # referee-wasi
 
 The TAIL referee as an OutLayer WASI P2 component (`wasm32-wasip2`), deployed as the project
-`tail-dev-a38d13.testnet/tail-referee` on hosted OutLayer testnet. One project, one command per
+`tail-dev-a38d13.testnet/tail-referee` on hosted OutLayer testnet. Built natively, the same code
+is a [local test referee](#local-test-referee), which is not an enclave. One project, one command per
 call: the input is JSON with `cmd` plus that command's fields; bytes are base64 unless noted.
 Every answer is `{"ok": true, "result": …}` or `{"ok": false, "error": "…"}`.
 
@@ -199,10 +200,50 @@ limit was not measured. The second match run cost 30 calls, $0.034.
 `scripts/latency.ts` measures sealed state against storage read + write at 1, 16 and 128 KB.
 Its numbers are from the main session's run and are not recorded in this file.
 
+## Local test referee
+
+The same crate built natively (`cargo build --release --bin tail-referee`, giving
+`target/release/tail-referee`) is a local test referee. The command code, rules engine,
+records and wire formats are the same. Only the backend behind `src/host.rs` and `src/http.rs`
+changes. It is not an enclave. Its keys sit in files on the developer's machine, and nothing
+attests what it signs. Matches it judges must be labelled as test-referee matches and must not
+be presented as enclave-refereed.
+
+One process per command: one JSON object on stdin, one `{"ok": true, "result": …}` or
+`{"ok": false, "error": "…"}` on stdout, the same as on OutLayer.
+
+| Variable                   | Meaning                                                                                                                                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TAIL_LOCAL_REFEREE_DIR`   | Required. Holds `verdict.key` and `vrf.key` (ed25519 seeds), `state.key` (XChaCha20-Poly1305) and `storage/` (one file per record, `referee:box_sk` included). Each is generated on first use, mode 0600, dir 0700. |
+| `TAIL_LOCAL_REFEREE_OWNER` | The sender in the VRF alpha, where OutLayer puts the caller. Default `local-test-referee`. It may not contain `:`.                                                                                                  |
+| `NEARAI_MODEL`             | Optional. Only echoed as `model`; no model is called.                                                                                                                                                               |
+
+How it differs from the enclave:
+
+- No owner check. The process boundary is the trust boundary, and only the relay spawns it.
+- `call_id` is a random v4 UUID per process. It names no OutLayer attestation record.
+- The VRF is the same construction with a local key: `ed25519(vrf_sk, "vrf:{call_id}:{owner}:{seed}")`.
+  The contract's checks (seed = match id hex, length, signature under `vrf_pk`) hold for it.
+- The state blob is `nonce (24 B) ‖ XChaCha20-Poly1305(state.key, aad)`.
+- Storage writes are files renamed or hard-linked into place. `set_if_absent` is a hard link.
+  Compare-and-swap runs under an advisory lock, so two processes on one directory stay
+  consistent.
+- No network. `voice` always returns `source: "template"` with `fallback_reason` "local test
+  referee: no network, so no Handler model call (not an enclave)", no `chat_id` and no
+  signature. `NEARAI_API_KEY` is not read.
+
+`tests/local.rs` runs the built binary in a temporary directory, offline. It covers
+`pubkeys` (`box_pk_sig` under `referee_pk`, the same keys from a second process and from 8
+concurrent first calls), `enroll` ×3 and `start` (signature over the verdict digest, a second
+`start` refused). It then runs a tick with no batches, a tick that ends the match, `voice`
+(the template), two racing `end`s of which exactly one wins, the VRF reveal under `vrf_pk`
+with the contract's alpha checks, `declassify` and the file modes.
+
 ## Build, deploy, test
 
 ```sh
-cd crates/referee-wasi && cargo test && cargo clippy --target wasm32-wasip2 --all-targets -- -D warnings && cargo fmt --check
+cd crates/referee-wasi && cargo test && cargo clippy --all-targets -- -D warnings \
+  && cargo clippy --target wasm32-wasip2 --all-targets -- -D warnings && cargo fmt --check
 bun crates/referee-wasi/scripts/build.ts                     # → target/tail-referee.wasm + sha256
 wasm-tools component wit crates/referee-wasi/target/tail-referee.wasm | grep import   # wasi ≤ 0.2.6
 OUTLAYER_NETWORK=testnet outlayer upload crates/referee-wasi/target/tail-referee.wasm
@@ -220,4 +261,8 @@ The scripts read the repo-root `.env.local`. `REFEREE_PAYMENT_KEY` takes precede
 `OUTLAYER_PAYMENT_KEY`, and `REFEREE_VERSION=<wasm sha256>` pins a deployed version that is not
 active.
 
-Active version: wasm sha256 `20446c643bd4b1cc8a017669596ed361506ad557c99464ecfe19beead6d08664` (HUDs carry `tagged_by`).
+Active version on OutLayer: wasm sha256 `20446c643bd4b1cc8a017669596ed361506ad557c99464ecfe19beead6d08664`
+(HUDs carry `tagged_by`). It was built before the host split for the local test referee. The
+current source builds `920a67d9…`: the same imports and the same commands on OutLayer, but a
+different hash, because `voice.rs` and the host code moved. It is not deployed yet: OutLayer
+testnet was not running calls on 2026-11-12. Upload it and pin the new hash once it is.

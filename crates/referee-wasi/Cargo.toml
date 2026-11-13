@@ -1,7 +1,7 @@
 [package]
 name = "referee-wasi"
 version = "0.1.0"
-description = "TAIL referee as an OutLayer WASI P2 component: keys, enrolment, match start, sealed tick state, Handler voice."
+description = "TAIL referee as an OutLayer WASI P2 component (keys, enrolment, match start, sealed tick state, Handler voice), and natively the local test referee."
 edition = "2021"
 # Shared crates declare 1.94 so clippy refuses newer std APIs; see rust-toolchain.toml for why.
 rust-version = "1.94"
@@ -18,15 +18,28 @@ tail-protocol = { path = "../tail-protocol", features = ["seal"] }
 referee-core = { path = "../referee-core" }
 # The same P-256 key check the engine applies, run at enrolment so a bad key fails there.
 appattest = { path = "../appattest" }
-outlayer = { version = "=0.2.1", features = ["signing-keys", "encryption-keys"] }
-# Raw wasi:http, wasi:clocks and wasi:random: the Handler call needs a real deadline (poll on the
-# response and a timer), which wasi-http-client does not offer.
-wasi = "=0.13.3"
 borsh = { version = "=1.8.1", features = ["derive"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 base64 = "=0.22.1"
 hex = "=0.4.3"
+
+# The OutLayer backend (src/host/enclave.rs, src/http/wasi_http.rs).
+[target.'cfg(target_family = "wasm")'.dependencies]
+outlayer = { version = "=0.2.1", features = ["signing-keys", "encryption-keys"] }
+# Raw wasi:http, wasi:clocks and wasi:random: the Handler call needs a real deadline (poll on the
+# response and a timer), which wasi-http-client does not offer.
+wasi = "=0.13.3"
+
+# The local test referee backend (src/host/local.rs): keys on disk instead of the worker's.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+ed25519-dalek = "=2.2.0"
+chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
+getrandom = "=0.4.3"
+
+# Only the native integration test (tests/local.rs) needs it: P-256 device keys to enrol.
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+p256 = { version = "=0.14.0", features = ["ecdsa"] }
 
 # Mirror of the root workspace lint table (this crate is its own workspace, so it cannot inherit).
 [lints.rust]
@@ -53,5 +66,6 @@ panic = "abort"
 overflow-checks = true
 strip = true
 
-# Its own workspace: built for wasm32-wasip2 only, excluded from the root one.
+# Its own workspace, excluded from the root one: built for wasm32-wasip2 (OutLayer) and natively
+# (the local test referee).
 [workspace]

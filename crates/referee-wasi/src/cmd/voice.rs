@@ -3,12 +3,11 @@
 
 use crate::codec::{b64, parse, to_borsh};
 use crate::host;
-use crate::http::{self, deadline_in, encode_component, passed, sleep_ms};
+use crate::http::{self, deadline_in, encode_component, passed, sleep_ms, Method};
 use crate::voice::{self, ChatSignature, Fact};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tail_protocol::digest::sha256;
-use wasi::http::types::Method;
 
 const AUTHORITY: &str = "cloud-api.near.ai";
 const DEFAULT_MODEL: &str = "deepseek-ai/DeepSeek-V4.1-Flash-1017";
@@ -30,11 +29,6 @@ struct Input {
     value: u8,
     #[serde(default)]
     question: Option<String>,
-}
-
-/// The author's secret (`author_secrets` in the manifest), never the caller's (host::require_owner).
-fn secret(name: &str) -> Option<String> {
-    outlayer::env::var(name).filter(|v| !v.is_empty())
 }
 
 struct Completion {
@@ -102,19 +96,28 @@ pub fn run(input: Value) -> Result<Value, String> {
     let fact = Fact::new(i.hint, i.value)?;
     let question = i.question.as_deref().map(voice::clean_question).transpose()?;
     // A missing key or a refused model is a broken deployment, not a slow model: say so
-    // instead of quietly serving templates.
-    let key = secret("NEARAI_API_KEY").ok_or("the NEARAI_API_KEY author secret is not set")?;
-    let model = secret("NEARAI_MODEL").unwrap_or_else(|| DEFAULT_MODEL.to_owned());
+    // instead of quietly serving templates. Without a network (the local test referee) no
+    // model is asked, so no key is needed; `Err` carries why.
+    let key: Result<String, &str> = match http::OFFLINE {
+        Some(reason) => Err(reason),
+        None => {
+            Ok(host::author_secret("NEARAI_API_KEY").ok_or("the NEARAI_API_KEY author secret is not set")?)
+        }
+    };
+    let model = host::author_secret("NEARAI_MODEL").unwrap_or_else(|| DEFAULT_MODEL.to_owned());
     voice::check_model(&model)?;
 
     let request = voice::request_body(&model, fact, question.as_deref());
     let t0 = host::now_ms();
-    let completion = complete(&key, &request);
+    let completion = match &key {
+        Ok(key) => complete(key, &request).map(|c| (key, c)),
+        Err(reason) => Err((*reason).to_owned()),
+    };
     let latency_ms = host::now_ms() - t0;
 
     let (text, chat, fallback_reason, signature, signature_error) = match completion {
-        Ok(c) => {
-            let (sig, err) = match fetch_signature(&key, &model, &c) {
+        Ok((key, c)) => {
+            let (sig, err) = match fetch_signature(key, &model, &c) {
                 Ok(s) => (Some(s), None),
                 Err(e) => (None, Some(e)),
             };
