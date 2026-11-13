@@ -18,7 +18,8 @@ contact was logged in epochs 0 to 5, each phone heard the other's token 132 to 5
 15 s epoch at close range, and the two phones' fixes had a median accuracy of 4 m and 11 m. The
 test player forfeited after 180 s dark. During play the log monitor fetched consistency proofs;
 after End both phones found every report under End's root (36 lookups) and showed Results, and
-the dossiers were updated on chain. Mesh carry ran on the same two phones in another match
+the dossiers were updated on chain. The same day's receipt-check, private-replay and Settings
+changes were committed after that match. Mesh carry ran on the same two phones in another match
 (below). Chain recovery (no report was refused), presence proofs shared from the phone, a NEAR AI
 Handler line, Leave match, the lobby's states after a failed Start, Call it off, the Settings
 screen as it is now and the signed private-replay link pass their tests here but have not run on
