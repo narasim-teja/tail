@@ -61,7 +61,7 @@ that machine. The enclave's verdict key is `e1c64271…7d6c56` and OutLayer's te
 | `get_config()`, `get_match(match_id)`, `get_heads(match_id)`, `get_balance(account_id, token)`, `get_payout(account_id)`, `get_roots(match_id)`                                               | view                                                                                                                           | `get_config` includes `vrf_sender`, `withdraw_min_gas` (Tgas), `verdict_grace_ms`, `checkpoint_spacing_ms`, `dossier_deposit` and `dossier_entries`. `get_match` includes the match's pinned `vrf_sender` (`null` for a match from before `migrate`), `hint_pool`, `requires`, `settled_as` (`payout`, `refunded_rule_violation`, `refunded_abort`, `payout_unreplayed` for a match the code before the upgrade ended without a replay, or `null` while unsettled) and `violation` (the first rule End's replay found broken, else `null`). `get_roots` returns `{checkpoints: [{log_size, root}], final_root}`.                                                                                                                                                                                                                                                                                        |
 | `get_verdict_head(match_id) -> {seq, digest} \| null`                                                                                                                                         | view                                                                                                                           | The last applied seq and its verdict digest (hex; seq 0 and zeros before `Start`). A client holding the same digest at that seq has seen the same verdict history. `null` for an unknown match or one from before `migrate`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `verify_inclusion(match_id, entry, index, size, path) -> bool`                                                                                                                                | view                                                                                                                           | Hashes `entry` (borsh `LogEntry`) as the RFC 9162 leaf `SHA256(0x00 ‖ entry)` on-chain, takes the root the match anchored at exactly `size` entries (a checkpoint's or the final one) and checks the audit `path` (base64 32-byte hashes) for leaf `index`. `false` if no root has that size, the bytes are not a `LogEntry`, or the path does not verify.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `get_dossier(account_id) -> DossierView \| null`                                                                                                                                              | view                                                                                                                           | The player's record: `{account_id, seed, matches, survived, tags, forfeits, refunded, won, entries}`. Counts cover settled (paid-out) matches only, `refunded` counts the rest; `won` is the total paid out, in the match tokens' smallest units. `entries` are the newest `DOSSIER_ENTRIES` (12), newest first: `{match_id, result: survived\|tagged\|forfeit\|refunded, tags, payout, log_size, root}`, the root being the last one the match anchored (End's, or the last checkpoint's on an abort). `seed` is `SHA256(account_id)`, the card's only randomness.                                                                                                                                                                                                                                                                                                                                     |
+| `get_dossier(account_id) -> DossierView \| null`                                                                                                                                              | view                                                                                                                           | The player's record: `{account_id, seed, matches, survived, tags, forfeits, refunded, won, entries}`. Counts cover settled (paid-out) matches only, `refunded` counts the rest; `won` is everything those matches paid the player, their own stake coming back included, in the match tokens' smallest units. `entries` are the newest `DOSSIER_ENTRIES` (12), newest first: `{match_id, result: survived\|tagged\|forfeit\|refunded, tags, payout, log_size, root}`, the root being the last one the match anchored (End's, or the last checkpoint's on an abort). `seed` is `SHA256(account_id)`, the card's only randomness.                                                                                                                                                                                                                                                                         |
 | `mint_dossier(account_id)`                                                                                                                                                                    | the account itself, its direct parent (the relay, for its players) or the owner; attach exactly `get_config().dossier_deposit` | For an account registered before dossiers existed: mints its dossier, the caller paying its storage. A relay player's function-call key cannot attach a deposit, so the relay backfills it. Refused for an unregistered account or one that has a dossier.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `nft_token(token_id)`, `nft_metadata()`, `nft_total_supply()`, `nft_tokens(from_index?, limit?)`, `nft_supply_for_owner(account_id)`, `nft_tokens_for_owner(account_id, from_index?, limit?)` | view                                                                                                                           | NEP-171 core, NEP-177 metadata and NEP-181 enumeration for the dossiers (below). `nft_token` takes any string and returns `null` for one that is not an account id. `nft_tokens` returns at most 10 per call (`MAX_TOKENS_PER_PAGE`, see Storage and gas), in mint order.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `nft_transfer(…)`, `nft_transfer_call(…)`                                                                                                                                                     | anyone                                                                                                                         | Always refused: "a dossier is bound to the player who earned it". `nft_resolve_transfer` exists for NEP-171 but nothing schedules it; it returns `false` (not transferred).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -111,8 +111,8 @@ Abort credits every player their original stake (not the current heads: nothing 
 during play was checked against the ring) and every sponsor contribution back to its sponsor.
 Hint money in the pool goes back with the stakes. All credits go to internal balances, and
 `get_match` shows `settled_as: "refunded_abort"`. A running match's abort also logs a
-`match_refunded` event and adds a `refunded` entry to each player's dossier; a lobby that never
-started adds nothing.
+`match_refunded` event and adds a `refunded` entry to each player's dossier (logging an
+`nft_metadata_update`, below); a lobby that never started adds and logs nothing.
 
 ## Dossier (NEP-171, soulbound)
 
@@ -141,6 +141,13 @@ cover paid-out matches only; a refunded match is on the record and counts for no
 keeps the newest `DOSSIER_ENTRIES` (12) entries and running totals, so it never grows past what
 registration paid for. The totals saturate at their largest value instead of overflowing, so
 recording a settlement can never make End or abort fail.
+
+**Events.** Minting (`register_for` or `mint_dossier`) logs NEP-171's `nft_mint`. Since the
+metadata is computed on read, a settlement changes it without any transfer, so each settlement
+that changed at least one dossier logs one NEP-171 `nft_metadata_update` naming those tokens in
+player order, and an indexer or wallet that cached a card knows to fetch it again. Both use
+version 1.2.0, the NEP-171 version that defines `nft_metadata_update`:
+`EVENT_JSON:{"standard":"nep171","version":"1.2.0","event":"nft_metadata_update","data":[{"token_ids":["alice.testnet","bob.testnet","carol.testnet"]}]}`.
 
 **Access rights.** `create_match` takes `requires: {min_matches, min_survived}`, and `join_match`
 refuses a player whose dossier is below it. A host can open a match to players with a record
@@ -201,14 +208,19 @@ Every byte is paid for up front, and nothing allocates storage later:
 - Proofs, host-function gas only (the unit-test VM does not meter wasm instructions), over a
   15,013-entry log: `apply` of one Checkpoint with its 13-hash proof from 14,750 entries 0.57 Tgas
   (a Hint alone 0.22 Tgas); `verify_inclusion` with a 14-hash path 0.26 Tgas; `End` of a maximal
-  match (240 hints, 11 tags, a 1-hash proof) 0.56 Tgas, the same as before the replay, since the
-  replay itself is wasm the unit-test VM does not meter. The e2e prints the real receipt gas of
-  `End` with its proof.
-- Wasm: 391 KB, so about 3.9 NEAR of storage for the code (it was 318 KB before demand pricing,
+  match (240 hints, 11 tags, a 1-hash proof, 12 players with 64-character ids) 0.85 Tgas: 0.56
+  as before the replay (the replay itself is wasm the unit-test VM does not meter) and 0.29 for
+  logging its 909-byte `nft_metadata_update`. The e2e prints the real receipt gas of `End` with
+  its proof.
+- Wasm: 392 KB, so about 3.9 NEAR of storage for the code (it was 318 KB before demand pricing,
   the dossiers and their card builder). The curve check for keys adds 24 KB; the proof checks and
   `LogEntry` decoding about 22 KB.
 - End and a running match's abort also rewrite each player's dossier (up to 12 records of about
-  1 KB). A view of `nft_token` builds the card (an SVG of at most 4 KB, base64 and SHA-256 on the
+  1 KB). Their logs stay small: with 12 players of 64-character ids, `nft_metadata_update` is
+  909 bytes, and with a refund's `match_refunded` (at its longest violation text) a settlement
+  logs 2 lines and at most 1,170 bytes, against NEAR's 100 logs and 16 KiB per receipt (a unit
+  test measures it).
+- A view of `nft_token` builds the card (an SVG of at most 4 KB, base64 and SHA-256 on the
   host). `nft_tokens` builds one card per token, so a page is at most 10. A unit test measures ten
   maximal cards: 1.47 Tgas of host functions and about 10.5 KB written per card (the SVG, then
   6.4 KB of JSON holding its base64). The unit-test VM does not meter wasm instructions; at NEAR's
@@ -237,7 +249,7 @@ Every byte is paid for up front, and nothing allocates storage later:
 
 ```sh
 cd contracts/tail
-cargo test                                   # 253 unit tests: golden vectors (wire and dossier card), review regressions, proofs, property test
+cargo test                                   # 256 unit tests: golden vectors (wire and dossier card), review regressions, proofs, property test
 cargo clippy --all-targets -- -D warnings && cargo fmt --check
 cargo near build non-reproducible-wasm       # target/near/tail_contract.wasm
 cd e2e && bun install
@@ -264,8 +276,9 @@ then:
 6. withdraws: a player whose payout is itself names a wallet once (paid there), and one is
    refunded because the payout account is not registered on the token.
 
-The demand-priced Hint and the dossier checks were added after the last testnet run of `e2e.ts`
-and have only run in the unit tests so far.
+The demand-priced Hint, the dossier checks and the `nft_metadata_update` event were added after
+the last testnet run of `e2e.ts` and have only run in the unit tests so far (`e2e.ts` does not
+check the NEP-171 events).
 
 It also checks that each of these is refused: an unregistered join, an uninvited join, a leave
 from a locked lobby, a forged verdict, a replayed verdict, a verdict with the wrong `prev`, a hint
