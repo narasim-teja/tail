@@ -114,12 +114,35 @@ export interface Match {
 
 // ── Names ────────────────────────────────────────────────────────────────────────
 
+/**
+ * Ghost accounts (`ghost-<random>`) are the relay's test players, its testing door; their random
+ * handle means nothing, so each is "Test player" and the first character of its handle.
+ */
+const GHOST = "ghost-";
+const handleOf = (account: string) => account.split(".")[0] ?? account;
+const ghostLetter = (account: string) =>
+  handleOf(account)
+    .slice(GHOST.length, GHOST.length + 1)
+    .toUpperCase();
+
 export function displayName(account: string): string {
-  const head = account.split(".")[0] ?? account;
-  // Ghost accounts are the relay's test players (its testing door); their random handle means nothing.
-  if (head.startsWith("ghost-")) return "Test player";
+  const head = handleOf(account);
+  if (head.startsWith(GHOST)) return `Test player ${ghostLetter(account)}`.trim();
   const clean = head.replace(/[-_]+/g, " ").trim() || account;
   return clean.charAt(0).toUpperCase() + clean.slice(1);
+}
+
+/**
+ * Names for the players of one match. Test players stay apart: by their handle's letter while no
+ * two share one, else numbered in player order (1, 2, 3…), so no two read the same.
+ */
+export function displayNames(accounts: readonly string[]): string[] {
+  const ghosts = accounts.filter((a) => handleOf(a).startsWith(GHOST));
+  const letters = ghosts.map(ghostLetter);
+  const distinct = letters.every((l, i) => l !== "" && letters.indexOf(l) === i);
+  return accounts.map((a) =>
+    handleOf(a).startsWith(GHOST) && !distinct ? `Test player ${ghosts.indexOf(a) + 1}` : displayName(a),
+  );
 }
 
 /** One letter when it is unique in the match, else the shortest unique pair, else a number. */
@@ -162,7 +185,7 @@ export function buildMatch(
   const m = d.raw.match;
   const startMs = m.startMs;
   const durationMs = m.endMs - m.startMs;
-  const names = d.players.map(displayName);
+  const names = displayNames(d.players);
   const initials = initialsFor(names);
   const enrolled = enrolments(d);
   const players = d.players.map((account, index) => ({

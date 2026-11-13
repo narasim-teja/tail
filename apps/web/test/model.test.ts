@@ -6,6 +6,7 @@ import { FILM_SPEED, filmSpeed, focusAt } from "../src/model/film.ts";
 import {
   buildMatch,
   displayName,
+  displayNames,
   initialsFor,
   lockAt,
   logClock,
@@ -141,9 +142,23 @@ describe("helpers", () => {
     expect(new Set(got).size).toBe(12);
   });
 
-  test("names come from the handle; a ghost is a test player", () => {
+  test("names come from the handle; a ghost is a test player, and test players stay apart", () => {
     expect(displayName("sam-k.tail-dev.testnet")).toBe("Sam k");
-    expect(displayName("ghost-rt0oxf64.tail-dev.testnet")).toBe("Test player");
+    expect(displayName("ghost-rt0oxf64.tail-dev.testnet")).toBe("Test player R");
+    const ghost = (h: string) => `ghost-${h}.tail-dev.testnet`;
+    expect(displayNames(["sam.t.testnet", ghost("rt0oxf64"), ghost("k2m"), ghost("a9")])).toEqual([
+      "Sam",
+      "Test player R",
+      "Test player K",
+      "Test player A",
+    ]);
+    // Two handles with one letter: numbered in player order instead.
+    expect(displayNames([ghost("rt0"), "sam.t.testnet", ghost("r9x"), ghost("k2m")])).toEqual([
+      "Test player 1",
+      "Sam",
+      "Test player 2",
+      "Test player 3",
+    ]);
   });
 
   test("the log clock is monotone and interpolates between anchors", () => {

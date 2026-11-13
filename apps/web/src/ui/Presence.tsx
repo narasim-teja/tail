@@ -7,7 +7,7 @@ import { EPOCH_MS, encodeLogEntry, type PresenceProof, toHex } from "@tail/proto
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { day } from "../lib/format.ts";
-import { displayName } from "../model/match.ts";
+import { displayNames } from "../model/match.ts";
 import type { ChainState } from "../verify/anchor.ts";
 import { toB64 } from "../verify/bundle.ts";
 import { type InclusionAnswer, nearReader } from "../verify/chain.ts";
@@ -132,6 +132,7 @@ export function Outcome({
 }) {
   const { proof, chain, check } = result;
   const [a, b] = proof.accounts;
+  const names = displayNames(proof.accounts);
   if (!check.ok) {
     const why =
       check.why === "other-contract"
@@ -156,7 +157,7 @@ export function Outcome({
   return (
     <>
       <h2 className="text-[1.375rem] font-bold leading-snug">
-        The referee logged {displayName(a)} and {displayName(b)} near each other
+        The referee logged {names[0]} and {names[1]} near each other
       </h2>
       <p className="numeral mt-1.5 text-[0.9375rem] text-text-2">
         {from === null
