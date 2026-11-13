@@ -26,7 +26,8 @@ import {
   ToneProvider,
 } from "../ui/kit";
 import { MapPanel } from "../ui/map";
-import { ease, useReduceMotion } from "../ui/motion";
+import { ease, rise, useArrive, useReduceMotion } from "../ui/motion";
+import { Breathe, Ripple } from "../ui/scene";
 import { HintSheet } from "../ui/sheet";
 import { color, font, maxScale, motion, radius, space } from "../ui/theme";
 import { DISPATCH_MS, DispatchStrip, WarningBanner } from "../ui/top";
@@ -88,7 +89,15 @@ export function HuntView({
   }, [m.landedAtMs, reduceMotion, flash, slide]);
 
   if (m.blocked) return <BlockedView what={m.blocked} onOpenSettings={actions.onOpenSettings} />;
-  if (m.tagged) return <TaggedView head={m.head} taggedBy={m.taggedBy} onResults={actions.onResults} />;
+  if (m.tagged)
+    return (
+      <TaggedView
+        head={m.head}
+        taggedBy={m.taggedBy}
+        onResults={actions.onResults}
+        reduceMotion={reduceMotion}
+      />
+    );
 
   const tone: Tone = full ? "persimmon" : "paper";
   return (
@@ -132,7 +141,13 @@ export function HuntView({
           </View>
 
           <View style={styles.readouts}>
-            <LockArc value={m.lock} max={m.max} frozenFor={m.frozenFor} size={arc} />
+            <LockArc
+              value={m.lock}
+              max={m.max}
+              frozenFor={m.frozenFor}
+              size={arc}
+              reduceMotion={reduceMotion}
+            />
             <View style={styles.headRow}>
               <HeadValue value={m.head} landedAtMs={m.landedAtMs} reduceMotion={reduceMotion} />
               {m.tags > 0 ? (
@@ -151,27 +166,18 @@ export function HuntView({
 
           <View style={styles.lower}>
             {full && m.strikeSent ? (
-              <View
-                style={[styles.strike, styles.sent]}
-                accessible
-                accessibilityRole="text"
-                accessibilityLabel="Strike sent. The result comes with the next referee update."
-              >
-                <Icon name="strike" size={36} tint={color.persimmon} />
-                <Text maxFontSizeMultiplier={maxScale.number} style={styles.sentText}>
-                  Strike sent
-                </Text>
-                <Caption style={{ color: color.sand }}>Result on the next tick</Caption>
-              </View>
+              <StrikeSent reduceMotion={reduceMotion} />
             ) : full ? (
-              <Button
-                kind="strike"
-                icon="strike"
-                title="Strike"
-                hint="Tags your target while you are still in range"
-                onPress={actions.onStrike}
-                style={styles.strike}
-              />
+              <Breathe reduceMotion={reduceMotion} style={styles.strike}>
+                <Button
+                  kind="strike"
+                  icon="strike"
+                  title="Strike"
+                  hint="Tags your target while you are still in range"
+                  onPress={actions.onStrike}
+                  style={styles.strike}
+                />
+              </Breathe>
             ) : (
               <MapPanel me={m.me} zone={m.zone} leak={m.leak} />
             )}
@@ -209,28 +215,69 @@ export function HuntView({
   );
 }
 
-/** Tagged: the screen drops to ink and names who got you, from the referee's HUD. */
+/** STRIKE is out: the ink plate lands where the button was; the result follows on a tick. */
+function StrikeSent({ reduceMotion }: { reduceMotion: boolean }) {
+  const t = useArrive("sent", reduceMotion, { ms: motion.base });
+  return (
+    <Animated.View
+      style={[
+        styles.strike,
+        styles.sent,
+        { opacity: t, transform: [{ scale: t.interpolate({ inputRange: [0, 1], outputRange: [0.94, 1] }) }] },
+      ]}
+      accessible
+      accessibilityRole="text"
+      accessibilityLabel="Strike sent. The result comes with the next referee update."
+    >
+      <Ripple size={88} reduceMotion={reduceMotion} ms={1_600}>
+        <Icon name="strike" size={36} tint={color.persimmon} />
+      </Ripple>
+      <Text maxFontSizeMultiplier={maxScale.number} style={styles.sentText}>
+        Strike sent
+      </Text>
+      <Caption style={{ color: color.sand }}>Result on the next tick</Caption>
+    </Animated.View>
+  );
+}
+
+/**
+ * Tagged: the screen drops to ink and names who got you, from the referee's HUD. The strike
+ * mark lands hard (big to size), then the words settle in under it.
+ */
 export function TaggedView({
   head,
   taggedBy,
   onResults,
+  reduceMotion = false,
 }: {
   head: string;
   taggedBy: string | null;
   onResults: () => void;
+  reduceMotion?: boolean;
 }) {
   const t = taggedLines(taggedBy, head);
+  const hit = useArrive(t.title, reduceMotion, { ms: motion.takeover });
+  const words = useArrive(t.title, reduceMotion, { ms: motion.slow, delay: motion.base });
   return (
     <Screen tone="ink" scroll={false} footer={<Button title="See results" onPress={onResults} />}>
       <View style={styles.center}>
-        <Icon name="strike" size={56} tint={color.paper} />
-        <Display center>{t.title}</Display>
-        <Body center>{t.line}</Body>
-        {t.more ? (
-          <Caption center muted>
-            {t.more}
-          </Caption>
-        ) : null}
+        <Animated.View
+          style={{
+            opacity: hit,
+            transform: [{ scale: hit.interpolate({ inputRange: [0, 1], outputRange: [2.2, 1] }) }],
+          }}
+        >
+          <Icon name="strike" size={72} tint={color.paper} />
+        </Animated.View>
+        <Animated.View style={[styles.words, rise(words, 14)]}>
+          <Display center>{t.title}</Display>
+          <Body center>{t.line}</Body>
+          {t.more ? (
+            <Caption center muted>
+              {t.more}
+            </Caption>
+          ) : null}
+        </Animated.View>
       </View>
     </Screen>
   );
@@ -358,6 +405,7 @@ const styles = StyleSheet.create({
   },
   handler: { paddingHorizontal: space.l },
   status: { flex: 1, textAlign: "right" },
+  words: { gap: space.m, alignItems: "center" },
   center: {
     flex: 1,
     alignItems: "center",

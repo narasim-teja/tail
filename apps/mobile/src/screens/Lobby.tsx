@@ -2,11 +2,13 @@
 // across a park and a Share link carrying it, players as initials with names, stake and
 // length, Start for the host (enabled at min players), Leave. The QR keeps the full match id:
 // it never expires, while the short code works only while the lobby is open.
-import { Share, StyleSheet, View } from "react-native";
+import { useEffect, useRef } from "react";
+import { Animated, Share, StyleSheet, View } from "react-native";
 import Svg, { Path, Rect } from "react-native-svg";
 import { money } from "../game/huntModel";
 import { joinLink } from "../relay/client";
 import { useApp } from "../state/app";
+import { haptic } from "../ui/haptics";
 import {
   Avatar,
   Body,
@@ -22,8 +24,13 @@ import {
   Strong,
   Title,
 } from "../ui/kit";
+import { rise, useArrive, useReduceMotion } from "../ui/motion";
 import { qrPath } from "../ui/qr";
+import { Ripple } from "../ui/scene";
 import { color, radius, space } from "../ui/theme";
+
+/** Open seats drawn before the rest fold into a count. */
+const SEATS_SHOWN = 3;
 
 export type LobbyState =
   | { kind: "loading" }
@@ -97,7 +104,55 @@ function stateLine(s: LobbyState): { title: string; detail?: string } | null {
   }
 }
 
+type Player = LobbyModel["players"][number];
+
+/** A player arriving slides up into the list; while targets are dealt, rings run round them. */
+function PlayerRow({ p, dealing, reduceMotion }: { p: Player; dealing: boolean; reduceMotion: boolean }) {
+  const t = useArrive(p.id, reduceMotion, { ms: 320 });
+  return (
+    <Animated.View
+      style={[styles.player, rise(t, 10)]}
+      accessible
+      accessibilityLabel={`${p.id}${p.host ? ", host" : ""}${p.me ? ", you" : ""}`}
+    >
+      <View style={styles.seat}>
+        <Ripple size={64} tint={color.ink} rings={1} reduceMotion={reduceMotion || !dealing} ms={1_600}>
+          <Avatar name={p.id} mark={p.me} />
+        </Ripple>
+      </View>
+      <View style={styles.grow}>
+        <Label>{p.id.split(".")[0] ?? p.id}</Label>
+        {p.host || p.me ? (
+          <Caption muted>{[p.host ? "Host" : null, p.me ? "You" : null].filter(Boolean).join(" · ")}</Caption>
+        ) : null}
+      </View>
+    </Animated.View>
+  );
+}
+
+/** A seat still to fill: a dashed ring, softly calling. */
+function OpenSeat({ reduceMotion }: { reduceMotion: boolean }) {
+  return (
+    <View style={styles.player} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+      <View style={styles.seat}>
+        <Ripple size={64} tint={color.mute} rings={1} reduceMotion={reduceMotion} ms={2_600}>
+          <View style={styles.open} />
+        </Ripple>
+      </View>
+      <Label muted>Open seat</Label>
+    </View>
+  );
+}
+
 export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions }) {
+  const reduceMotion = useReduceMotion();
+  // Someone sat down: a tick in the hand of everyone waiting.
+  const count = useRef(m.players.length);
+  useEffect(() => {
+    if (m.players.length > count.current) haptic.select();
+    count.current = m.players.length;
+  }, [m.players.length]);
+  const need = m.state.kind === "waiting" ? m.state.need : 0;
   const link = joinLink(m.matchId);
   const open = m.state.kind === "waiting" || m.state.kind === "ready" || m.state.kind === "failed";
   const line = stateLine(m.state);
@@ -190,23 +245,13 @@ export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions
 
       <View style={styles.players}>
         {m.players.map((p) => (
-          <View
-            key={p.id}
-            style={styles.player}
-            accessible
-            accessibilityLabel={`${p.id}${p.host ? ", host" : ""}${p.me ? ", you" : ""}`}
-          >
-            <Avatar name={p.id} mark={p.me} />
-            <View style={styles.grow}>
-              <Label>{p.id.split(".")[0] ?? p.id}</Label>
-              {p.host || p.me ? (
-                <Caption muted>
-                  {[p.host ? "Host" : null, p.me ? "You" : null].filter(Boolean).join(" · ")}
-                </Caption>
-              ) : null}
-            </View>
-          </View>
+          <PlayerRow key={p.id} p={p} dealing={m.state.kind === "starting"} reduceMotion={reduceMotion} />
         ))}
+        {Array.from({ length: Math.min(need, SEATS_SHOWN) }, (_, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: open seats are interchangeable
+          <OpenSeat key={i} reduceMotion={reduceMotion} />
+        ))}
+        {need > SEATS_SHOWN ? <Caption muted>{`and ${need - SEATS_SHOWN} more`}</Caption> : null}
         {m.players.length === 0 && m.state.kind !== "loading" ? (
           <Body muted>Nobody yet. Share the code.</Body>
         ) : null}
@@ -280,4 +325,15 @@ const styles = StyleSheet.create({
   figures: { paddingVertical: space.s },
   players: { gap: space.m },
   player: { flexDirection: "row", alignItems: "center", gap: space.m },
+  // The ring's 64 pt room around a 40 pt avatar, taken back so the avatar lines up with the
+  // page edge and rows stay tight.
+  seat: { margin: -space.m },
+  open: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 2,
+    borderStyle: "dashed",
+    borderColor: color.mute,
+  },
 });

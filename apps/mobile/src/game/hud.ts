@@ -98,14 +98,6 @@ export function formatAmount(units: bigint, decimals = 6): string {
   return `${neg ? "-" : ""}${v / base}.${frac}`;
 }
 
-/** "1.5" → 1500000n. Throws on anything that is not a plain decimal. */
-export function parseAmount(s: string, decimals = 6): bigint {
-  const m = /^(\d+)(?:\.(\d*))?$/.exec(s.trim());
-  if (!m) throw new Error("not an amount");
-  const frac = (m[2] ?? "").slice(0, decimals).padEnd(decimals, "0");
-  return BigInt(m[1] as string) * 10n ** BigInt(decimals) + BigInt(frac || "0");
-}
-
 /**
  * The referee's reason for rejecting a batch (Rust Debug text, e.g. `FixFlags { flags: 1 }`)
  * as a short line a player understands.

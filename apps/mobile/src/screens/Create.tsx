@@ -1,14 +1,17 @@
-// New match: stake, length, players, zone size (centred on you), public replay.
+// New match: stake, length, players, zone size (centred on you), public replay. Picked with
+// the thumb, not typed: a few sensible choices each, and the zone drawn live on the map around
+// you so the host sees the playing field before anyone stakes.
 import { useEffect, useState } from "react";
-import { parseAmount } from "../game/hud";
+import { StyleSheet, View } from "react-native";
 import { useApp } from "../state/app";
 import { Icon } from "../ui/brand";
-import { Button, Caption, Field, Notice, Row, Screen, Title, ToggleRow } from "../ui/kit";
+import { Button, Caption, Choice, Notice, Row, Screen, Stepper, Title, ToggleRow } from "../ui/kit";
+import { MapPanel } from "../ui/map";
 import { color } from "../ui/theme";
 
 export interface CreateModel {
-  /** Your location accuracy in metres, or null while finding you. */
-  accuracyM: number | null;
+  /** Where you stand (the zone's centre) and how sure the phone is, or null while finding you. */
+  here: { lat: number; lon: number; acc: number } | null;
   busy: string | null;
   error: string | null;
 }
@@ -21,6 +24,16 @@ export interface NewMatchForm {
   publicReplay: boolean;
 }
 
+/** USDC has 6 decimals. */
+const USDC = 1_000_000n;
+const STAKES = [1, 2, 5, 10].map((d) => ({ value: d, label: `$${d}` }));
+// Inside the server's 60 s to 3600 s (apps/server/src/routes/matches.ts).
+const LENGTHS = [15, 30, 45, 60].map((m) => ({ value: m, label: `${m} min` }));
+// The server accepts 50 m and up; these suit a city park.
+const ZONES = [200, 400, 800, 1500].map((r) => ({ value: r, label: r < 1000 ? `${r} m` : `${r / 1000} km` }));
+/** The server's player bounds. */
+const PLAYERS = { min: 3, max: 12 };
+
 export function CreateView({
   m,
   onCreate,
@@ -30,42 +43,23 @@ export function CreateView({
   onCreate: (f: NewMatchForm) => void;
   onBack: () => void;
 }) {
-  const [stake, setStake] = useState("1");
-  const [minutes, setMinutes] = useState("30");
-  const [players, setPlayers] = useState("3");
-  const [radius, setRadius] = useState("400");
+  const [stake, setStake] = useState(1);
+  const [minutes, setMinutes] = useState(30);
+  const [players, setPlayers] = useState(3);
+  const [radiusM, setRadius] = useState(400);
   const [publicReplay, setPublicReplay] = useState(true);
-  const n = (s: string) => Number.parseInt(s, 10);
-  let units: bigint | null = null;
-  try {
-    units = parseAmount(stake);
-  } catch {
-    units = null;
-  }
-  const errors = {
-    stake: units === null ? "A stake like 1 or 2.50." : null,
-    minutes: !(n(minutes) >= 1 && n(minutes) <= 60) ? "1 to 60 minutes." : null,
-    players: !(n(players) >= 3 && n(players) <= 12) ? "3 to 12 players." : null,
-    radius: !(n(radius) >= 50 && n(radius) <= 20_000) ? "50 m to 20 km." : null,
-  };
-  const valid = Object.values(errors).every((e) => e === null) && m.accuracyM !== null;
+  const here = m.here;
   return (
     <Screen
       footer={
         <>
           <Button
-            title={m.busy ?? "Create"}
+            title={m.busy ?? `Create, $${stake} each`}
             busy={!!m.busy}
-            disabled={!valid}
+            disabled={!here}
+            hint={here ? undefined : "Waiting for your location"}
             onPress={() =>
-              units !== null &&
-              onCreate({
-                stake: units,
-                minutes: n(minutes),
-                minPlayers: n(players),
-                radiusM: n(radius),
-                publicReplay,
-              })
+              onCreate({ stake: BigInt(stake) * USDC, minutes, minPlayers: players, radiusM, publicReplay })
             }
           />
           <Button kind="quiet" title="Back" onPress={onBack} />
@@ -73,44 +67,41 @@ export function CreateView({
       }
     >
       <Title>New match</Title>
-      <Field
-        label="Stake (USDC)"
-        value={stake}
-        onChangeText={setStake}
-        keyboardType="decimal-pad"
-        error={errors.stake}
-      />
-      <Field
-        label="Minutes"
-        value={minutes}
-        onChangeText={setMinutes}
-        keyboardType="number-pad"
-        error={errors.minutes}
-      />
-      <Field
-        label="Players to start"
-        value={players}
-        onChangeText={setPlayers}
-        keyboardType="number-pad"
-        error={errors.players}
-      />
-      <Field
-        label="Zone radius (m)"
-        value={radius}
-        onChangeText={setRadius}
-        keyboardType="number-pad"
-        error={errors.radius}
-      />
-      <ToggleRow label="Public replay" value={publicReplay} onChange={setPublicReplay} />
-      <Caption muted>Off: only players can watch the replay.</Caption>
+      <View style={styles.map}>
+        <MapPanel
+          me={here ? { lat: here.lat, lon: here.lon, heading: null } : null}
+          zone={
+            here
+              ? {
+                  zone: { latE7: Math.round(here.lat * 1e7), lonE7: Math.round(here.lon * 1e7), radiusM },
+                  safehouses: [],
+                }
+              : null
+          }
+          leak={null}
+          spanM={radiusM * 2.4}
+        />
+      </View>
       <Row gap="s">
         <Icon name="zone" size={18} tint={color.ink} />
         <Caption muted>
-          {m.accuracyM === null
-            ? "Finding you. The zone is centred where you stand."
-            : `Zone centred on you, within ${Math.round(m.accuracyM)} m.`}
+          {here
+            ? `Centred on you, to within ${Math.round(here.acc)} m.`
+            : "Finding you. The zone is centred where you stand."}
         </Caption>
       </Row>
+      <Choice label="Zone" options={ZONES} value={radiusM} onChange={setRadius} />
+      <Choice label="Stake" options={STAKES} value={stake} onChange={setStake} />
+      <Choice label="Length" options={LENGTHS} value={minutes} onChange={setMinutes} />
+      <Stepper
+        label="Players to start"
+        value={players}
+        min={PLAYERS.min}
+        max={PLAYERS.max}
+        onChange={setPlayers}
+      />
+      <ToggleRow label="Public replay" value={publicReplay} onChange={setPublicReplay} />
+      <Caption muted>{publicReplay ? "Anyone with the link can watch." : "Only players can watch."}</Caption>
       {m.error ? <Notice title="Couldn't create the match" detail={m.error} /> : null}
     </Screen>
   );
@@ -124,7 +115,7 @@ export function Create() {
   }, [app]);
   return (
     <CreateView
-      m={{ accuracyM: app.here?.acc ?? null, busy: app.busy, error: app.error }}
+      m={{ here: app.here, busy: app.busy, error: app.error }}
       onCreate={(f) =>
         void app.createMatch({
           stake: f.stake,
@@ -139,3 +130,5 @@ export function Create() {
     />
   );
 }
+
+const styles = StyleSheet.create({ map: { height: 200 } });

@@ -31,10 +31,13 @@ export function MapPanel({
   me,
   zone,
   leak,
+  spanM = 670,
 }: {
   me: (LatLon & { heading: number | null }) | null;
   zone: Zone | null;
   leak: LatLon | null;
+  /** North-south metres in view; the hunt keeps the default, Create fits the whole zone. */
+  spanM?: number;
 }) {
   if (!me) {
     return (
@@ -48,7 +51,12 @@ export function MapPanel({
     <View style={styles.well}>
       <MapView
         style={StyleSheet.absoluteFill}
-        region={{ latitude: me.lat, longitude: me.lon, latitudeDelta: 0.006, longitudeDelta: 0.006 }}
+        region={{
+          latitude: me.lat,
+          longitude: me.lon,
+          latitudeDelta: spanM / M_PER_DEG,
+          longitudeDelta: spanM / M_PER_DEG,
+        }}
         rotateEnabled={false}
         pitchEnabled={false}
         showsPointsOfInterests={false}

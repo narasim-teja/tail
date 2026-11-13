@@ -4,8 +4,9 @@ import { useState } from "react";
 import { StyleSheet, View } from "react-native";
 import { useApp } from "../state/app";
 import { attestor } from "../state/device";
-import { Mark } from "../ui/brand";
-import { Body, Button, Caption, Display, Field, Gap, Notice, Screen } from "../ui/kit";
+import { Body, Button, Caption, Field, Gap, Notice, Poster, Screen } from "../ui/kit";
+import { useReduceMotion } from "../ui/motion";
+import { ChaseBand } from "../ui/scene";
 import { space } from "../ui/theme";
 
 export interface EnrolModel {
@@ -28,6 +29,7 @@ export function EnrolView({
   onSettings: () => void;
 }) {
   const [handle, setHandle] = useState("");
+  const reduceMotion = useReduceMotion();
   const ok = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/.test(handle.trim().toLowerCase()) && handle.trim().length >= 2;
   return (
     <Screen
@@ -45,13 +47,13 @@ export function EnrolView({
         )
       }
     >
-      <Gap size="x3" />
-      <Mark size={72} />
+      <Gap size="s" />
+      <ChaseBand height={220} reduceMotion={reduceMotion} />
       <View style={styles.title}>
-        <Display>TAIL</Display>
+        <Poster>TAIL</Poster>
         <Body muted>Tag your friends in the real world. Every tag comes with proof.</Body>
       </View>
-      <Gap size="xl" />
+      <Gap size="s" />
       {m.unsupported ? (
         <Notice
           icon="dark"

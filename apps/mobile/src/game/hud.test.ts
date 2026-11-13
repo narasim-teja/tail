@@ -9,15 +9,7 @@ import {
   seal,
   TargetStatus,
 } from "@tail/protocol";
-import {
-  describeHintFact,
-  describeRejection,
-  formatAmount,
-  hudView,
-  openHud,
-  openPlayerKeys,
-  parseAmount,
-} from "./hud";
+import { describeHintFact, describeRejection, formatAmount, hudView, openHud, openPlayerKeys } from "./hud";
 
 const sk = x25519.utils.randomSecretKey();
 const pk = x25519.getPublicKey(sk);
@@ -92,13 +84,10 @@ describe("HUD", () => {
     );
   });
 
-  test("amounts format and parse exactly, without floating point", () => {
+  test("amounts format exactly, without floating point", () => {
     expect(formatAmount(5_250_000n)).toBe("5.25");
     expect(formatAmount(1n)).toBe("0.000001");
     expect(formatAmount(3_000_000n)).toBe("3.00");
-    expect(parseAmount("1.5")).toBe(1_500_000n);
-    expect(parseAmount("0.1234567")).toBe(123_456n);
-    expect(() => parseAmount("1e3")).toThrow();
   });
 
   test("referee rejection reasons read as plain sentences", () => {

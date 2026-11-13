@@ -5,6 +5,8 @@ import { Linking, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "../state/app";
 import { Body, Button, Display, Screen, Strong, ToneProvider } from "../ui/kit";
+import { useReduceMotion } from "../ui/motion";
+import { Breathe } from "../ui/scene";
 import { color, radius, space } from "../ui/theme";
 
 /** The match id in a scanned code, or null for anything that is not a TAIL lobby link. */
@@ -24,6 +26,7 @@ export function ScanView({
   onBack: () => void;
 }) {
   const inset = useSafeAreaInsets();
+  const reduceMotion = useReduceMotion();
   const done = useRef(false);
   if (permission !== "granted") {
     return (
@@ -73,7 +76,10 @@ export function ScanView({
           ]}
         >
           <Strong style={styles.hint}>Point at the lobby code</Strong>
-          <View style={styles.frame} />
+          {/* The frame breathes while it looks, so a still camera never reads as frozen. */}
+          <Breathe reduceMotion={reduceMotion} amount={0.03}>
+            <View style={styles.frame} />
+          </Breathe>
           <Button title="Back" onPress={onBack} />
         </View>
       </View>

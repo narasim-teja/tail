@@ -166,7 +166,13 @@ export const STATES: Record<string, () => ReactNode> = {
       onOpen={noop}
     />
   ),
-  create: () => <CreateView m={{ accuracyM: 6, busy: null, error: null }} onCreate={noop} onBack={noop} />,
+  create: () => (
+    <CreateView
+      m={{ here: { lat: ME.lat, lon: ME.lon, acc: 6 }, busy: null, error: null }}
+      onCreate={noop}
+      onBack={noop}
+    />
+  ),
   "scan-ask": () => <ScanView permission="ask" onAllow={noop} onScanned={noop} onBack={noop} />,
   "lobby-waiting": () => <LobbyView m={lobby()} actions={lobbyActions} />,
   "lobby-ready": () => (
@@ -251,21 +257,27 @@ export const STATES: Record<string, () => ReactNode> = {
   "hunt-blocked-loc": () => <BlockedView what="location" onOpenSettings={noop} />,
   "results-survived": () => (
     <ResultsView
-      m={{ outcome: "survived", head: 10_400_000n, tags: 1, replayUrl: "https://replay.example/?match=x" }}
+      m={{
+        outcome: "survived",
+        head: 10_400_000n,
+        tags: 1,
+        replayUrl: "https://replay.example/?match=x",
+        seed: 0,
+      }}
       onReplay={noop}
       onDone={noop}
     />
   ),
   "results-out": () => (
     <ResultsView
-      m={{ outcome: "out", head: 0n, tags: 0, replayUrl: "https://replay.example/?match=x" }}
+      m={{ outcome: "out", head: 0n, tags: 0, replayUrl: "https://replay.example/?match=x", seed: 0 }}
       onReplay={noop}
       onDone={noop}
     />
   ),
   "results-running": () => (
     <ResultsView
-      m={{ outcome: "running", head: 0n, tags: 0, replayUrl: null }}
+      m={{ outcome: "running", head: 0n, tags: 0, replayUrl: null, seed: 0 }}
       onReplay={noop}
       onDone={noop}
     />
