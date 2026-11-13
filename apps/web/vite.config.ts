@@ -12,6 +12,9 @@ export default defineConfig(({ mode }) => {
     plugins: [react(), tailwindcss()],
     resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
     server: {
+      // Phones on the LAN open the dev page by the Mac's Bonjour name (`<mac>.local`), which
+      // Vite's DNS-rebinding check would block. `.local` names resolve only on the local network.
+      allowedHosts: [".local"],
       proxy: { "/relay": { target: relay, changeOrigin: true, rewrite: (p) => p.replace(/^\/relay/, "") } },
     },
     worker: { format: "es" },
