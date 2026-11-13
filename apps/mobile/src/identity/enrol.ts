@@ -275,3 +275,20 @@ export async function ensureEnrolled(deps: {
   }
   return "refreshed";
 }
+
+/**
+ * While the lobby shows a failed Start, how often this phone asks again whether the referee
+ * knows it. The relay reports only the last failure's text, so a Start that failed the same way
+ * again looks the same; asking again after a while is what catches it, and what retries a check
+ * that failed (relay unreachable, re-enrolment refused) without asking on every poll.
+ */
+export const ENROL_RECHECK_MS = 30_000;
+
+/** Whether to check the enrolment for the Start failure `error`, given the last such check. */
+export function startRecheckDue(
+  last: { error: string; atMs: number } | null,
+  error: string,
+  nowMs: number,
+): boolean {
+  return last === null || last.error !== error || nowMs - last.atMs >= ENROL_RECHECK_MS;
+}

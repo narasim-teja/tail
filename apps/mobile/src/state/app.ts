@@ -14,6 +14,7 @@ import {
   mayReenrol,
   REFRESHED,
   refreshEnrolment,
+  startRecheckDue,
   withRefresh,
 } from "../identity/enrol";
 import {
@@ -177,6 +178,8 @@ class AppModel {
   ready = false;
   /** The re-enrolment in flight, so a status check and a refused Start never run two at once. */
   private refreshing: Promise<void> | null = null;
+  /** The last enrolment check made for a failed Start the lobby showed (identity/enrol.ts). */
+  private startCheck: { error: string; atMs: number } | null = null;
 
   private version = 0;
   private listeners = new Set<() => void>();
@@ -646,6 +649,7 @@ class AppModel {
     this.page = null;
     this.resultsNow = false;
     this.huntShown = false;
+    this.startCheck = null;
     this.recent = [{ matchId: id, atMs: Date.now() }, ...this.recent.filter((r) => r.matchId !== id)].slice(
       0,
       5,
@@ -714,12 +718,16 @@ class AppModel {
       if (first) void this.ensureEnrolled();
       // Once this player's keys are in, the signed view has nothing more to say.
       if (!this.matchZone?.keys.length && this.inMatch(m)) {
-        const before = this.matchZone?.error ?? null;
         const z = await this.loadZone(id);
         if (this.matchId !== id) return;
         this.matchZone = z;
         // A Start that failed may have been refused for this phone's device: check, and re-enrol.
-        if (z?.error && z.error !== before) void this.ensureEnrolled();
+        // Again after a while for the same failure: it may be a new Start refused the same way,
+        // or the last check may have failed.
+        if (z?.error && startRecheckDue(this.startCheck, z.error, Date.now())) {
+          this.startCheck = { error: z.error, atMs: Date.now() };
+          void this.ensureEnrolled();
+        }
       }
       if (m.chain && this.me && this.settings.contractId) {
         const bal = await this.rpc.view<string>(this.settings.contractId, "get_balance", {
@@ -734,6 +742,11 @@ class AppModel {
       this.error = message(e);
     }
     this.emit();
+  }
+
+  /** Pull to refresh in the lobby: the match, and whether the referee knows this phone. */
+  async refreshLobby(): Promise<void> {
+    await Promise.all([this.refresh(), this.ensureEnrolled()]);
   }
 
   /** The host and the players are who the relay shows the signed view to (invites aside). */

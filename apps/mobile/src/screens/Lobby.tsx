@@ -330,7 +330,7 @@ export function Lobby() {
         onStart: () => void app.start(),
         onTopUp: () => void app.topUp(TOP_UP),
         onAddTestPlayer: () => void app.addTestPlayer(),
-        onRefresh: () => app.refresh(),
+        onRefresh: () => app.refreshLobby(),
         onBack: () => app.closeMatch(),
       }}
     />

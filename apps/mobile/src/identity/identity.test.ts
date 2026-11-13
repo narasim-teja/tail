@@ -18,12 +18,14 @@ import { RelayClient, refreshNeeded } from "../relay/client";
 import { attestedPublicKey } from "./attestedKey";
 import {
   type Attestor,
+  ENROL_RECHECK_MS,
   enrol,
   ensureEnrolled,
   type HuntFacts,
   keyWorks,
   mayReenrol,
   refreshEnrolment,
+  startRecheckDue,
   withRefresh,
 } from "./enrol";
 import {
@@ -569,5 +571,16 @@ describe("a device key iOS threw away", () => {
     expect(await keyWorks(failing(gone), "a2V5")).toBe(false);
     expect(await keyWorks(failing(busy), "a2V5")).toBeNull();
     expect(await keyWorks(async () => "YXNzZXJ0", "a2V5")).toBe(true);
+  });
+});
+
+describe("re-checking the enrolment while the lobby shows a failed Start", () => {
+  test("a new failure is checked at once; the same failure again after a while, so a repeated identical refusal retries", () => {
+    expect(startRecheckDue(null, "the referee does not know these players yet", 0)).toBe(true);
+    const last = { error: "the referee does not know these players yet", atMs: 1_000 };
+    // Every poll sees the failure again; it is not asked about on each one.
+    expect(startRecheckDue(last, last.error, 1_000 + 3_000)).toBe(false);
+    expect(startRecheckDue(last, last.error, 1_000 + ENROL_RECHECK_MS)).toBe(true);
+    expect(startRecheckDue(last, "match is starting", 1_000 + 3_000)).toBe(true);
   });
 });
