@@ -72,7 +72,8 @@ describe("a forfeit's sheet", () => {
 
 describe("who signed, beside the verdict line", () => {
   const relay = (bundle: typeof fx.full) => ({
-    kind: "relay" as const,
+    kind: "match" as const,
+    from: "relay" as const,
     matchId: bundle.match.id,
     url: "x",
   });
@@ -98,7 +99,7 @@ describe("who signed, beside the verdict line", () => {
 });
 
 describe("the Handler lines' signatures", () => {
-  const relay = { kind: "relay" as const, matchId: fx.full.match.id, url: "x" };
+  const relay = { kind: "match" as const, matchId: fx.full.match.id, url: "x", from: "relay" as const };
   const sheet = (r: ReturnType<typeof replayOf>) => {
     r.play.set({ selection: { kind: "summary" } });
     return html(r, <Inspector compact={false} />);
@@ -134,7 +135,7 @@ describe("the Handler lines' signatures", () => {
 });
 
 describe("NEAR unreachable is not NEAR saying no", () => {
-  const relay = { kind: "relay" as const, matchId: fx.full.match.id, url: "x" };
+  const relay = { kind: "match" as const, matchId: fx.full.match.id, url: "x", from: "relay" as const };
   const tag = (r: ReturnType<typeof replayOf>) => {
     const ev = r.match.events.find((e) => e.kind === "tag");
     r.play.set({ selection: { kind: "event", index: ev?.index ?? -1 } });

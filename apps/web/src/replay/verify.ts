@@ -25,7 +25,7 @@ import type { VerifyStore } from "./state.ts";
 export const expectFor = (source: Source, pins: Pins = PINS): Expect => ({
   contract: pins.contract,
   network: pins.network,
-  matchId: source.kind === "relay" ? source.matchId : null,
+  matchId: source.kind === "match" ? source.matchId : null,
 });
 
 export function runVerification(

@@ -1,8 +1,14 @@
 // Where the bundle comes from, and what the relay's answer means for the page.
 //
-//   /?match=<32 hex>              the relay's GET /replay/:id (VITE_RELAY_URL, else /relay)
-//   /?match=<id>&relay=<url>      a specific relay
+//   /?match=<32 hex>              the site's own copy when it publishes that match
+//                                 (public/matches/index.json lists it), else the relay's
+//                                 GET /replay/:id (VITE_RELAY_URL, else /relay)
+//   /?match=<id>&relay=<url>      a specific relay, even for a match the site publishes
 //   /?fixture=<name>              a bundle from public/fixtures (default: boston-common)
+//
+// Where a match's bundle came from changes nothing about how it is checked: the page holds it to
+// the pinned contract and the linked id either way, so a site copy earns no more trust than the
+// relay's.
 //
 // A private match's relay serves the bundle only to a player who signed its challenge. The TAIL
 // app does that on the phone and opens /?match=<id>#account_id=…&nonce=…&sig=…: the fragment
@@ -10,19 +16,38 @@
 // GET /replay/:id once. They only open the relay's door: the bundle is checked exactly as any
 // other, against the pinned contract.
 
+import { matchesDir, type PublishedMatch, readIndex } from "../lib/published.ts";
+
 export type Source =
   | { kind: "fixture"; name: string; url: string }
-  | { kind: "relay"; matchId: string; url: string };
+  /** A real match, by id: `from` the site's published copy or the relay. Checked the same either way. */
+  | { kind: "match"; matchId: string; url: string; from: "relay" | "site" };
 
 export function sourceFromUrl(search: string): Source {
   const q = new URLSearchParams(search);
   const match = q.get("match")?.toLowerCase();
   if (match && /^[0-9a-f]{32}$/.test(match)) {
     const relay = (q.get("relay") || import.meta.env.VITE_RELAY_URL || "/relay").replace(/\/+$/, "");
-    return { kind: "relay", matchId: match, url: `${relay}/replay/${match}` };
+    return { kind: "match", matchId: match, url: `${relay}/replay/${match}`, from: "relay" };
   }
   const name = (q.get("fixture") || "boston-common").replace(/[^a-z0-9-]/gi, "");
   return { kind: "fixture", name, url: `${import.meta.env.BASE_URL}fixtures/${name}.json` };
+}
+
+/**
+ * The source for an address, reading the site's published list for a match link: a match the
+ * site lists is read from its own copy, unless the link names a relay. When the list can't be
+ * read (none deployed, or broken), the relay serves it, as before the site published any.
+ */
+export async function resolveSource(
+  search: string,
+  index: () => Promise<PublishedMatch[] | null> = readIndex,
+  base: string = import.meta.env.BASE_URL,
+): Promise<Source> {
+  const src = sourceFromUrl(search);
+  if (src.kind !== "match" || new URLSearchParams(search).has("relay")) return src;
+  const listed = (await index())?.some((m) => m.id === src.matchId) ?? false;
+  return listed ? { ...src, from: "site", url: `${matchesDir(base)}${src.matchId}.json` } : src;
 }
 
 /**
@@ -111,7 +136,8 @@ export type Loaded =
  * matters: Hono reads a bare "+" in a query as a space.
  */
 export async function loadBundle(src: Source, signIn: SignIn | null = null): Promise<Loaded> {
-  const signed = src.kind === "relay" && signIn !== null;
+  // Only the relay has a door to open; the site's copy of a published match is public.
+  const signed = src.kind === "match" && src.from === "relay" && signIn !== null;
   const url = signed
     ? `${src.url}?${new URLSearchParams({ account_id: signIn.accountId, nonce: signIn.nonce, sig: signIn.sig })}`
     : src.url;

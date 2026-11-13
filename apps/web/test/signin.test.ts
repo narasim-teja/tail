@@ -7,7 +7,12 @@ import { pageState } from "../src/replay/copy.ts";
 import { loadBundle, type SignIn, type Source, signInFromHash, takeSignIn } from "../src/replay/load.ts";
 
 const MATCH = "ab".repeat(16);
-const RELAY: Source = { kind: "relay", matchId: MATCH, url: `https://relay.example/replay/${MATCH}` };
+const RELAY: Source = {
+  kind: "match",
+  matchId: MATCH,
+  url: `https://relay.example/replay/${MATCH}`,
+  from: "relay",
+};
 const FIXTURE: Source = { kind: "fixture", name: "boston-common", url: "/fixtures/boston-common.json" };
 
 // Bytes that spell "+" and "/" in base64 ("-" and "_" in base64url), so the conversion shows.

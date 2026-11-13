@@ -6,7 +6,12 @@ import { pageState } from "../src/replay/copy.ts";
 import { loadBundle, type Source } from "../src/replay/load.ts";
 import type { ChainMatch } from "../src/verify/anchor.ts";
 
-const SOURCE: Source = { kind: "relay", matchId: "ab".repeat(16), url: "https://relay.example/replay/x" };
+const SOURCE: Source = {
+  kind: "match",
+  matchId: "ab".repeat(16),
+  url: "https://relay.example/replay/x",
+  from: "relay",
+};
 const real = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = real;

@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { TooltipProvider } from "../components/ui/tooltip.tsx";
 import { type PagePhase, pageState } from "../replay/copy.ts";
-import { type Loaded, loadBundle, type SignIn, type Source, sourceFromUrl } from "../replay/load.ts";
+import { type Loaded, loadBundle, resolveSource, type SignIn, type Source } from "../replay/load.ts";
 import { BundleError, type DecodedBundle, decodeBundle } from "../verify/bundle.ts";
 import { nearReader } from "../verify/chain.ts";
 import { type Prepared, prepare } from "../verify/index.ts";
@@ -14,7 +14,10 @@ import { PresencePage } from "./Presence.tsx";
 import { Stage } from "./Stage.tsx";
 import { Loading, PageState, ProgressLine, Retry } from "./States.tsx";
 
-type Phase = { kind: "loading" } | { kind: "ready"; decoded: DecodedBundle; prepared: Prepared } | PagePhase;
+type Phase =
+  | { kind: "loading" }
+  | { kind: "ready"; decoded: DecodedBundle; prepared: Prepared; source: Source }
+  | PagePhase;
 
 /** `signIn`: a player's one-time sign-in for a private replay, taken from the address (main.tsx). */
 export function App({ signIn }: { signIn: SignIn | null }) {
@@ -32,41 +35,41 @@ export function App({ signIn }: { signIn: SignIn | null }) {
   return <ReplayApp signIn={signIn} />;
 }
 
-type LoadRequest = { source: Source; n: number };
+type LoadRequest = { search: string; n: number };
 
 // One fetch per request, however often its effect runs. A sign-in's nonce works once, and
 // StrictMode (in development) runs every effect twice: aborting the first fetch on cleanup does
 // not stop the relay from spending the nonce, so the second would be refused. A stale answer is
 // dropped instead of the fetch being aborted.
-const loads = new WeakMap<LoadRequest, Promise<Loaded>>();
-function loadOnce(request: LoadRequest, signIn: SignIn | null): Promise<Loaded> {
+type Load = { source: Source; loaded: Loaded };
+const loads = new WeakMap<LoadRequest, Promise<Load>>();
+function loadOnce(request: LoadRequest, signIn: SignIn | null): Promise<Load> {
   let load = loads.get(request);
   if (!load) {
-    load = loadBundle(request.source, signIn);
+    load = resolveSource(request.search).then(async (source) => ({
+      source,
+      loaded: await loadBundle(source, signIn),
+    }));
     loads.set(request, load);
   }
   return load;
 }
 
 function ReplayApp({ signIn }: { signIn: SignIn | null }) {
-  const [request, setRequest] = useState<LoadRequest>(() => ({
-    source: sourceFromUrl(location.search),
-    n: 0,
-  }));
+  const [request, setRequest] = useState<LoadRequest>(() => ({ search: location.search, n: 0 }));
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
 
   useEffect(() => {
-    const { source } = request;
     let stale = false;
     setPhase({ kind: "loading" });
     void (async () => {
-      const r = await loadOnce(request, signIn);
+      const { source, loaded: r } = await loadOnce(request, signIn);
       if (stale) return;
       if (r.kind === "ok") {
         try {
           const decoded = decodeBundle(r.json);
           // Trails are drawn only from batches whose hash the log holds; every tag is checked once.
-          setPhase({ kind: "ready", decoded, prepared: prepare(decoded) });
+          setPhase({ kind: "ready", decoded, prepared: prepare(decoded), source });
         } catch (e) {
           setPhase({
             kind: "error",
@@ -79,7 +82,7 @@ function ReplayApp({ signIn }: { signIn: SignIn | null }) {
       if (r.kind === "missing" || r.kind === "purged") return setPhase({ kind: r.kind });
       // Private or unfinished: ask NEAR what it knows, to say who can watch and when.
       const chain =
-        source.kind === "relay"
+        source.kind === "match"
           ? await nearReader(PINS.network)
               .read(PINS.contract, source.matchId)
               .then((c) => (c.kind === "found" ? c.match : null))
@@ -107,7 +110,7 @@ function ReplayApp({ signIn }: { signIn: SignIn | null }) {
         </>
       )}
       {phase.kind === "ready" && (
-        <Stage decoded={phase.decoded} prepared={phase.prepared} source={request.source} />
+        <Stage decoded={phase.decoded} prepared={phase.prepared} source={phase.source} />
       )}
       {phase.kind !== "loading" && phase.kind !== "ready" && <StatePage phase={phase} retry={retry} />}
     </TooltipProvider>

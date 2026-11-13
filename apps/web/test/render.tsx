@@ -34,7 +34,7 @@ export function replayOf(bundle: unknown, o: RenderOptions = {}): Replay {
   const expect: Expect = {
     contract: PINS.contract,
     network: PINS.network,
-    matchId: source.kind === "relay" ? source.matchId : null,
+    matchId: source.kind === "match" ? source.matchId : null,
   };
   const v = verifyAll(decoded, chain, expect);
   const verify = createVerifyStore(decoded.verdicts.length, { symbol: "USDC", decimals: 6 }, v.binding);

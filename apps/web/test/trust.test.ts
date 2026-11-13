@@ -106,7 +106,7 @@ describe("the chain anchor comes from the page, not the bundle", () => {
       prepare(d),
       store,
       reader,
-      { kind: "relay", matchId: MATCH_ID, url: "x" },
+      { kind: "match", matchId: MATCH_ID, url: "x", from: "relay" },
       PINS,
     );
     stop();
