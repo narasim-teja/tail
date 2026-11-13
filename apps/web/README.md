@@ -69,6 +69,7 @@ The fixture is a generated match, not a real one (see below). Other URL options:
 | `/?presence=<proof>` or `/?presence`   | the presence proof page: check one, or paste one              |
 | `/dossier/<account>`                   | a player's dossier, read from the pinned contract             |
 | `/?match=<32 hex>`                     | a real match from the relay's `GET /replay/:id`               |
+| `#account_id=…&nonce=…&sig=…`          | a player's one-time sign-in for a private match (below)       |
 | `&relay=<url>`                         | which relay to read (default `VITE_RELAY_URL`, else `/relay`) |
 | `&t=<seconds>`                         | open the film at that moment                                  |
 | `&gl=0`                                | force the flat 2D map (what browsers without WebGL 2 get)     |
@@ -87,6 +88,34 @@ origin, or set `VITE_RELAY_URL` at build time and have the relay allow the page'
 Other build-time settings: `VITE_TAIL_CONTRACT` (default `tail.tail-dev-a38d13.testnet`; the
 contract every replay is checked against, and its network follows from its name),
 `VITE_NEAR_RPC_TESTNET` (default `https://test.rpc.fastnear.com`).
+
+### A private match
+
+The relay serves a private match's replay only to one of its players, who signs its challenge
+with their NEAR key (`apps/server/src/routes/replay.ts`). The page holds no key, so the TAIL app
+asks for the challenge, signs it on the phone and opens:
+
+```
+/?match=<32 hex>#account_id=<account>&nonce=<nonce>&sig=<sig>
+```
+
+`nonce` (32 bytes) and `sig` (64-byte ed25519 over `replayDigest(nonce, match_id, account_id)`)
+are unpadded base64url, `account_id` a NEAR account id; each appears once. Anything else is
+ignored as if there were no sign-in. The values sit in the fragment because a browser never
+sends it to a web server, and `src/main.tsx` removes it from the address with `replaceState`
+before the first render or request, so a copied or shared address carries no signature. The page
+re-encodes nonce and sig as standard base64 and sends all three once, as the query
+`GET /replay/:id?account_id=…&nonce=…&sig=…` reads (percent-encoded: the relay reads a bare
+`+` as a space). Nothing is stored; the bundle lives in this page view's memory only.
+
+A nonce works once, for 2 minutes. A reload, or a link without a sign-in, shows the private page
+and asks a player to open the replay from the TAIL app; a sign-in the relay refuses (403) says
+the link had expired or was already used. A public match's relay ignores the values.
+
+What the sign-in proves, it proves to the relay: that whoever opened the link holds the NEAR key
+the relay enrolled for one of the match's players. It proves nothing to this page about the
+replay, and no trust comes from it: the bundle is checked exactly as any other, against the pins
+below.
 
 ### What the page trusts
 
@@ -256,8 +285,9 @@ strings in the script. They were never used on NEAR, the bundle names no transac
 - The phones' App Attest assertions are not re-checked here, and contact is not recomputed from
   the sightings: the bundle carries the assertions and device keys, and `tail-verify`
   (`crates/referee-verify`) re-runs both.
-- Private replays need a player's NEAR key to answer the relay's challenge; this page has no
-  wallet or sign-in, so it says the replay is private and that it can't show it, to players too.
+- Private replays need a player's NEAR key to answer the relay's challenge, and this page has
+  no wallet: it shows one only when the TAIL app opens it with a fresh sign-in (above). Anyone
+  else, and a player who reloads or follows a plain link, gets the private page.
   A replay whose trails the relay deleted after its retention window (410) says so.
 - deck.gl 9.4 reads `map.transform`, which MapLibre 6 moved onto its camera; `Scene3D.tsx`
   exposes it until deck.gl catches up.
