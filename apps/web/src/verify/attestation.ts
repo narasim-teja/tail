@@ -4,6 +4,13 @@
 // pinned OutLayer API (never the bundle's), it must name this verdict's call, and its
 // `executed_wasm_sha256` must be one of the published builds pinned in pins.ts. Only then does
 // the page say "enclave". A failed fetch (CORS, network, 404) leaves only the link.
+//
+// What that does not bind: the record is found by the call id the verdict names. OutLayer's
+// record also carries `input_hash` and `output_hash`, the SHA-256 of the call's input and of its
+// output JSON (worker/src/main.rs), but the replay carries neither the call's raw input nor its
+// raw output (sealed batches, HUDs and keys sit beside the verdicts in it), so there is nothing to
+// hash against them. A verdict from another build could therefore name an honest call's id. The
+// badge says so instead of claiming the verdict came from that call.
 
 import { toHex } from "@tail/protocol";
 

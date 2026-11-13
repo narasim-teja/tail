@@ -5,9 +5,11 @@
 import { describe, expect, test } from "bun:test";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
+  EPOCH_MS,
   encodeLogEntry,
   encodePresenceProof,
   encodeSignedVerdict,
+  LOCK_EPOCHS,
   type LogEntry,
   merkleLeaf,
   merkleVerify,
@@ -17,9 +19,10 @@ import {
   toHex,
   utf8,
   verdictDigest,
+  WINDOW_EPOCHS,
 } from "@tail/protocol";
 import { makeFixtures, REWRITTEN_CHECKPOINT } from "../scripts/fixture.ts";
-import { buildMatch, type Match, type MatchEvent } from "../src/model/match.ts";
+import { buildMatch, type Match, type MatchEvent, type Snapshot } from "../src/model/match.ts";
 import type { ChainState, Expect } from "../src/verify/anchor.ts";
 import { type DecodedBundle, decodeBundle, toB64 } from "../src/verify/bundle.ts";
 import { parseHead } from "../src/verify/chain.ts";
@@ -58,8 +61,8 @@ const { m, inLog } = modelOf(good);
 const tags = m.events.filter((e) => e.kind === "tag");
 
 /** The bundle with log entry `i` replaced (leaves follow, so only the change itself differs). */
-function withEntry(i: number, e: LogEntry): DecodedBundle {
-  const b = clone();
+function withEntry(i: number, e: LogEntry, from: typeof fx.full = clone()): DecodedBundle {
+  const b = from;
   b.log[i] = toB64(encodeLogEntry(e));
   b.leaves[i] = toB64(merkleLeaf(e));
   return decodeBundle(b);
@@ -227,19 +230,122 @@ describe("the tag's Evidence entry", () => {
     });
   });
 
-  test("windows from before the hunter got this target don't count", () => {
-    // As if the hunter had taken a head in the tick just before the tag: lock_from moves past the cited windows.
+  // Each test below breaks exactly one term of the rule and checks every other term still holds,
+  // so the tag fails on that term alone.
+
+  test("enough cited contacts, none in the strike's window or the one before, fails on that alone", () => {
+    // Without trails, so no released strike batch pins the strike's epoch.
+    const d0 = decodeBundle(through(fx.noTrails));
+    const t0 = modelOf(d0).m.events.find((x) => x.kind === "tag") as MatchEvent;
+    const r0 = evidenceCheck(d0, modelOf(d0).m, modelOf(d0).inLog, t0);
+    if (r0.kind !== "checked") throw new Error("the fixture logs evidence");
+    const ent = d0.log[r0.entryIndex]?.entry as Extract<LogEntry, { kind: "Evidence" }>;
+    const [a, b] = ent.hunter < ent.target ? [ent.hunter, ent.target] : [ent.target, ent.hunter];
+    const have = [
+      ...new Set(
+        d0.log
+          .slice(0, t0.logIndex as number)
+          .flatMap((x) =>
+            x.entry?.kind === "Contact" && x.entry.a === a && x.entry.b === b ? [x.entry.epoch] : [],
+          ),
+      ),
+    ].sort((x, y) => x - y);
+    // LOCK_EPOCHS logged contacts close enough that a strike two windows after the last still
+    // has them all in its window.
+    const k = have.findIndex(
+      (x, i) =>
+        i + LOCK_EPOCHS <= have.length && (have[i + LOCK_EPOCHS - 1] as number) - x < WINDOW_EPOCHS - 2,
+    );
+    expect(k).toBeGreaterThanOrEqual(0);
+    const cited = have.slice(k, k + LOCK_EPOCHS);
+    const strikeEpoch = (cited.at(-1) as number) + 2;
+    const d = withEntry(r0.entryIndex, { ...ent, epochs: cited, strikeEpoch }, through(fx.noTrails));
+    const dm = modelOf(d);
+    const r = evidenceCheck(d, dm.m, dm.inLog, dm.m.events.find((x) => x.kind === "tag") as MatchEvent);
+    expect(r).toMatchObject({
+      kind: "checked",
+      sameTag: true,
+      inWindow: true,
+      count: LOCK_EPOCHS,
+      touching: false,
+      afterAssigned: true,
+      targetOk: true,
+      strike: "not-released",
+      ok: false,
+    });
+    if (r.kind === "checked") expect(r.contacts.every((c) => c.logIndex !== null)).toBe(true);
+  });
+
+  /**
+   * `m` as if `first`'s hunter had taken a head (a forfeit onto them) just before `first`, logged
+   * at `logIndex`. The snapshots shift with the extra event, so `first`'s target stays the hunter's.
+   */
+  const wonAt = (logIndex: number): Match => {
+    const h = first.a as number;
+    const before = m.events.filter(
+      (x) =>
+        x.index < first.index &&
+        (x.kind === "hint" || x.kind === "tag" || x.kind === "forfeit" || x.kind === "end"),
+    ).length;
     const won: MatchEvent = {
       ...first,
       kind: "forfeit",
-      a: 3,
-      b: first.a as number,
+      a: (h + 1) % good.players.length,
+      b: h,
+      logIndex,
       index: first.index - 0.5,
     };
-    const moved: Match = { ...m, events: [...m.events, won].sort((x, y) => x.index - y.index) };
-    const r = evidenceCheck(good, moved, inLog, first);
-    expect(r).toMatchObject({ afterAssigned: false, ok: false });
-    if (r.kind === "checked") expect(r.lockFrom).toBeGreaterThan(Math.min(...entry.epochs));
+    const s = m.snapshots;
+    return {
+      ...m,
+      events: [...m.events, won].sort((x, y) => x.index - y.index),
+      snapshots: [...s.slice(0, before + 1), s[before] as Snapshot, ...s.slice(before + 1)],
+    };
+  };
+
+  test("a cited window from before the hunter got this target fails the tag on that alone", () => {
+    const r = evidenceCheck(good, wonAt(first.logIndex as number), inLog, first);
+    expect(r).toMatchObject({
+      kind: "checked",
+      sameTag: true,
+      inWindow: true,
+      touching: true,
+      targetOk: true,
+      strike: "match",
+      afterAssigned: false,
+      ok: false,
+    });
+    if (r.kind === "checked") {
+      expect(r.count).toBeGreaterThanOrEqual(LOCK_EPOCHS);
+      expect(r.contacts.every((c) => c.logIndex !== null)).toBe(true);
+    }
+  });
+
+  test("lock_from is the window after the tick of the hunter's last head, not that tick's own", () => {
+    const start = good.verdicts.find((x) => x.v?.body.kind === "Start")?.v?.body;
+    if (start?.kind !== "Start") throw new Error("no Start");
+    const tickIn = (epoch: number) =>
+      good.log.findIndex((x, i) => {
+        const tk = x.entry;
+        return (
+          i < evAt && tk?.kind === "Tick" && Number((tk.nowMs - start.startMs) / BigInt(EPOCH_MS)) === epoch
+        );
+      });
+    const lo = Math.min(...entry.epochs);
+    expect(tickIn(lo)).toBeGreaterThanOrEqual(0);
+    expect(tickIn(lo - 1)).toBeGreaterThanOrEqual(0);
+    // A head taken in a tick of the earliest cited window: that window no longer counts.
+    expect(evidenceCheck(good, wonAt(tickIn(lo) + 1), inLog, first)).toMatchObject({
+      lockFrom: lo + 1,
+      afterAssigned: false,
+      ok: false,
+    });
+    // Taken in a tick of the window before: every cited window is after it.
+    expect(evidenceCheck(good, wonAt(tickIn(lo - 1) + 1), inLog, first)).toMatchObject({
+      lockFrom: lo,
+      afterAssigned: true,
+      ok: true,
+    });
   });
 
   test("a v2 Tag without its Evidence entry fails", () => {

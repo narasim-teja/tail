@@ -52,7 +52,7 @@ export function EvidenceLines({ ev }: { ev: MatchEvent }) {
         check={r.ok ? "pass" : "fail"}
         detail={
           r.ok
-            ? `The strike came in ${span(e)}. The referee cites ${r.count} windows in the ${WINDOW_EPOCHS} up to it, one in the strike's window or the one before, all after ${h} started hunting ${t}, each a contact it logged before the tag. A tag needs ${LOCK_EPOCHS}.`
+            ? `${r.strike === "match" ? "The strike came in" : "The referee's entry puts the strike in"} ${span(e)}. The referee cites ${r.count} windows in the ${WINDOW_EPOCHS} up to it, one in the strike's window or the one before, all after ${h} started hunting ${t}, each a contact it logged before the tag. A tag needs ${LOCK_EPOCHS}.`
             : `This doesn't meet the rule: ${problems.join("; ")}.`
         }
       >
@@ -246,7 +246,7 @@ export function HistoryLines() {
   if (!history)
     return (
       <>
-        <ProofLine check="pending">Verdict history is one unbroken chain, same as on NEAR</ProofLine>
+        <ProofLine check="pending">Verdict history is one unbroken chain</ProofLine>
         <ProofLine check="pending">Each checkpoint extends the previous one</ProofLine>
       </>
     );
@@ -254,10 +254,12 @@ export function HistoryLines() {
   const n = decoded.verdicts.length;
   const links = cs.links.length;
   const bad = cs.links.filter((l) => !l.ok);
+  // "Same as on NEAR" only when NEAR's head was read and compared.
+  const sameAsNear = vc.kind === "checked" && vc.breakAt === null && vc.onNear === "match";
   return (
     <>
       <ProofLine
-        near={vc.kind === "checked" && vc.breakAt === null && vc.onNear === "match"}
+        near={sameAsNear}
         check={vc.kind === "v1" ? "info" : vc.breakAt !== null || vc.onNear === "mismatch" ? "fail" : "pass"}
         detail={
           vc.kind === "v1"
@@ -273,7 +275,9 @@ export function HistoryLines() {
                     : `All ${n} verdicts link to the one before. NEAR's head wasn't compared (no such match on NEAR, or it couldn't be reached).`
         }
       >
-        Verdict history is one unbroken chain, same as on NEAR
+        {sameAsNear
+          ? "Verdict history is one unbroken chain, same as on NEAR"
+          : "Verdict history is one unbroken chain"}
       </ProofLine>
       <ProofLine
         near={cs.source === "near" && cs.ok && links > 0}

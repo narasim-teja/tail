@@ -11,12 +11,14 @@ import { useStore } from "../lib/store.ts";
 import { lockAt, type MatchEvent, snapshotAt, snapshotBefore, walked } from "../model/match.ts";
 import { drawSource, eventLine, list, settlementProof, statusLabel, TEST_PLAYER } from "../replay/copy.ts";
 import type { Selection } from "../replay/state.ts";
+import type { Anchor } from "../verify/anchor.ts";
 import { attestationUrl, isEnclave } from "../verify/attestation.ts";
 import { explorerTx } from "../verify/chain.ts";
 import { checkSalts, enrolments, localOk, ringOk } from "../verify/checks.ts";
 import { tagEvidence } from "../verify/evidence.ts";
 import { PINS } from "../verify/pins.ts";
-import { matchProblem, summarize } from "../verify/report.ts";
+import { matchProblem, summarize, type VerdictStatus } from "../verify/report.ts";
+import type { Signer } from "../verify/signer.ts";
 import { useReplay } from "./context.tsx";
 import { HandlerVerified } from "./HandlerVerified.tsx";
 import { GameIcon, Mark } from "./icons.tsx";
@@ -86,6 +88,21 @@ function Body({ sel }: { sel: Selection }) {
 
 // ── Shared proof: referee signature + attestation, NEAR anchor ────────────────────
 
+/**
+ * What an attestation record can't show (attestation.ts): it is found by the call id the verdict
+ * names, and the replay doesn't carry the call's output to hash against the record's.
+ */
+const RECORD_LIMIT =
+  "The record is found by the call id the verdict names. Its output hash isn't compared with this verdict, because the replay doesn't carry the call's output, so a verdict could name an honest call it didn't come from.";
+
+/**
+ * A barred mark's words. "Doesn't match NEAR" only when NEAR was asked and holds something else;
+ * a check that failed here, on a match NEAR never saw or couldn't be asked about, says just that.
+ */
+function markLabel(status: VerdictStatus, anchor: Anchor | undefined): string {
+  return status === "mismatch" && anchor !== "mismatch" ? "Fails a check" : statusLabel[status];
+}
+
 /** Whether the End verdict, which reveals the draw, ran a published build in the enclave. */
 function useEndInEnclave(): boolean {
   const { decoded, verify } = useReplay();
@@ -129,7 +146,7 @@ function SignedAndSettled({ index }: { index: number }) {
               ? "Looking up the enclave's record…"
               : att.kind === "found"
                 ? att.check.kind === "published"
-                  ? `The enclave's record for this call shows it ran the published referee build ${short(att.check.wasm, 8)}.`
+                  ? `The enclave's record for this call shows it ran the published referee build ${short(att.check.wasm, 8)}. ${RECORD_LIMIT}`
                   : att.check.kind === "other-code"
                     ? `The enclave's record shows it ran ${short(att.check.wasm, 8)}, which isn't a published referee build.`
                     : att.check.kind === "other-call"
@@ -197,6 +214,7 @@ function EventBody({ index }: { index: number }) {
   const endInEnclave = useEndInEnclave();
   const ev = match.events.find((e) => e.index === index);
   const status = useStore(verify, (s) => s.statuses[index] ?? "pending");
+  const anchor = useStore(verify, (s) => s.anchors[index]);
   const local = useStore(verify, (s) => s.local[index]);
   const level = useStore(verify, (s) => s.level);
   const decimals = useStore(verify, (s) => s.token.decimals);
@@ -239,7 +257,7 @@ function EventBody({ index }: { index: number }) {
         {clock(ev.t)} into the match ·{" "}
         <span className="inline-flex items-center gap-1.5 align-[-3px]">
           <Mark status={status} labelled={false} className="size-4" />
-          {statusLabel[status]}
+          {markLabel(status, anchor)}
         </span>
       </Meta>
       {testPlayers.length > 0 && (
@@ -706,6 +724,20 @@ function ContactBody({ hunter, target }: { hunter: number; target: number }) {
 
 // ── Summary ───────────────────────────────────────────────────────────────────────
 
+/** Apple's attestation objects are not in the replay: the referee's word is all there is. */
+const ENROL_LIMIT = "The attestations themselves aren't in the replay, so this page can't recheck them.";
+
+/**
+ * Who held the match key during play, which the salts can't show: they only show every salt came
+ * from the key. The local test referee runs on the relay's computer, so the relay had it.
+ */
+function saltKeyHolder(signer: Signer | null): string {
+  if (signer === "local")
+    return "With the local test referee, that key was on the relay's own computer during play, so this doesn't show the relay couldn't read the log.";
+  if (signer === "fixture") return "This fixture's key is public, so the salts hid nothing.";
+  return "The referee is meant to release that key only after the end, so that during play the server couldn't read entries by guessing from its hashes. This page can't see when the key was released.";
+}
+
 function SummaryBody() {
   const { decoded, verify, source, batches, match } = useReplay();
   const statuses = useStore(verify, (s) => s.statuses);
@@ -793,7 +825,7 @@ function SummaryBody() {
               check={
                 recordsBad > 0 ? "fail" : records < calls ? "pending" : inEnclave === n ? "pass" : "info"
               }
-              detail={`${inEnclave} of ${n} verdicts have an OutLayer record, read from ${PINS.outlayerApi}, showing their call ran a published referee build.${inEnclave < records && recordsBad === 0 ? " The others' records couldn't be read here, so no enclave is claimed for them." : ""}`}
+              detail={`${inEnclave} of ${n} verdicts have an OutLayer record, read from ${PINS.outlayerApi}, showing their call ran a published referee build.${inEnclave < records && recordsBad === 0 ? " The others' records couldn't be read here, so no enclave is claimed for them." : ""} ${RECORD_LIMIT}`}
             >
               Ran the published code in the enclave
             </ProofLine>
@@ -838,7 +870,7 @@ function SummaryBody() {
               check={ringOk(ring) ? "pass" : "fail"}
               detail={`The secret draw revealed at the end was sealed at the start and comes from ${drawSource(signer ?? "unknown", endInEnclave)}.${ring.ringRebuilt === null ? " The server sent no copy of the hunting order, so the page's own rebuild is the only one." : ""}`}
             >
-              The draw was fair
+              The draw matches its commitment
             </ProofLine>
           )}
           <ProofLine
@@ -858,13 +890,13 @@ function SummaryBody() {
                 !enrolledOk
                   ? "The log's enrolments don't name every player once, under the account the match lists."
                   : testPlayers.length === 0
-                    ? "The referee checked every phone's Apple App Attest attestation when it enrolled."
-                    : `${list(testPlayers.map((p) => p.name))} ${testPlayers.length === 1 ? "is a" : "are"} ${TEST_PLAYER}${testPlayers.length === 1 ? "" : "s"}: the referee enrolled ${testPlayers.length === 1 ? "this phone" : "them"} without one. The others' attestations were checked.`
+                    ? `Each phone's enrolment entry says the referee checked its Apple App Attest attestation. ${ENROL_LIMIT}`
+                    : `${list(testPlayers.map((p) => p.name))} ${testPlayers.length === 1 ? "is a" : "are"} ${TEST_PLAYER}${testPlayers.length === 1 ? "" : "s"}: the referee enrolled ${testPlayers.length === 1 ? "this phone" : "them"} without one. Its log says it checked the others'. ${ENROL_LIMIT}`
               }
             >
               {testPlayers.length === 0
-                ? "Every phone enrolled with Apple's attestation"
-                : "Not every phone has Apple's attestation"}
+                ? "The referee says it checked every phone's Apple attestation"
+                : "The referee says it skipped some phones' Apple attestation"}
             </ProofLine>
           )}
           {salts.kind !== "v1" && (
@@ -874,11 +906,11 @@ function SummaryBody() {
                 salts.kind === "no-key"
                   ? "This replay doesn't carry the match key, so the log's salts weren't checked."
                   : salts.bad.length === 0
-                    ? `All ${salts.salted.toLocaleString()} contact, Handler and tag-evidence entries carry the salt the match key gives their place in the log. The referee released that key only after the end, so during play the server couldn't read them by guessing from its hashes.`
+                    ? `All ${salts.salted.toLocaleString()} contact, Handler and tag-evidence entries carry the salt the match key gives their place in the log. ${saltKeyHolder(signer)}`
                     : `${salts.bad.length} of ${salts.salted.toLocaleString()} salted entries carry a salt the match key doesn't give them.`
               }
             >
-              The log stayed private during play
+              Log salts come from the match key
             </ProofLine>
           )}
           {quoted.length > 0 && (
@@ -905,7 +937,7 @@ function SummaryBody() {
       </Section>
       {!allLocal && done === n && (
         <p className="mt-5 text-[0.875rem] text-text-2">
-          Events that fail a check still play, marked “Doesn't match NEAR”.
+          Events that fail a check still play, with a barred mark.
         </p>
       )}
       <Details

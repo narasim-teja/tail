@@ -140,6 +140,8 @@ pub struct BundleDevice {
 pub enum Stage {
     /// The bundle does not decode.
     Bundle,
+    /// A key the bundle names is not the one pinned in [`Options`].
+    Pins,
     /// `leaves[i]` is not the leaf of `log[i]`.
     Leaves,
     Signatures,
@@ -164,6 +166,11 @@ pub struct Failure {
 pub struct Outcome {
     /// One line per call (Start, every tick, End), in order, up to a failure.
     pub lines: Vec<String>,
+    /// Which inputs the bundle supplied and whether anything outside it pinned them. A
+    /// re-execution shows the verdicts follow from these; it cannot show these are the match's.
+    pub inputs: Vec<String>,
+    /// Inputs that differ from what the caller expects without failing a check.
+    pub warnings: Vec<String>,
     /// What had to be taken from the log instead of re-executed, and why.
     pub trusted: Vec<String>,
     pub notes: Vec<String>,
@@ -178,14 +185,22 @@ impl Outcome {
 
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// App ID for assertions when the bundle does not name one.
+    /// The App ID the caller expects. Assertions are checked against it when the bundle names
+    /// none; a bundle that names another one is warned about.
     pub app_id: String,
+    /// The verdict key the match must use (the contract's `get_match` `referee_pk`). Without
+    /// it, signatures are checked against the bundle's own key.
+    pub referee_pk: Option<[u8; 32]>,
+    /// The VRF key the match must use (`get_match` `vrf_pk`).
+    pub vrf_pk: Option<[u8; 32]>,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             app_id: DEFAULT_APP_ID.into(),
+            referee_pk: None,
+            vrf_pk: None,
         }
     }
 }
@@ -209,10 +224,88 @@ pub fn verify(bundle: &Bundle, opts: &Options) -> Outcome {
             return o;
         }
     };
-    if let Err(f) = static_checks(&d, &mut o).and_then(|()| Replay::new(&d).run(&mut o)) {
+    provenance(bundle, &d, opts, &mut o);
+    if let Err(f) = pins(&d, opts)
+        .and_then(|()| static_checks(&d, &mut o))
+        .and_then(|()| Replay::new(&d).run(&mut o))
+    {
         o.failure = Some(f);
     }
     o
+}
+
+/// Says which inputs the bundle supplied, so a pass is read as "follows from these", and warns
+/// when the bundle names an App ID other than the expected one.
+fn provenance(b: &Bundle, d: &Decoded, opts: &Options, o: &mut Outcome) {
+    let key = |name: &str, have: &[u8; 32], pin: Option<[u8; 32]>, flag: &str| match pin {
+        Some(_) => format!("{name} {} from the bundle, pinned by {flag}", hex::encode(have)),
+        None => format!(
+            "{name} {} from the bundle, not pinned: pass {flag} with the contract's get_match value",
+            hex::encode(have)
+        ),
+    };
+    o.inputs
+        .push(key("referee_pk", &d.referee_pk, opts.referee_pk, "--referee-pk"));
+    o.inputs.push(key("vrf_pk", &d.vrf_pk, opts.vrf_pk, "--vrf-pk"));
+    match &b.game.app_id {
+        Some(id) => {
+            o.inputs
+                .push(format!("app id {id} from the bundle's match.appId"));
+            if *id != opts.app_id {
+                o.warnings.push(format!(
+                    "the bundle's app id {id} is not the expected {} (--app-id): App Attest \
+                     assertions were checked against the bundle's",
+                    opts.app_id
+                ));
+            }
+        }
+        None => o.inputs.push(format!(
+            "app id {} from --app-id or the default: the bundle names none",
+            d.cfg.app_id
+        )),
+    }
+    let keys = d.keys.iter().filter(|k| k.is_some()).count();
+    o.inputs.push(format!(
+        "App Attest keys of {keys} of {} players from the bundle's devices[]; re-execution \
+         checks each against its Enrolled entry's key hash",
+        d.players.len()
+    ));
+    o.inputs.push(
+        "players, start and end times from the bundle's match, bound by Start's signed \
+         players_hash and times"
+            .into(),
+    );
+    o.inputs.push(
+        "each Enrolled entry's attested flag is the referee's own record: Apple's attestation \
+         is not in the bundle"
+            .into(),
+    );
+    o.inputs.push(format!(
+        "stake {}, zone and {} safehouses from the bundle's match; not compared with NEAR",
+        d.cfg.stake,
+        d.cfg.safehouses.len()
+    ));
+}
+
+/// The bundle's keys must be the pinned ones: a match signed under any other key re-executes
+/// just as cleanly.
+fn pins(d: &Decoded, opts: &Options) -> Result<(), Failure> {
+    for (name, have, pin) in [
+        ("referee_pk", d.referee_pk, opts.referee_pk),
+        ("vrf_pk", d.vrf_pk, opts.vrf_pk),
+    ] {
+        if let Some(want) = pin.filter(|w| *w != have) {
+            return Err(fail(
+                Stage::Pins,
+                format!(
+                    "the bundle's {name} is {}, the pinned one is {}",
+                    hex::encode(have),
+                    hex::encode(want)
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn fail(stage: Stage, what: impl Into<String>) -> Failure {
