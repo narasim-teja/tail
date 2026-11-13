@@ -92,11 +92,15 @@ describe("final money", () => {
       to: 6,
       proof: [],
     };
-    expect(relayFaultLine(null)).toBeNull();
-    expect(relayFaultLine(fault)).toBe(
+    expect(relayFaultLine(null, true)).toBeNull();
+    expect(relayFaultLine(fault, true)).toBe(
       "The relay sent a log proof that didn't check out. Your phone kept it and is still checking.",
     );
-    expect(relayFaultLine({ ...fault, count: 3, outstanding: false })).toBe(
+    // No hunt runs, so nothing checks again: the line must not say it does.
+    expect(relayFaultLine(fault, false)).toBe(
+      "The log check against NEAR was not completed: the relay sent a log proof that didn't check out. Your phone kept the proof.",
+    );
+    expect(relayFaultLine({ ...fault, count: 3, outstanding: false }, false)).toBe(
       "The relay sent a log proof that didn't check out 3 times. A later check passed.",
     );
   });

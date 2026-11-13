@@ -16,7 +16,15 @@ import { fromB64, toB64 } from "../lib/b64";
 import { RelayError } from "../proximity/relay";
 import { RelayClient, refreshNeeded } from "../relay/client";
 import { attestedPublicKey } from "./attestedKey";
-import { type Attestor, enrol, refreshEnrolment, withRefresh } from "./enrol";
+import {
+  type Attestor,
+  enrol,
+  ensureEnrolled,
+  type HuntFacts,
+  mayReenrol,
+  refreshEnrolment,
+  withRefresh,
+} from "./enrol";
 import { type Identity, loadIdentity, nearSigner, type SecretStore, saveAccount } from "./identity";
 
 function memoryStore(): SecretStore & { map: Map<string, string> } {
@@ -67,12 +75,13 @@ describe("identity", () => {
         receipt_sig: "",
       });
     }) as unknown as typeof fetch;
+    const fake = fakeAttestation();
     const attest: Attestor = {
       isSupported: true,
-      generateKey: async () => "a2V5",
+      generateKey: async () => fake.keyId,
       attestKey: async (_k, h) => {
         attestedHash = fromB64(h);
-        return "YXR0";
+        return fake.attestation;
       },
     };
     const out = await enrol(" Alice ", id, {
@@ -83,13 +92,64 @@ describe("identity", () => {
     });
     expect(attestedHash).toEqual(enrollClientDataHash(challenge, "alice.tail.testnet", id.boxPk, id.nearPk));
     expect(enrolBody).toMatchObject({
-      key_id: "a2V5",
-      attestation: "YXR0",
+      key_id: fake.keyId,
+      attestation: fake.attestation,
       challenge: Buffer.from(challenge).toString("base64"),
     });
+    const rebind = rebindDigest("alice.tail.testnet", fake.point, id.boxPk, id.nearPk);
+    expect(ed25519.verify(fromB64(enrolBody?.["rebind_sig"] ?? ""), rebind, id.nearPk)).toBe(true);
     expect(out.accountId).toBe("alice.tail.testnet");
-    expect((await loadIdentity(s)).attestKeyId).toBe("a2V5");
+    expect((await loadIdentity(s)).attestKeyId).toBe(fake.keyId);
     expect(nearSigner(out).accountId).toBe("alice.tail.testnet");
+  });
+
+  test("a retry after a failed enrolment keeps the NEAR key and signs rebind_sig for its own new App Attest key", async () => {
+    // The referee may keep the first attempt's key when the relay fails after it (creating the
+    // account, a timeout). It takes another key for the account only with rebind_sig from the
+    // NEAR key the first attempt sent, so every attempt must carry it, from the same key.
+    const s = memoryStore();
+    const bodies: Record<string, string>[] = [];
+    const fetchFn = (async (url: string, init: RequestInit) => {
+      if (url.endsWith("/enroll/challenge"))
+        return Response.json({
+          challenge: toB64(new Uint8Array(32).fill(bodies.length + 1)),
+          account_id: "alice.tail.testnet",
+          expires_ms: 1,
+        });
+      bodies.push(JSON.parse(String(init.body)));
+      if (bodies.length === 1) return Response.json({ error: "account creation failed" }, { status: 502 });
+      return Response.json({ account_id: "alice.tail.testnet" });
+    }) as unknown as typeof fetch;
+    const fakes = [fakeAttestation(), fakeAttestation()];
+    let made = 0;
+    const attest: Attestor = {
+      isSupported: true,
+      generateKey: async () => (fakes[made++] as { keyId: string }).keyId,
+      attestKey: async (k) => (fakes.find((f) => f.keyId === k) as { attestation: string }).attestation,
+    };
+    const deps = {
+      relay: new RelayClient("http://r", { fetch: fetchFn }),
+      attest,
+      secrets: s,
+      parent: "tail.testnet",
+    };
+    await expect(enrol("alice", await loadIdentity(s), deps)).rejects.toThrow();
+    expect((await loadIdentity(s)).accountId).toBeNull();
+    expect((await loadIdentity(s)).attestKeyId).toBeNull();
+    // The retry runs as after a relaunch: the identity is read again from the Keychain.
+    const id = await loadIdentity(s);
+    const out = await enrol("alice", id, deps);
+    expect(out.accountId).toBe("alice.tail.testnet");
+    expect(bodies).toHaveLength(2);
+    const [first, second] = bodies as [Record<string, string>, Record<string, string>];
+    expect(second["near_pk"]).toBe(first["near_pk"] as string);
+    expect(second["key_id"]).not.toBe(first["key_id"] as string);
+    for (const [i, body] of bodies.entries()) {
+      const point = (fakes[i] as { point: Uint8Array }).point;
+      const rebind = rebindDigest("alice.tail.testnet", point, id.boxPk, id.nearPk);
+      expect(ed25519.verify(fromB64(body["rebind_sig"] ?? ""), rebind, id.nearPk)).toBe(true);
+    }
+    expect((await loadIdentity(s)).attestKeyId).toBe(fakes[1]?.keyId ?? "");
   });
 
   test("enrolment refuses on a phone without App Attest", async () => {
@@ -304,5 +364,67 @@ describe("refreshing an enrolment for a new referee", () => {
     );
     await expect(other).rejects.toThrow("does not know");
     expect([tries, reenrols]).toEqual([1, 1]);
+  });
+});
+
+describe("re-enrolling only when no hunt may be running", () => {
+  const none: HuntFacts = { session: false, matchId: null, phase: null };
+  const run = async (
+    facts: HuntFacts | (() => HuntFacts),
+    opts: { withReferee?: boolean; reenrol?: () => Promise<void> } = {},
+  ) => {
+    let reenrols = 0;
+    const out = await ensureEnrolled({
+      hunt: typeof facts === "function" ? facts : () => facts,
+      withReferee: async () => opts.withReferee ?? false,
+      reenrol: async () => {
+        reenrols++;
+        await opts.reenrol?.();
+      },
+    });
+    return { out, reenrols };
+  };
+
+  test("a referee that doesn't know this phone gets a re-enrolment when no match is open, or in a lobby or after the end", async () => {
+    expect(await run(none)).toEqual({ out: "refreshed", reenrols: 1 });
+    for (const phase of ["lobby", "ended", "failed"] as const)
+      expect(await run({ session: false, matchId: "m", phase })).toEqual({ out: "refreshed", reenrols: 1 });
+    expect(await run(none, { withReferee: true })).toEqual({ out: "enrolled", reenrols: 0 });
+  });
+
+  test("a live hunt, or a relaunch into one before its session or phase is back, never re-enrols", async () => {
+    // A relay answering with_referee:false then would replace the App Attest key the referee
+    // checks this phone's batches against, and the Keychain's keyId with it.
+    expect(await run({ session: true, matchId: "m", phase: "running" })).toEqual({
+      out: "not now",
+      reenrols: 0,
+    });
+    expect(await run({ session: true, matchId: null, phase: null })).toEqual({ out: "not now", reenrols: 0 });
+    expect(await run({ session: false, matchId: "m", phase: null })).toEqual({ out: "not now", reenrols: 0 });
+    for (const phase of ["starting", "running", "ending"] as const)
+      expect(await run({ session: false, matchId: "m", phase })).toEqual({ out: "not now", reenrols: 0 });
+    expect(mayReenrol({ session: true, matchId: null, phase: null })).toBe(false);
+  });
+
+  test("a hunt that starts while the relay answers stops the re-enrolment", async () => {
+    let asked = 0;
+    const facts = () => (asked++ === 0 ? none : { session: true, matchId: "m", phase: "running" as const });
+    expect(await run(facts)).toEqual({ out: "not now", reenrols: 0 });
+  });
+
+  test("the relay's in_match refusal is 'not now'; other refusals and an unreachable relay are not", async () => {
+    const inMatch = new RelayError(409, "this account is in a running match", { code: "in_match" });
+    expect(await run(none, { reenrol: () => Promise.reject(inMatch) })).toEqual({
+      out: "not now",
+      reenrols: 1,
+    });
+    const other = new RelayError(409, "device attestation failed");
+    await expect(run(none, { reenrol: () => Promise.reject(other) })).rejects.toThrow("attestation");
+    const down = await ensureEnrolled({
+      hunt: () => none,
+      withReferee: () => Promise.reject(new Error("offline")),
+      reenrol: async () => undefined,
+    });
+    expect(down).toBe("unknown");
   });
 });

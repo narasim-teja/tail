@@ -308,7 +308,7 @@ export function Results() {
         receipts: app.receipts,
         met: app.meetings?.map((x) => x.other) ?? [],
         forked: app.logFork !== null,
-        relayNote: relayFaultLine(app.relayFault),
+        relayNote: relayFaultLine(app.relayFault, app.session !== null),
         handlerProblem: handlerProblem(app.handlerCheck),
       }}
       onReplay={() => replay && void Linking.openURL(replay)}

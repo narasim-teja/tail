@@ -7,13 +7,16 @@ import { RELAY_BAD_PROOF, rejectReason } from "./hud";
 
 /**
  * Results' quiet line about the relay's bad log proofs. It blames the relay, not the referee, so
- * it is no alarm; the phone kept the proof and checked again.
+ * it is no alarm; the phone kept the proof. `checking`: a hunt still runs on this phone, whose
+ * monitor asks again; without one the last check has run (app.ts checkLog) and was not completed.
  */
-export function relayFaultLine(f: RelayFault | null): string | null {
+export function relayFaultLine(f: RelayFault | null, checking: boolean): string | null {
   if (!f) return null;
   const times = f.count > 1 ? ` ${f.count} times` : "";
-  const after = f.outstanding ? "Your phone kept it and is still checking." : "A later check passed.";
-  return `${RELAY_BAD_PROOF}${times}. ${after}`;
+  if (!f.outstanding) return `${RELAY_BAD_PROOF}${times}. A later check passed.`;
+  if (checking) return `${RELAY_BAD_PROOF}${times}. Your phone kept it and is still checking.`;
+  const bad = RELAY_BAD_PROOF.charAt(0).toLowerCase() + RELAY_BAD_PROOF.slice(1);
+  return `The log check against NEAR was not completed: ${bad}${times}. Your phone kept the proof.`;
 }
 
 /** The money line on Results: what to call it, the amount, and a plain refund note if any. */

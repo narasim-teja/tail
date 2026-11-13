@@ -6,7 +6,15 @@ import Constants from "expo-constants";
 import { useSyncExternalStore } from "react";
 import { Share } from "react-native";
 import TailRadio from "../../modules/tail-radio";
-import { enrol, REFRESHED, refreshEnrolment, withRefresh } from "../identity/enrol";
+import {
+  enrol,
+  ensureEnrolled,
+  type HuntFacts,
+  mayReenrol,
+  REFRESHED,
+  refreshEnrolment,
+  withRefresh,
+} from "../identity/enrol";
 import { forgetAccount, type Identity, loadIdentity, nearSigner } from "../identity/identity";
 import { keychain } from "../identity/keychain";
 import { anchoredRoots, matchFacts } from "../near/chain";
@@ -390,19 +398,22 @@ class AppModel {
 
   /**
    * Asks the relay whether the referee it runs with holds this phone's device, and re-enrols if
-   * not (the contract pinned another referee since this phone enrolled). Quiet when the relay
-   * can't be reached or doesn't say: the next Start says so if it matters.
+   * not (the contract pinned another referee since this phone enrolled). Never while a hunt may
+   * be running (identity/enrol.ts mayReenrol). Quiet when the relay can't be reached or doesn't
+   * say: the next Start says so if it matters.
    */
   async ensureEnrolled(): Promise<void> {
     const id = this.identity;
-    if (!id?.accountId || !this.settings.relayUrl || this.session) return;
-    let withReferee: boolean;
-    try {
-      withReferee = (await this.relay.enrolStatus(nearSigner(id))).withReferee;
-    } catch {
-      return;
-    }
-    if (!withReferee) await this.reenrol().catch((e: unknown) => this.fail(e));
+    if (!id?.accountId || !this.settings.relayUrl) return;
+    await ensureEnrolled({
+      hunt: () => this.huntFacts,
+      withReferee: async () => (await this.relay.enrolStatus(nearSigner(id))).withReferee,
+      reenrol: () => this.reenrol(),
+    }).catch((e: unknown) => this.fail(e));
+  }
+
+  private get huntFacts(): HuntFacts {
+    return { session: !!this.session, matchId: this.matchId, phase: this.match?.phase ?? null };
   }
 
   /**
@@ -413,7 +424,7 @@ class AppModel {
   private reenrol(): Promise<void> {
     this.refreshing ??= (async () => {
       const id = this.need();
-      if (this.session) throw new Error("Can't re-enrol this phone during a hunt.");
+      if (!mayReenrol(this.huntFacts)) throw new Error("Can't re-enrol this phone during a hunt.");
       const before = this.busy;
       this.busy = "Re-enrolling this phone";
       this.emit();
@@ -685,7 +696,11 @@ class AppModel {
     try {
       const m = await this.relay.getMatch(id);
       if (this.matchId !== id) return;
+      const first = this.match === null;
       this.match = m;
+      // Start-up skips the enrolment check while a match is open and its phase unknown (it may be
+      // a hunt); now that the phase is known, a lobby or a finished match may check.
+      if (first) void this.ensureEnrolled();
       // Once this player's keys are in, the signed view has nothing more to say.
       if (!this.matchZone?.keys.length && this.inMatch(m)) {
         const before = this.matchZone?.error ?? null;
@@ -914,8 +929,7 @@ class AppModel {
       },
       record.monitor,
     );
-    await monitor.checkAnchors(roots);
-    monitor.stop();
+    await monitor.finalCheck(roots);
     if (this.matchId === id) {
       this.savedFork = monitor.fork;
       this.savedRelayFault = monitor.relayFault;

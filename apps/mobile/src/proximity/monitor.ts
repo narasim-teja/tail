@@ -142,6 +142,8 @@ export class LogMonitor {
    * would otherwise be asked every few seconds. After an unreachable relay a HUD may ask sooner.
    */
   private holding = false;
+  /** finalCheck's second pass: the anchors against the verified root, the pending one set aside. */
+  private anchorsOnly = false;
   private stopped = false;
 
   constructor(
@@ -187,18 +189,47 @@ export class LogMonitor {
 
   /** Roots read from NEAR; each one not checked yet is checked against the newest verified HUD root. */
   checkAnchors(roots: readonly AnchoredRoot[]): Promise<void> {
+    this.addAnchors(roots);
+    return this.kick();
+  }
+
+  /**
+   * The last check before the monitor stops (Results with no hunt running), so no retry will
+   * come: everything is asked now, even while a bad proof holds back the next ask. A pending HUD
+   * root whose proof fails would stop the loop before the anchors, so they are then compared with
+   * the verified root on their own. `relayFault.outstanding` says whether it got through.
+   */
+  async finalCheck(roots: readonly AnchoredRoot[]): Promise<void> {
+    this.addAnchors(roots);
+    await this.askNow();
+    if (this.anchors.length > 0 && this.s.pending) {
+      this.anchorsOnly = true;
+      await this.askNow();
+    }
+    this.stop();
+  }
+
+  /** Starts the loop now, past any retry wait or hold. */
+  private askNow(): Promise<void> {
+    if (this.retry !== null) this.d.timers.clearTimeout(this.retry);
+    this.retry = null;
+    this.holding = false;
+    return this.kick();
+  }
+
+  private addAnchors(roots: readonly AnchoredRoot[]): void {
     for (const r of roots) {
       const size = Number(r.logSize);
       if (size <= this.s.anchored || this.anchors.some((a) => a.size === size)) continue;
       this.anchors.push({ size, root: r.root });
     }
     this.anchors.sort((a, b) => a.size - b.size);
-    return this.kick();
   }
 
   /** Picks up where the saved record left off (a pending root after a relaunch). */
   resume(): void {
     this.stopped = false;
+    this.anchorsOnly = false;
     void this.kick();
   }
 
@@ -262,7 +293,7 @@ export class LogMonitor {
   private next(): Job | null {
     const base = this.s.verified;
     if (this.stopped || this.s.fork || !base) return null;
-    const p = this.s.pending;
+    const p = this.anchorsOnly ? null : this.s.pending;
     if (p)
       return {
         from: base.size,

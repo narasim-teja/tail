@@ -317,4 +317,50 @@ describe("log monitor", () => {
     expect(again.calls).toEqual([[2, 6]]);
     expect(again.m.record().verified?.size).toBe(6);
   });
+
+  test("held by a bad proof, the final check still compares End's root before it stops", async () => {
+    // The relay lies about the HUD root of size 9 only; End's root of size 12 has an honest proof.
+    const liar = async (from: number, to: number) =>
+      to === 9 ? [sha256(Uint8Array.of(0xee))] : relayOf()(from, to);
+    const end = [{ logSize: 12n, root: root(12) }];
+    const r = rig(liar);
+    r.see(4);
+    r.see(9);
+    await flush();
+    expect(r.m.relayFault?.outstanding).toBe(true);
+    // The hold: an ordinary check asks nothing until the retry.
+    await r.m.checkAnchors(end);
+    expect(r.calls).toEqual([[4, 9]]);
+    await r.m.finalCheck(end);
+    expect(r.calls).toEqual([
+      [4, 9],
+      [4, 9],
+      [4, 12],
+    ]);
+    expect(r.m.record().anchored).toBe(12);
+    // Stopped: no retry follows.
+    r.t.advance(MONITOR_RETRY_MAX_MS);
+    await flush();
+    expect(r.calls).toHaveLength(3);
+
+    // Results after a relaunch: a new monitor from the saved record does the same.
+    const again = rig(liar, { ...r.m.record(), anchored: 0 });
+    await again.m.finalCheck(end);
+    expect(again.calls).toEqual([
+      [4, 9],
+      [4, 12],
+    ]);
+    expect(again.m.record().anchored).toBe(12);
+  });
+
+  test("a final check whose own proof fails stops with the fault outstanding", async () => {
+    const r = rig(async () => [sha256(Uint8Array.of(0xee))]);
+    r.see(4);
+    await r.m.finalCheck([{ logSize: 12n, root: root(12) }]);
+    expect(r.calls).toEqual([[4, 12]]);
+    expect(r.m.relayFault?.outstanding).toBe(true);
+    r.t.advance(MONITOR_RETRY_MAX_MS);
+    await flush();
+    expect(r.calls).toHaveLength(1);
+  });
 });

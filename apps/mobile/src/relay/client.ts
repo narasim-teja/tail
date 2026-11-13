@@ -242,6 +242,8 @@ export class RelayClient extends RelayTransport {
     attestation: string;
     playerBoxPk: Uint8Array;
     nearPk: Uint8Array;
+    /** The NEAR key's consent to replace any record the referee holds for the account (enrol.ts). */
+    rebindSig: Uint8Array;
   }): Promise<Enrolled> {
     const r = await this.json(
       "POST",
@@ -252,6 +254,7 @@ export class RelayClient extends RelayTransport {
         attestation: i.attestation,
         player_box_pk: toB64(i.playerBoxPk),
         near_pk: toB64(i.nearPk),
+        rebind_sig: toB64(i.rebindSig),
       }),
       {},
       SLOW_CALL_MS,
