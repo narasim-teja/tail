@@ -2,7 +2,7 @@
 //! (match id, hashes, public keys, signatures) is a lowercase hex string in JSON; amounts are
 //! decimal strings (`U128`); times are unix milliseconds as JSON numbers.
 
-use near_sdk::json_types::U128;
+use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::{near, AccountId};
 
 use crate::Phase;
@@ -62,6 +62,27 @@ pub struct RootsView {
     pub checkpoints: Vec<RootView>,
     /// The root the `End` verdict anchored; `None` until the match ends.
     pub final_root: Option<RootView>,
+}
+
+/// One RFC 9162 consistency proof for `apply`: from the match's last anchored log size
+/// (`from_size`, 0 for the first anchor) to the log size of the Checkpoint or End with `seq`.
+/// `path` is the list of 32-byte hashes, base64 each; empty when `from_size` is 0.
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsistencyArg {
+    pub seq: u32,
+    pub from_size: U64,
+    pub path: Vec<Base64VecU8>,
+}
+
+/// The head of a match's verdict chain.
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerdictHeadView {
+    /// Last applied verdict seq (0 before `Start`).
+    pub seq: u32,
+    /// Its `verdict_digest`, hex; zeros before `Start`. The next verdict's `prev` must equal it.
+    pub digest: String,
 }
 
 #[near(serializers = [json])]

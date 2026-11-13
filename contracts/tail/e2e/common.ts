@@ -19,8 +19,8 @@ loadEnv(`${repo}.env.local`);
 export const TOKEN = "usdc.fakes.testnet";
 export const CIRCLE_USDC_TESTNET = "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af";
 export const ALLOWED_TOKENS = [TOKEN, CIRCLE_USDC_TESTNET];
-// NEAR for a contract account: ~2.7 for the 271 KB wasm, the rest for state.
-export const CONTRACT_FUNDING = "3";
+// NEAR for a contract account: ~3.1 for the 309 KB wasm, the rest for state.
+export const CONTRACT_FUNDING = "3.5";
 
 if ((process.env["NEAR_NETWORK"] ?? "testnet") !== "testnet") throw new Error("testnet only");
 export const parentId = must("NEAR_RELAY_ACCOUNT");

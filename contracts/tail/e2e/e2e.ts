@@ -6,10 +6,13 @@
 //
 // Covers: registration paid by the parent, top-ups, an invite-only lobby with a named sponsor,
 // three players joining with function-call keys, the host locking the lobby, referee-signed
-// Start/Hint/Tag/Checkpoint/End with the Tag following the ring End rebuilds, settlement, withdraw
-// (a player naming its wallet once, paid, and refunded). The verdict key and the VRF key are local
-// test keys in .keys/ standing in for the enclave's `verdicts` key and OutLayer's VRF key; the
-// parent stands in for the referee's OutLayer caller (the VRF alpha's sender).
+// Start/Hint/Tag/Checkpoint/End (protocol v2: each verdict chained to the one before, each
+// Checkpoint and End proved consistent with the last anchored root) with the Tag following the
+// ring End rebuilds, an inclusion proof against the anchored root, settlement, withdraw (a player
+// naming its wallet once, paid, and refunded). The verdict key and the VRF key are local test keys
+// in .keys/ standing in for the enclave's `verdicts` key and OutLayer's VRF key; the parent stands
+// in for the referee's OutLayer caller (the VRF alpha's sender). The match log is a stand-in of
+// Tick entries that this script proves against with @tail/protocol's Merkle helpers.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { ed25519 } from "@noble/curves/ed25519.js";
@@ -17,7 +20,15 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { Account, actions, KeyPair, type KeyPairString, nearToYocto, teraToGas } from "near-api-js";
 import {
   buildRing,
+  consistencyProof,
+  encodeLogEntry,
   encodeSignedVerdict,
+  HintKind,
+  hintPrice,
+  type LogEntry,
+  merkleLeaf,
+  merkleProof,
+  merkleRoot,
   playersHash,
   ringCommit,
   sortAccounts,
@@ -39,6 +50,7 @@ import {
 } from "./common.ts";
 
 const STAKE = 100_000n; // 0.1 USDC (6 decimals)
+const zeros = new Uint8Array(32);
 const SPONSOR = 11n; // odd on purpose: two survivors split it 6 / 5
 // Start is dated 4.5 min back (the contract allows 5) so this 4-minute match is already past
 // end_ms when End lands: an End with two survivors is only accepted from end_ms on, and Tag and
@@ -54,6 +66,23 @@ const record = (name: string, ok: boolean, note = "") => {
   log(`${ok ? "PASS" : "FAIL"}  ${name}${note ? `  (${note})` : ""}`);
 };
 const gasNotes: string[] = [];
+
+// The referee stand-in's match log: Tick entries, so every anchored root is a real Merkle root
+// and every proof a real RFC 9162 proof.
+const logEntries: LogEntry[] = Array.from({ length: 99 }, (_, i) => ({
+  kind: "Tick",
+  tickNo: i,
+  nowMs: BigInt(i),
+  callId: new Uint8Array(16),
+}));
+const logLeaves = logEntries.map(merkleLeaf);
+const b64 = (u: Uint8Array) => Buffer.from(u).toString("base64");
+/** The `apply` proof for verdict `seq`: consistency from `m` to `n` entries of the log. */
+const proofArg = (seq: number, m: number, n: number): ProofArg => ({
+  seq,
+  from_size: m.toString(),
+  path: consistencyProof(logLeaves.slice(0, n), m).map(b64),
+});
 
 const refereeSk = loadSecret("tail-e2e-referee.json");
 const vrfSk = loadSecret("tail-e2e-vrf.json");
@@ -232,7 +261,7 @@ async function run() {
     endMs: startMs + BigInt(DURATION_MS),
   };
   const forged = await fails(() =>
-    applyVerdicts([signVerdict(id, 1, start, ed25519.utils.randomSecretKey())]),
+    applyVerdicts([signVerdict(id, 1, zeros, start, ed25519.utils.randomSecretKey()).b64]),
   );
   record(
     "a Start signed by another key is refused on-chain",
@@ -240,15 +269,39 @@ async function run() {
     forged,
   );
 
-  await applyOne("Start", signVerdict(id, 1, start));
+  // The verdict chain: each verdict's prev is the previous one's digest (zeros for seq 1).
+  let prev: Uint8Array = zeros;
+  const next = (seq: number, body: Verdict) => {
+    const v = signVerdict(id, seq, prev, body);
+    prev = v.digest;
+    return v.b64;
+  };
+  await applyOne("Start", next(1, start));
   m = await getMatch(matchId);
   record(
     "Start runs the match and stores ring_commit",
     m.phase === "running" && m.ring_commit === hex(ringCommit(vrfSignature)),
   );
 
-  const hintAmount = (STAKE * 200n) / 10_000n; // a NEAR hint: 2% of the stake
-  const hint = signVerdict(id, 2, { kind: "Hint", from: 0, to: 1, amount: hintAmount, hintId: 1 });
+  const overpriced = await fails(() =>
+    applyVerdicts([
+      signVerdict(id, 2, prev, {
+        kind: "Hint",
+        from: 0,
+        to: 1,
+        amount: hintPrice(STAKE, HintKind.Bearing),
+        hintId: 1,
+        hint: HintKind.Near,
+      }).b64,
+    ]),
+  );
+  record(
+    "a NEAR hint charged at the BEARING price is refused",
+    overpriced.includes("hint amount is not the price of its kind"),
+    overpriced,
+  );
+  const hintAmount = hintPrice(STAKE, HintKind.Near); // 2% of the stake
+  const hint = next(2, { kind: "Hint", from: 0, to: 1, amount: hintAmount, hintId: 1, hint: HintKind.Near });
   await applyOne("Hint", hint);
   const hinted = `${STAKE - hintAmount},${STAKE + hintAmount},${STAKE}`;
   m = await eventually(
@@ -263,12 +316,22 @@ async function run() {
 
   const replay = await fails(() => applyVerdicts([hint]));
   record("the same verdict replayed is refused", replay.includes("verdict out of order"), replay);
+  const fork = await fails(() =>
+    applyVerdicts([
+      signVerdict(id, 3, new Uint8Array(32).fill(1), { kind: "Tag", hunter: 0, target: 1 }).b64,
+    ]),
+  );
+  record(
+    "a verdict whose prev is not the last applied digest is refused",
+    fork.includes("verdict prev is not the digest"),
+    fork,
+  );
 
   // The ring End rebuilds from the VRF reveal: ring[k] hunts ring[k+1]. Player 1 is tagged by
   // whoever hunts it, so players 0 and 2 survive either way.
   const ring = buildRing(ids, vrfSignature).map((a) => sorted.indexOf(a));
   const hunter = ring[(ring.indexOf(1) + ring.length - 1) % ring.length] as number;
-  await applyOne("Tag", signVerdict(id, 3, { kind: "Tag", hunter, target: 1 }));
+  await applyOne("Tag", next(3, { kind: "Tag", hunter, target: 1 }));
   const afterTag = [STAKE - hintAmount, 0n, STAKE];
   afterTag[hunter] = (afterTag[hunter] as bigint) + STAKE + hintAmount;
   m = await eventually(
@@ -281,17 +344,26 @@ async function run() {
     heads(m),
   );
 
-  const checkpointRoot = sha256(new TextEncoder().encode("checkpoint 1"));
-  await applyOne(
-    "Checkpoint",
-    signVerdict(id, 4, { kind: "Checkpoint", logSize: 42n, root: checkpointRoot }),
+  const checkpointRoot = merkleRoot(logLeaves.slice(0, 42));
+  const checkpoint = next(4, { kind: "Checkpoint", logSize: 42n, root: checkpointRoot });
+  const unproved = await fails(() => applyVerdicts([checkpoint]));
+  record(
+    "a Checkpoint without a consistency proof is refused",
+    unproved.includes("no consistency proof"),
+    unproved,
   );
+  await applyOne("Checkpoint", checkpoint, [proofArg(4, 0, 42)]);
 
-  const finalRoot = sha256(new TextEncoder().encode("final"));
-  await applyOne(
-    "End",
-    signVerdict(id, 5, { kind: "End", alpha, vrfSignature, logSize: 99n, root: finalRoot }),
+  const finalRoot = merkleRoot(logLeaves);
+  const end = next(5, { kind: "End", alpha, vrfSignature, logSize: 99n, root: finalRoot });
+  const wrongFrom = await fails(() => applyVerdicts([end], [proofArg(5, 0, 99)]));
+  record(
+    "an End proved from the start of the log instead of the last checkpoint is refused",
+    wrongFrom.includes("is not the last anchored log size 42"),
+    wrongFrom,
   );
+  // 42 → 99 is a real proof of several hashes: its gas is the one to watch.
+  await applyOne("End + 42→99 proof", end, [proofArg(5, 42, 99)]);
   m = await eventually(
     () => getMatch(matchId),
     (v) => v.phase === "ended",
@@ -303,6 +375,27 @@ async function run() {
       m.alpha === alpha &&
       roots.checkpoints[0]?.root === hex(checkpointRoot) &&
       roots.final_root?.root === hex(finalRoot),
+  );
+  const head = await view<{ seq: number; digest: string }>("get_verdict_head", { match_id: matchId });
+  record(
+    "get_verdict_head is the digest of the last verdict sent",
+    head.seq === 5 && head.digest === hex(prev),
+    `seq ${head.seq}`,
+  );
+  const inclusion = (entry: number, index: number, size: number) =>
+    view<boolean>("verify_inclusion", {
+      match_id: matchId,
+      entry: b64(encodeLogEntry(logEntries[entry] as LogEntry)),
+      index: index.toString(),
+      size: size.toString(),
+      path: merkleProof(logLeaves.slice(0, size), index).map(b64),
+    });
+  const included = [await inclusion(7, 7, 42), await inclusion(70, 70, 99)];
+  const excluded = [await inclusion(8, 7, 42), await inclusion(7, 7, 50)];
+  record(
+    "verify_inclusion proves an entry against the anchored roots and refuses a wrong entry or size",
+    included.every((x) => x === true) && excluded.every((x) => x === false),
+    `${included.join()} / ${excluded.join()}`,
   );
   const expected = [(afterTag[0] as bigint) + 6n, 0n, (afterTag[2] as bigint) + 5n];
   const settled = await eventually(
@@ -397,27 +490,40 @@ interface MatchView {
   ring_commit: string | null;
   alpha: string | null;
 }
+interface ProofArg {
+  seq: number;
+  from_size: string;
+  path: string[];
+}
 interface Roots {
   checkpoints: { log_size: number; root: string }[];
   final_root: { log_size: number; root: string } | null;
 }
 
-function signVerdict(matchId: Uint8Array, seq: number, body: Verdict, sk: Uint8Array = refereeSk): string {
+/** A borsh SignedVerdict v2 (base64) and its digest, the next verdict's `prev`. */
+function signVerdict(
+  matchId: Uint8Array,
+  seq: number,
+  prev: Uint8Array,
+  body: Verdict,
+  sk: Uint8Array = refereeSk,
+): { b64: string; digest: Uint8Array } {
   const callId = new Uint8Array(16); // the OutLayer call id; zero for a locally signed verdict
-  const sig = ed25519.sign(verdictDigest({ matchId, seq, callId, body }), sk);
-  return Buffer.from(encodeSignedVerdict({ matchId, seq, callId, body, sig })).toString("base64");
+  const digest = verdictDigest({ matchId, seq, prev, callId, body });
+  const sig = ed25519.sign(digest, sk);
+  return { b64: b64(encodeSignedVerdict({ matchId, seq, prev, callId, body, sig })), digest };
 }
-function applyVerdicts(verdicts: string[]) {
+function applyVerdicts(verdicts: string[], proofs?: ProofArg[]) {
   return parent.callFunctionRaw({
     contractId,
     methodName: "apply",
-    args: { verdicts },
+    args: proofs ? { verdicts, proofs } : { verdicts },
     gas: teraToGas("100"),
   });
 }
-async function applyOne(kind: string, verdict: string) {
+async function applyOne(kind: string, verdict: string, proofs?: ProofArg[]) {
   const t0 = performance.now();
-  const res = await applyVerdicts([verdict]);
+  const res = await applyVerdicts([verdict], proofs);
   const ms = Math.round(performance.now() - t0);
   const receipt = Number(res.receipts_outcome[0]?.outcome.gas_burnt ?? 0);
   const total =

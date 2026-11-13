@@ -3,7 +3,10 @@
 //! Money enters only through NEP-141 `ft_transfer_call` (into an internal balance or a match's
 //! sponsor pot) and leaves only through `withdraw` to the account's payout account. Inside a match,
 //! heads move only when `apply` accepts a verdict signed by the referee key the match pinned at
-//! creation. `abort` is the refund path when the referee goes silent. At `End` the contract
+//! creation. Each verdict names the digest of the one before it (`prev`), so the contract holds one
+//! chain of verdicts per match and a forked stream cannot land. Every Checkpoint and End comes with
+//! an RFC 9162 consistency proof from the last anchored log root, so the anchored roots are one
+//! append-only log. `abort` is the refund path when the referee goes silent. At `End` the contract
 //! rebuilds the ring from the revealed VRF output and refuses the match unless every Tag and
 //! Forfeit it applied followed that ring.
 //!
@@ -13,15 +16,18 @@
 
 use curve25519_dalek::edwards::{CompressedEdwardsY, EdwardsPoint};
 use near_sdk::borsh::BorshDeserialize;
-use near_sdk::json_types::{Base64VecU8, U128};
+use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::serde_json::json;
 use near_sdk::store::LookupMap;
 use near_sdk::{
     assert_one_yocto, env, near, require, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError,
 };
 use tail_protocol::digest::verdict_digest;
+use tail_protocol::merkle::{verify_consistency_with, verify_with};
 use tail_protocol::ring::{build_ring, players_hash, ring_commit};
-use tail_protocol::{Hash, MatchId, SignedVerdict, Verdict, CHECKPOINT_MS, REFEREE_TIMEOUT_MS};
+use tail_protocol::{
+    hint_price, Hash, LogEntry, MatchId, SignedVerdict, Verdict, CHECKPOINT_MS, REFEREE_TIMEOUT_MS,
+};
 
 mod migrate;
 mod views;
@@ -66,9 +72,9 @@ pub const START_SKEW_MS: u64 = 300_000;
 /// can move once the overdue abort is open.
 pub const VERDICT_GRACE_MS: u64 = 300_000;
 /// Upper bound on what one match ever stores (the match record at its largest, a full checkpoint
-/// list and a full ring record, with NEAR's 40-byte per-record overhead). `create_match` charges
-/// it up front. A unit test checks the bound against a maximal match.
-pub const MATCH_STORAGE_BYTES: u128 = 8_200;
+/// list, a full ring record and the verdict head, with NEAR's 40-byte per-record overhead).
+/// `create_match` charges it up front. A unit test checks the bound against a maximal match.
+pub const MATCH_STORAGE_BYTES: u128 = 8_300;
 /// One payout record with 64-character account ids, including the 40-byte record overhead.
 pub const PAYOUT_RECORD_BYTES: u128 = 180;
 /// One (account, token) balance record with 64-character ids, including the record overhead.
@@ -238,6 +244,9 @@ pub struct Tail {
     /// New matches pin it; running matches keep theirs. Appended by `migrate` (v1 → v2).
     vrf_sender: AccountId,
     rings: LookupMap<MatchId, RingRecord>,
+    /// The `verdict_digest` of each match's last applied verdict (zeros before the first): the
+    /// next verdict's `prev` must equal it. Written by `create_match`, so it never allocates later.
+    verdict_heads: LookupMap<MatchId, Hash>,
 }
 
 // near-sdk deserialises every JSON argument into an owned value, so methods take them by value.
@@ -269,14 +278,16 @@ impl Tail {
             match_nonce: 0,
             vrf_sender: check_vrf_sender(vrf_sender),
             rings: LookupMap::new(migrate::RINGS_PREFIX),
+            verdict_heads: LookupMap::new(migrate::VERDICT_HEADS_PREFIX),
         }
     }
 
-    /// In-place upgrade from the first state layout (before `vrf_sender` and the ring records).
-    /// Deploy the new code and call this in the same transaction, signed by the contract account
-    /// itself, or have the owner call it right after the deploy. It reads the old state, so a
-    /// second call (on the new layout) fails. Balances, payouts, matches and checkpoints keep
-    /// their records; matches created before it have no ring record and settle by `abort`.
+    /// In-place upgrade from the first state layout (before `vrf_sender`, the ring records and the
+    /// verdict heads). Deploy the new code and call this in the same transaction, signed by the
+    /// contract account itself, or have the owner call it right after the deploy. It reads the old
+    /// state, so a second call (on the new layout) fails. Balances, payouts, matches and
+    /// checkpoints keep their records; matches created before it have neither a ring record nor a
+    /// verdict head, take no more verdicts and settle by `abort`.
     #[init(ignore_state)]
     pub fn migrate(vrf_sender: AccountId) -> Self {
         migrate::from_v1(vrf_sender)
@@ -521,6 +532,7 @@ impl Tail {
                 eliminations: Vec::new(),
             },
         );
+        self.verdict_heads.insert(id, [0; 32]);
         hex::encode(id)
     }
 
@@ -610,16 +622,22 @@ impl Tail {
 
     // ── Verdicts ─────────────────────────────────────────────────────────────────────────────
 
-    /// The only way heads move. Each item is a borsh `SignedVerdict`; they apply in order and
+    /// The only way heads move. Each item is a borsh `SignedVerdict` v2; they apply in order and
     /// the whole call fails if any one is refused. Anyone may submit; only the referee signs.
-    pub fn apply(&mut self, verdicts: Vec<Base64VecU8>) {
+    ///
+    /// `proofs` holds one consistency proof per Checkpoint and End in `verdicts`, matched by the
+    /// verdict's `seq` (so Checkpoints and Ends of two matches in one call cannot share a seq).
+    /// A proof the call does not use is refused too, so a relay bug shows up instead of passing.
+    pub fn apply(&mut self, verdicts: Vec<Base64VecU8>, proofs: Option<Vec<ConsistencyArg>>) {
         require!(!verdicts.is_empty(), "no verdicts");
         let now = env::block_timestamp_ms();
+        let mut proofs = Proofs::parse(proofs.unwrap_or_default());
         for raw in &verdicts {
             let sv = SignedVerdict::try_from_slice(&raw.0)
                 .unwrap_or_else(|_| env::panic_str("verdict is not a borsh SignedVerdict"));
-            self.apply_one(sv, now);
+            self.apply_one(sv, now, &mut proofs);
         }
+        proofs.assert_all_used();
     }
 
     /// Refunds a match the referee abandoned. Anyone may call it once:
@@ -721,6 +739,54 @@ impl Tail {
             final_root: m.reveal.as_ref().map(|r| root_view(&r.final_root)),
         })
     }
+
+    /// The match's verdict chain as the contract holds it: the last applied seq and its
+    /// `verdict_digest` (seq 0 and zeros before the first verdict). A client that has the same
+    /// digest at that seq has seen the same history. `None` for an unknown match or one created
+    /// before the upgrade that added the chain.
+    pub fn get_verdict_head(&self, match_id: String) -> Option<VerdictHeadView> {
+        let id = parse_hex(&match_id, "match_id");
+        let m = self.matches.get(&id)?;
+        let digest = self.verdict_heads.get(&id)?;
+        Some(VerdictHeadView {
+            seq: m.seq,
+            digest: hex::encode(digest),
+        })
+    }
+
+    /// Whether `entry` (a borsh `LogEntry`) is leaf `index` of the match log at the anchored root
+    /// of exactly `size` leaves (a checkpoint's or the final one), by the RFC 9162 audit `path`.
+    /// The leaf hash `SHA256(0x00 ‖ entry)` is computed here, so the answer is about the entry
+    /// itself. False for anything that does not check out, including a size no root was
+    /// anchored at.
+    pub fn verify_inclusion(
+        &self,
+        match_id: String,
+        entry: Base64VecU8,
+        index: U64,
+        size: U64,
+        path: Vec<Base64VecU8>,
+    ) -> bool {
+        let id = parse_hex(&match_id, "match_id");
+        let Some(root) = self.anchored_root(&id, size.0) else {
+            return false;
+        };
+        if LogEntry::try_from_slice(&entry.0).is_err() {
+            return false;
+        }
+        let Some(path) = path
+            .iter()
+            .map(|h| <Hash>::try_from(h.0.as_slice()).ok())
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        let mut pre = Vec::with_capacity(1 + entry.0.len());
+        pre.push(0);
+        pre.extend_from_slice(&entry.0);
+        let leaf = env::sha256_array(&pre);
+        verify_with(host_sha256, &leaf, index.0, size.0, &path, &root)
+    }
 }
 
 impl Tail {
@@ -791,12 +857,36 @@ impl Tail {
         Ok(())
     }
 
-    fn apply_one(&mut self, sv: SignedVerdict, now: u64) {
+    /// The root anchored for match `id` at exactly `size` leaves: a checkpoint's or the final one.
+    fn anchored_root(&self, id: &MatchId, size: u64) -> Option<Hash> {
+        let checkpoint = self.checkpoints.get(id).and_then(|list| {
+            // Checkpoint sizes strictly grow, so the list is sorted by size.
+            list.binary_search_by_key(&size, |r| r.log_size)
+                .ok()
+                .map(|i| list[i].root)
+        });
+        checkpoint.or_else(|| {
+            let m = self.matches.get(id)?;
+            let fin = m.reveal.as_ref()?.final_root;
+            (fin.log_size == size).then_some(fin.root)
+        })
+    }
+
+    fn apply_one(&mut self, sv: SignedVerdict, now: u64, proofs: &mut Proofs) {
         let id = sv.match_id;
         let m = self.matches.get_mut(&id).unwrap_or_else(no_match);
         require!(sv.seq == m.seq + 1, "verdict out of order");
+        let head = self
+            .verdict_heads
+            .get_mut(&id)
+            .unwrap_or_else(created_before_upgrade);
         require!(
-            env::ed25519_verify(&sv.sig, verdict_digest(&sv.payload()), &m.referee_pk),
+            sv.prev == *head,
+            "verdict prev is not the digest of the match's last applied verdict"
+        );
+        let digest = verdict_digest(&sv.payload());
+        require!(
+            env::ed25519_verify(&sv.sig, digest, &m.referee_pk),
             "bad referee signature"
         );
         if !matches!(sv.body, Verdict::Start { .. }) {
@@ -818,26 +908,27 @@ impl Tail {
                 start_ms,
                 end_ms,
             } => start(m, ph, rc, start_ms, end_ms, now),
-            Verdict::Hint { from, to, amount, .. } => {
-                let (f, t) = live_pair(m, from, to);
-                require!(
-                    m.players[f].head >= amount,
-                    "hint costs more than the payer's head"
-                );
-                m.players[f].head -= amount;
-                m.players[t].head += amount;
-            }
+            Verdict::Hint {
+                from,
+                to,
+                amount,
+                hint,
+                ..
+            } => pay_hint(m, from, to, amount, hint),
             Verdict::Tag { hunter, target } => {
-                let ring = self.rings.get_mut(&id).unwrap_or_else(no_ring);
+                let ring = self.rings.get_mut(&id).unwrap_or_else(created_before_upgrade);
                 eliminate(m, ring, Elimination::Tag { hunter, target });
             }
             Verdict::Forfeit { player, to } => {
-                let ring = self.rings.get_mut(&id).unwrap_or_else(no_ring);
+                let ring = self.rings.get_mut(&id).unwrap_or_else(created_before_upgrade);
                 eliminate(m, ring, Elimination::Forfeit { player, to });
             }
             Verdict::Checkpoint { log_size, root } => {
                 let list = self.checkpoints.entry(id).or_default();
-                push_checkpoint(list, m, Root { log_size, root }, now);
+                let cp = Root { log_size, root };
+                check_checkpoint(list, m, cp, now);
+                check_consistency(last_anchor(list), cp, &proofs.take(sv.seq));
+                list.push(cp);
             }
             Verdict::End {
                 alpha,
@@ -850,7 +941,7 @@ impl Tail {
                     "vrf_signature does not match ring_commit"
                 );
                 require!(alpha.len() <= MAX_ALPHA_LEN, "alpha too long");
-                let ring = self.rings.get(&id).unwrap_or_else(no_ring);
+                let ring = self.rings.get(&id).unwrap_or_else(created_before_upgrade);
                 check_alpha(&alpha, &id, &ring.vrf_sender);
                 require!(
                     env::ed25519_verify(&vrf_signature, alpha.as_bytes(), &m.vrf_pk),
@@ -861,27 +952,117 @@ impl Tail {
                     now >= m.window().1 || survivors == 1,
                     "End before end_ms needs exactly one survivor"
                 );
-                let last_checkpoint = self
-                    .checkpoints
-                    .get(&id)
-                    .and_then(|list| list.last())
-                    .map_or(0, |r| r.log_size);
+                let last = last_anchor(self.checkpoints.get(&id).map_or(&[], Vec::as_slice));
                 require!(
-                    log_size >= last_checkpoint,
+                    log_size >= last.log_size,
                     "End log_size is below the last checkpoint's"
                 );
+                let final_root = Root { log_size, root };
+                check_consistency(last, final_root, &proofs.take(sv.seq));
                 check_ring(m, &vrf_signature, &ring.eliminations);
                 settle_end(m, &mut self.balances);
                 m.reveal = Some(Reveal {
                     alpha,
                     vrf_signature,
-                    final_root: Root { log_size, root },
+                    final_root,
                 });
             }
         }
         m.seq = sv.seq;
         m.last_verdict_ms = now;
+        *head = digest;
     }
+}
+
+/// SHA-256 on the host function, which costs far less gas than SHA-256 compiled into the wasm.
+fn host_sha256(data: &[u8]) -> Hash {
+    env::sha256_array(data)
+}
+
+/// A consistency proof as `apply` uses it: the path already checked to be 32-byte hashes.
+#[derive(Debug)]
+struct Proof {
+    seq: u32,
+    from_size: u64,
+    path: Vec<Hash>,
+}
+
+/// The proofs of one `apply` call, each taken by the Checkpoint or End with its seq.
+#[derive(Debug)]
+struct Proofs(Vec<Proof>);
+
+impl Proofs {
+    fn parse(args: Vec<ConsistencyArg>) -> Self {
+        let mut out: Vec<Proof> = Vec::with_capacity(args.len());
+        for a in args {
+            require!(
+                out.iter().all(|p| p.seq != a.seq),
+                "two consistency proofs for one seq"
+            );
+            let path = a
+                .path
+                .iter()
+                .map(|h| {
+                    <Hash>::try_from(h.0.as_slice())
+                        .unwrap_or_else(|_| env::panic_str("a consistency proof hash is not 32 bytes"))
+                })
+                .collect();
+            out.push(Proof {
+                seq: a.seq,
+                from_size: a.from_size.0,
+                path,
+            });
+        }
+        Self(out)
+    }
+
+    fn take(&mut self, seq: u32) -> Proof {
+        let i = self.0.iter().position(|p| p.seq == seq).unwrap_or_else(|| {
+            env::panic_str(&format!(
+                "no consistency proof for verdict seq {seq}: every Checkpoint and End needs one"
+            ))
+        });
+        self.0.swap_remove(i)
+    }
+
+    fn assert_all_used(&self) {
+        if let Some(p) = self.0.first() {
+            env::panic_str(&format!(
+                "consistency proof for seq {} matches no Checkpoint or End in this call",
+                p.seq
+            ));
+        }
+    }
+}
+
+/// The match log as last anchored: the latest checkpoint, or size 0 with the empty root.
+fn last_anchor(list: &[Root]) -> Root {
+    list.last().copied().unwrap_or_else(|| Root {
+        log_size: 0,
+        root: host_sha256(&[]),
+    })
+}
+
+/// The new root must extend the last anchored one: the log is append-only across every root the
+/// contract holds, so no checkpoint can drop or rewrite an entry an earlier one committed to.
+fn check_consistency(from: Root, to: Root, proof: &Proof) {
+    if proof.from_size != from.log_size {
+        env::panic_str(&format!(
+            "consistency proof from_size {} is not the last anchored log size {}",
+            proof.from_size, from.log_size
+        ));
+    }
+    require!(
+        verify_consistency_with(
+            host_sha256,
+            from.log_size,
+            to.log_size,
+            &from.root,
+            &to.root,
+            &proof.path
+        ),
+        "consistency proof does not verify: the new root does not extend the last anchored one"
+    );
 }
 
 fn start(m: &mut Match, ph: Hash, rc: Hash, start_ms: u64, end_ms: u64, now: u64) {
@@ -913,10 +1094,27 @@ fn start(m: &mut Match, ph: Hash, rc: Hash, start_ms: u64, end_ms: u64, now: u64
     m.end_ms = Some(end_ms);
 }
 
+/// A hint costs exactly its kind's price (`HINT_BPS[kind] × stake / 10 000`, the same rule the
+/// referee and the app use), paid from the asker's head to the target's.
+fn pay_hint(m: &mut Match, from: u16, to: u16, amount: u128, kind: u8) {
+    let (f, t) = live_pair(m, from, to);
+    let price = hint_price(m.stake, kind).unwrap_or_else(|| env::panic_str("unknown hint kind"));
+    require!(
+        amount == price,
+        "hint amount is not the price of its kind (HINT_BPS[kind] × stake / 10000)"
+    );
+    require!(
+        m.players[f].head >= amount,
+        "hint costs more than the payer's head"
+    );
+    m.players[f].head -= amount;
+    m.players[t].head += amount;
+}
+
 /// The k-th checkpoint needs k spacings of match time, and each one commits to a longer log than
 /// the one before (the referee logs every verdict, its checkpoints included, so the log always
 /// grows between two of them).
-fn push_checkpoint(list: &mut Vec<Root>, m: &Match, cp: Root, now: u64) {
+fn check_checkpoint(list: &[Root], m: &Match, cp: Root, now: u64) {
     let (start_ms, end_ms) = m.window();
     let nth = list.len() as u64 + 1;
     require!(
@@ -927,12 +1125,14 @@ fn push_checkpoint(list: &mut Vec<Root>, m: &Match, cp: Root, now: u64) {
         list.last().is_none_or(|last| cp.log_size > last.log_size),
         "checkpoint log_size must grow"
     );
-    list.push(cp);
 }
 
-/// `create_match` writes a ring record for every match since the upgrade that introduced them.
-fn no_ring<T>() -> T {
-    env::panic_str("match has no ring record (created before the upgrade); it settles by abort")
+/// `create_match` writes a ring record and a verdict head for every match since the upgrade that
+/// introduced them; a match from before it takes no verdicts.
+fn created_before_upgrade<T>() -> T {
+    env::panic_str(
+        "match was created before the upgrade (no verdict head or ring record); it settles by abort",
+    )
 }
 
 /// Tag and Forfeit: the loser's whole head goes to the winner, the loser is out, and the pair is

@@ -5,12 +5,17 @@ use ed25519_dalek::{Signer, SigningKey};
 use near_sdk::mock::MockAction;
 use near_sdk::test_utils::{get_created_receipts, VMContextBuilder};
 use near_sdk::{testing_env, PromiseResult};
+use tail_protocol::hint_kind::{BEARING, NEAR, TREND};
+use tail_protocol::merkle::{consistency_proof, leaf, proof, root};
 use tail_protocol::VerdictPayload;
 
 const T0: u64 = 1_794_514_000_000;
 const STAKE: u128 = 1_000_000;
 const DURATION: u64 = 3_600_000;
 const CALL_ID: [u8; 16] = [7; 16];
+/// What a NEAR or TREND hint costs at `STAKE` (2 %), and a BEARING hint (5 %).
+const NEAR_PRICE: u128 = STAKE * 200 / 10_000;
+const BEARING_PRICE: u128 = STAKE * 500 / 10_000;
 
 fn acc(s: &str) -> AccountId {
     s.parse().unwrap()
@@ -68,22 +73,72 @@ fn ctx_with_result(now_ms: u64, result: PromiseResult) {
     );
 }
 
-fn sign(k: &SigningKey, match_id: MatchId, seq: u32, body: Verdict) -> Base64VecU8 {
+/// A borsh `SignedVerdict` v2 and its digest (the `prev` of the verdict after it).
+fn sign(k: &SigningKey, match_id: MatchId, seq: u32, prev: Hash, body: Verdict) -> (Base64VecU8, Hash) {
     let payload = VerdictPayload {
         match_id,
         seq,
+        prev,
         call_id: CALL_ID,
         body: body.clone(),
     };
-    let sig = k.sign(&verdict_digest(&payload)).to_bytes();
+    let digest = verdict_digest(&payload);
     let sv = SignedVerdict {
         match_id,
         seq,
+        prev,
         call_id: CALL_ID,
         body,
-        sig,
+        sig: k.sign(&digest).to_bytes(),
     };
-    Base64VecU8(borsh::to_vec(&sv).unwrap())
+    (Base64VecU8(borsh::to_vec(&sv).unwrap()), digest)
+}
+
+/// Entry `i` of the stand-in match log every test match shares.
+fn log_entry(i: u64) -> LogEntry {
+    LogEntry::Tick {
+        tick_no: i as u32,
+        now_ms: T0 + i,
+        call_id: CALL_ID,
+    }
+}
+/// The first `n` leaf hashes of that log.
+fn log_leaves(n: u64) -> Vec<Hash> {
+    (0..n).map(|i| leaf(&log_entry(i))).collect()
+}
+fn log_root(n: u64) -> Hash {
+    root(&log_leaves(n))
+}
+/// A Checkpoint at `n` entries of the stand-in log.
+fn cp(n: u64) -> Verdict {
+    Verdict::Checkpoint {
+        log_size: n,
+        root: log_root(n),
+    }
+}
+/// The consistency proof from `m` to `n` entries of the stand-in log, as the referee sends it.
+/// A log cannot shrink, so for `m > n` there is no proof; the path is then empty (and refused).
+fn consistency(seq: u32, m: u64, n: u64) -> ConsistencyArg {
+    let path = if m <= n {
+        consistency_proof(&log_leaves(n), m as usize)
+    } else {
+        Vec::new()
+    };
+    ConsistencyArg {
+        seq,
+        from_size: U64(m),
+        path: path.into_iter().map(|h| Base64VecU8(h.to_vec())).collect(),
+    }
+}
+/// A hint from `from` to `to` of `kind`, at its price in a `STAKE` match.
+fn hint_of(from: u16, to: u16, kind: u8) -> Verdict {
+    Verdict::Hint {
+        from,
+        to,
+        amount: hint_price(STAKE, kind).unwrap(),
+        hint_id: 1,
+        hint: kind,
+    }
 }
 
 fn alpha_for(id: MatchId) -> String {
@@ -143,6 +198,16 @@ fn cfg(token: AccountId, stake: u128) -> MatchConfig {
     }
 }
 
+/// End at `n` entries of the stand-in log, revealing the VRF signature over `alpha`.
+fn end_at(alpha: &str, n: u64) -> Verdict {
+    Verdict::End {
+        vrf_signature: vrf_sig(alpha),
+        alpha: alpha.to_owned(),
+        log_size: n,
+        root: log_root(n),
+    }
+}
+
 /// Player indices in ring order for the VRF output `alpha_for(id)` commits to: `ring[k]` hunts
 /// `ring[k+1 mod n]`.
 fn ring_of(v: &MatchView, id: MatchId) -> Vec<u16> {
@@ -155,22 +220,28 @@ fn ring_of(v: &MatchView, id: MatchId) -> Vec<u16> {
 
 /// A contract with alice, bob and carol registered and topped up, and one lobby they joined.
 /// Sorted, they are players 0, 1 and 2.
+///
+/// The fixture plays the honest referee: it reads the verdict head and the last anchored log size
+/// from the contract, signs each verdict on top of them and proves each Checkpoint and End
+/// against the stand-in log (`log_leaves`).
 struct Fx {
     c: Tail,
     now: u64,
     id: MatchId,
-    seq: u32,
 }
 
 const PLAYERS: [&str; 3] = ["alice.testnet", "bob.testnet", "carol.testnet"];
 
 impl Fx {
     fn empty() -> Self {
+        Self::with(deploy())
+    }
+
+    fn with(c: Tail) -> Self {
         Self {
-            c: deploy(),
+            c,
             now: T0,
             id: [0; 16],
-            seq: 0,
         }
     }
 
@@ -262,13 +333,7 @@ impl Fx {
     }
 
     fn end_body(&self) -> Verdict {
-        let alpha = alpha_for(self.id);
-        Verdict::End {
-            vrf_signature: vrf_sig(&alpha),
-            alpha,
-            log_size: 77,
-            root: [0xee; 32],
-        }
+        end_at(&alpha_for(self.id), 77)
     }
 
     /// Moves the clock to `end_ms` (if it is not there yet) and applies the committed reveal.
@@ -289,16 +354,71 @@ impl Fx {
         ring[(k + ring.len() - 1) % ring.len()]
     }
 
-    /// Signs `body` with the referee key at the next seq and applies it.
+    /// The contract's verdict head for the match: `(seq, digest)`. A match from before the
+    /// upgrade has none; the fixture then signs on zeros (and the contract refuses it).
+    fn head(&self) -> (u32, Hash) {
+        let id = hex::encode(self.id);
+        match self.c.get_verdict_head(id.clone()) {
+            Some(h) => (h.seq, parse_hex(&h.digest, "digest")),
+            None => (self.c.get_match(id).unwrap().seq, [0; 32]),
+        }
+    }
+
+    /// The log size the match last anchored (0 before its first Checkpoint or End).
+    fn anchored(&self) -> u64 {
+        self.c
+            .get_roots(hex::encode(self.id))
+            .and_then(|r| r.checkpoints.last().map(|c| c.log_size))
+            .unwrap_or(0)
+    }
+
+    /// Signs `bodies` with `k` as the next verdicts of the match, each on top of the one before,
+    /// with a consistency proof for each Checkpoint and End.
+    fn chain_with(&self, k: &SigningKey, bodies: Vec<Verdict>) -> (Vec<Base64VecU8>, Vec<ConsistencyArg>) {
+        let (mut seq, mut prev) = self.head();
+        let mut anchored = self.anchored();
+        let (mut verdicts, mut proofs) = (Vec::new(), Vec::new());
+        for body in bodies {
+            seq += 1;
+            if let Verdict::Checkpoint { log_size, .. } | Verdict::End { log_size, .. } = body {
+                proofs.push(consistency(seq, anchored, log_size));
+                anchored = log_size;
+            }
+            let (v, digest) = sign(k, self.id, seq, prev, body);
+            verdicts.push(v);
+            prev = digest;
+        }
+        (verdicts, proofs)
+    }
+
+    fn chain(&self, bodies: Vec<Verdict>) -> (Vec<Base64VecU8>, Vec<ConsistencyArg>) {
+        self.chain_with(&referee(), bodies)
+    }
+
+    /// The next verdict signed by `k`, on top of the contract's head.
+    fn next_signed_by(&self, k: &SigningKey, body: Verdict) -> Base64VecU8 {
+        self.chain_with(k, vec![body]).0.remove(0)
+    }
+
+    /// Signs `body` with the referee key as the next verdict and applies it (with its proof).
     fn verdict(&mut self, body: Verdict) {
-        self.seq += 1;
-        let v = sign(&referee(), self.id, self.seq, body);
-        self.apply(vec![v]);
+        self.verdicts(vec![body]);
+    }
+
+    fn verdicts(&mut self, bodies: Vec<Verdict>) {
+        let (v, p) = self.chain(bodies);
+        self.apply_proved(v, p);
     }
 
     fn apply(&mut self, verdicts: Vec<Base64VecU8>) {
+        self.apply_proved(verdicts, Vec::new());
+    }
+
+    /// `apply`, passing `None` when there are no proofs, as a relay does for a tick without
+    /// Checkpoint or End.
+    fn apply_proved(&mut self, verdicts: Vec<Base64VecU8>, proofs: Vec<ConsistencyArg>) {
         self.as_("relay.testnet");
-        self.c.apply(verdicts);
+        self.c.apply(verdicts, (!proofs.is_empty()).then_some(proofs));
     }
 
     fn view(&self) -> MatchView {
@@ -697,43 +817,23 @@ fn create_match_in_a_token_that_is_not_allowed_is_refused() {
     fx.create(cfg(acc("fake.testnet"), STAKE));
 }
 
-// ── Ordering and signatures ─────────────────────────────────────────────────────────────────
+// ── Ordering, the verdict chain and signatures ──────────────────────────────────────────────
 
 #[test]
 fn verdicts_apply_in_sequence_within_one_call() {
     let mut fx = Fx::locked();
-    let start = sign(&referee(), fx.id, 1, fx.start_body());
-    let hint = sign(
-        &referee(),
-        fx.id,
-        2,
-        Verdict::Hint {
-            from: 0,
-            to: 1,
-            amount: 50,
-            hint_id: 1,
-        },
-    );
-    fx.apply(vec![start, hint]);
+    let body = fx.start_body();
+    fx.verdicts(vec![body, hint_of(0, 1, NEAR)]);
     assert_eq!(fx.view().seq, 2);
-    assert_eq!(fx.heads(), vec![STAKE - 50, STAKE + 50, STAKE]);
+    assert_eq!(fx.heads(), vec![STAKE - NEAR_PRICE, STAKE + NEAR_PRICE, STAKE]);
 }
 
 #[test]
 #[should_panic(expected = "verdict out of order")]
 fn a_verdict_that_skips_a_seq_is_refused() {
     let mut fx = Fx::running();
-    let v = sign(
-        &referee(),
-        fx.id,
-        3,
-        Verdict::Hint {
-            from: 0,
-            to: 1,
-            amount: 50,
-            hint_id: 1,
-        },
-    );
+    let (_, prev) = fx.head();
+    let (v, _) = sign(&referee(), fx.id, 3, prev, hint_of(0, 1, NEAR));
     fx.apply(vec![v]);
 }
 
@@ -741,17 +841,7 @@ fn a_verdict_that_skips_a_seq_is_refused() {
 #[should_panic(expected = "verdict out of order")]
 fn a_replayed_verdict_is_refused() {
     let mut fx = Fx::running();
-    let v = sign(
-        &referee(),
-        fx.id,
-        2,
-        Verdict::Hint {
-            from: 0,
-            to: 1,
-            amount: 50,
-            hint_id: 1,
-        },
-    );
+    let v = fx.next_signed_by(&referee(), hint_of(0, 1, NEAR));
     fx.apply(vec![v.clone()]);
     fx.apply(vec![v]);
 }
@@ -760,7 +850,7 @@ fn a_replayed_verdict_is_refused() {
 #[should_panic(expected = "bad referee signature")]
 fn a_verdict_signed_by_another_key_is_refused() {
     let mut fx = Fx::locked();
-    let v = sign(&key(9), fx.id, 1, fx.start_body());
+    let v = fx.next_signed_by(&key(9), fx.start_body());
     fx.apply(vec![v]);
 }
 
@@ -768,20 +858,10 @@ fn a_verdict_signed_by_another_key_is_refused() {
 #[should_panic(expected = "bad referee signature")]
 fn a_verdict_whose_body_was_changed_after_signing_is_refused() {
     let mut fx = Fx::running();
-    let mut raw = sign(
-        &referee(),
-        fx.id,
-        2,
-        Verdict::Hint {
-            from: 0,
-            to: 1,
-            amount: 50,
-            hint_id: 1,
-        },
-    )
-    .0;
-    // The amount's low byte sits after match_id(16) seq(4) call_id(16) tag(1) from(2) to(2).
-    raw[41] ^= 1;
+    let mut raw = fx.next_signed_by(&referee(), hint_of(0, 1, NEAR)).0;
+    // The amount's low byte sits after match_id(16) seq(4) prev(32) call_id(16) tag(1) from(2)
+    // to(2).
+    raw[73] ^= 1;
     fx.apply(vec![Base64VecU8(raw)]);
 }
 
@@ -789,20 +869,73 @@ fn a_verdict_whose_body_was_changed_after_signing_is_refused() {
 #[should_panic(expected = "verdict is not a borsh SignedVerdict")]
 fn a_verdict_with_trailing_bytes_is_refused() {
     let mut fx = Fx::running();
-    let mut raw = sign(
-        &referee(),
-        fx.id,
-        2,
-        Verdict::Hint {
-            from: 0,
-            to: 1,
-            amount: 50,
-            hint_id: 1,
-        },
-    )
-    .0;
+    let mut raw = fx.next_signed_by(&referee(), hint_of(0, 1, NEAR)).0;
     raw.push(0);
     fx.apply(vec![Base64VecU8(raw)]);
+}
+
+#[test]
+fn the_verdict_head_starts_at_zeros_and_follows_every_applied_verdict() {
+    let mut fx = Fx::locked();
+    let head = fx.c.get_verdict_head(hex::encode(fx.id)).unwrap();
+    assert_eq!(
+        head,
+        VerdictHeadView {
+            seq: 0,
+            digest: hex::encode([0u8; 32])
+        }
+    );
+    let (verdicts, _) = fx.chain(vec![fx.start_body(), hint_of(0, 1, NEAR)]);
+    let second = SignedVerdict::try_from_slice(&verdicts[1].0).unwrap();
+    fx.apply(verdicts);
+    let head = fx.c.get_verdict_head(hex::encode(fx.id)).unwrap();
+    assert_eq!(head.seq, 2);
+    assert_eq!(head.digest, hex::encode(verdict_digest(&second.payload())));
+}
+
+#[test]
+#[should_panic(expected = "verdict prev is not the digest of the match's last applied verdict")]
+fn a_first_verdict_whose_prev_is_not_zeros_is_refused() {
+    let mut fx = Fx::locked();
+    let (v, _) = sign(&referee(), fx.id, 1, [1; 32], fx.start_body());
+    fx.apply(vec![v]);
+}
+
+#[test]
+#[should_panic(expected = "verdict prev is not the digest of the match's last applied verdict")]
+fn a_verdict_whose_prev_is_not_the_last_applied_digest_is_refused() {
+    let mut fx = Fx::running();
+    let (seq, mut prev) = fx.head();
+    prev[0] ^= 1;
+    let (v, _) = sign(&referee(), fx.id, seq + 1, prev, hint_of(0, 1, NEAR));
+    fx.apply(vec![v]);
+}
+
+/// The panic message of `f`, which must panic.
+fn refusal(f: impl FnOnce()) -> String {
+    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).expect_err("was accepted");
+    err.downcast_ref::<String>()
+        .cloned()
+        .or_else(|| err.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_default()
+}
+
+/// The referee signs two different verdicts for seq 2. Whichever lands first is the chain; the
+/// other cannot land, and nothing built on it can either.
+#[test]
+fn a_forked_verdict_stream_cannot_land() {
+    let mut fx = Fx::running();
+    let (seq, prev) = fx.head();
+    let (a, a_digest) = sign(&referee(), fx.id, seq + 1, prev, hint_of(0, 1, NEAR));
+    let (b, b_digest) = sign(&referee(), fx.id, seq + 1, prev, hint_of(1, 0, NEAR));
+    let (b_next, _) = sign(&referee(), fx.id, seq + 2, b_digest, hint_of(2, 0, NEAR));
+    fx.apply(vec![a]);
+    assert!(refusal(|| fx.apply(vec![b])).contains("verdict out of order"));
+    assert!(refusal(|| fx.apply(vec![b_next])).contains("verdict prev is not the digest"));
+    // The honest chain continues from the verdict that landed.
+    let (next, _) = sign(&referee(), fx.id, seq + 2, a_digest, hint_of(2, 0, NEAR));
+    fx.apply(vec![next]);
+    assert_eq!(fx.heads(), vec![STAKE, STAKE + NEAR_PRICE, STAKE - NEAR_PRICE]);
 }
 
 // ── Key rotation ────────────────────────────────────────────────────────────────────────────
@@ -817,13 +950,8 @@ fn a_running_match_keeps_the_referee_key_it_was_created_with() {
     let mut fx = Fx::running();
     rotate_to(&mut fx, &key(2));
     assert_eq!(fx.c.get_config().referee_pk, pk_hex(&key(2)));
-    fx.verdict(Verdict::Hint {
-        from: 0,
-        to: 1,
-        amount: 50,
-        hint_id: 1,
-    });
-    assert_eq!(fx.heads()[1], STAKE + 50);
+    fx.verdict(hint_of(0, 1, NEAR));
+    assert_eq!(fx.heads()[1], STAKE + NEAR_PRICE);
 }
 
 #[test]
@@ -831,17 +959,7 @@ fn a_running_match_keeps_the_referee_key_it_was_created_with() {
 fn the_rotated_key_is_refused_by_a_match_created_before_rotation() {
     let mut fx = Fx::running();
     rotate_to(&mut fx, &key(2));
-    let v = sign(
-        &key(2),
-        fx.id,
-        2,
-        Verdict::Hint {
-            from: 0,
-            to: 1,
-            amount: 50,
-            hint_id: 1,
-        },
-    );
+    let v = fx.next_signed_by(&key(2), hint_of(0, 1, NEAR));
     fx.apply(vec![v]);
 }
 
@@ -854,7 +972,7 @@ fn the_rotated_key_is_accepted_by_a_match_created_after_rotation() {
         fx.join(p);
     }
     fx.lock();
-    let v = sign(&key(2), fx.id, 1, fx.start_body());
+    let v = fx.next_signed_by(&key(2), fx.start_body());
     fx.apply(vec![v]);
     assert_eq!(fx.view().phase, Phase::Running);
     assert_eq!(fx.view().referee_pk, pk_hex(&key(2)));
@@ -963,25 +1081,38 @@ fn a_second_start_is_refused() {
 #[should_panic(expected = "match not running")]
 fn a_hint_before_start_is_refused() {
     let mut fx = Fx::lobby();
-    fx.verdict(Verdict::Hint {
-        from: 0,
-        to: 1,
-        amount: 1,
-        hint_id: 1,
-    });
+    fx.verdict(hint_of(0, 1, NEAR));
 }
 
 // ── Hint, Tag, Forfeit ──────────────────────────────────────────────────────────────────────
 
 #[test]
-fn a_hint_of_the_whole_head_moves_it_all() {
+fn each_hint_kind_moves_its_price_from_the_asker_to_the_target() {
     let mut fx = Fx::running();
-    fx.verdict(Verdict::Hint {
-        from: 2,
-        to: 0,
-        amount: STAKE,
-        hint_id: 1,
-    });
+    fx.verdicts(vec![
+        hint_of(0, 1, NEAR),
+        hint_of(0, 2, BEARING),
+        hint_of(1, 2, TREND),
+    ]);
+    assert_eq!(
+        fx.heads(),
+        vec![
+            STAKE - NEAR_PRICE - BEARING_PRICE,
+            STAKE + NEAR_PRICE - NEAR_PRICE,
+            STAKE + BEARING_PRICE + NEAR_PRICE
+        ]
+    );
+}
+
+/// Twenty BEARING hints at 5 % each spend a whole head.
+fn spend_player_2s_head(fx: &mut Fx) {
+    fx.verdicts((0..20).map(|_| hint_of(2, 0, BEARING)).collect());
+}
+
+#[test]
+fn hints_can_spend_the_whole_head() {
+    let mut fx = Fx::running();
+    spend_player_2s_head(&mut fx);
     assert_eq!(fx.heads(), vec![2 * STAKE, STAKE, 0]);
 }
 
@@ -989,37 +1120,76 @@ fn a_hint_of_the_whole_head_moves_it_all() {
 #[should_panic(expected = "hint costs more than the payer's head")]
 fn a_hint_over_the_payers_head_is_refused() {
     let mut fx = Fx::running();
-    fx.verdict(Verdict::Hint {
-        from: 2,
-        to: 0,
-        amount: STAKE + 1,
-        hint_id: 1,
-    });
+    spend_player_2s_head(&mut fx);
+    fx.verdict(hint_of(2, 0, NEAR));
 }
 
 #[test]
 #[should_panic(expected = "players must differ")]
 fn a_hint_to_oneself_is_refused() {
     let mut fx = Fx::running();
-    fx.verdict(Verdict::Hint {
-        from: 1,
+    fx.verdict(hint_of(1, 1, NEAR));
+}
+
+fn hint_paying(amount: u128, kind: u8) -> Verdict {
+    Verdict::Hint {
+        from: 0,
         to: 1,
-        amount: 1,
+        amount,
         hint_id: 1,
-    });
+        hint: kind,
+    }
+}
+
+/// The referee could charge any amount for a hint; the price is now the contract's rule.
+#[test]
+#[should_panic(expected = "hint amount is not the price of its kind")]
+fn a_hint_paying_one_unit_more_than_its_price_is_refused() {
+    let mut fx = Fx::running();
+    fx.verdict(hint_paying(NEAR_PRICE + 1, NEAR));
+}
+
+#[test]
+#[should_panic(expected = "hint amount is not the price of its kind")]
+fn a_hint_paying_one_unit_less_than_its_price_is_refused() {
+    let mut fx = Fx::running();
+    fx.verdict(hint_paying(BEARING_PRICE - 1, BEARING));
+}
+
+#[test]
+#[should_panic(expected = "hint amount is not the price of its kind")]
+fn a_near_hint_at_the_bearing_price_is_refused() {
+    let mut fx = Fx::running();
+    fx.verdict(hint_paying(BEARING_PRICE, NEAR));
+}
+
+#[test]
+#[should_panic(expected = "unknown hint kind")]
+fn a_hint_of_an_unknown_kind_is_refused() {
+    let mut fx = Fx::running();
+    fx.verdict(hint_paying(NEAR_PRICE, 3));
+}
+
+#[test]
+fn a_hint_price_rounds_down() {
+    // 2 % of 1 049 is 20.98: the price is 20.
+    let mut fx = Fx::lobby();
+    fx.id = fx.create(cfg(usdc(), 1_049));
+    for p in PLAYERS {
+        fx.join(p);
+    }
+    fx.lock();
+    let body = fx.start_body();
+    fx.verdicts(vec![body, hint_paying(20, NEAR)]);
+    assert_eq!(fx.heads(), vec![1_029, 1_069, 1_049]);
 }
 
 #[test]
 fn a_tag_moves_the_whole_target_head_to_the_hunter_and_marks_the_target_out() {
     let mut fx = Fx::running();
-    fx.verdict(Verdict::Hint {
-        from: 0,
-        to: 1,
-        amount: 30,
-        hint_id: 1,
-    });
+    fx.verdict(hint_of(0, 1, NEAR));
     fx.verdict(Verdict::Tag { hunter: 2, target: 1 });
-    assert_eq!(fx.heads(), vec![STAKE - 30, 0, 2 * STAKE + 30]);
+    assert_eq!(fx.heads(), vec![STAKE - NEAR_PRICE, 0, 2 * STAKE + NEAR_PRICE]);
     assert!(fx.view().players[1].out);
 }
 
@@ -1066,10 +1236,7 @@ fn every_checkpoint_up_to_the_limit_is_kept_for_the_replay() {
     let mut fx = Fx::running();
     for i in 0..MAX_CHECKPOINTS as u64 {
         at_checkpoint(&mut fx, i + 1);
-        fx.verdict(Verdict::Checkpoint {
-            log_size: i + 1,
-            root: [i as u8; 32],
-        });
+        fx.verdict(cp(i + 1));
     }
     let roots = fx.c.get_roots(hex::encode(fx.id)).unwrap();
     assert_eq!(roots.checkpoints.len(), MAX_CHECKPOINTS);
@@ -1077,7 +1244,7 @@ fn every_checkpoint_up_to_the_limit_is_kept_for_the_replay() {
         roots.checkpoints[5],
         RootView {
             log_size: 6,
-            root: hex::encode([5u8; 32])
+            root: hex::encode(log_root(6))
         }
     );
     assert_eq!(roots.final_root, None);
@@ -1091,16 +1258,10 @@ fn a_checkpoint_past_the_limit_is_refused_by_the_spacing_rule() {
     let mut fx = Fx::running();
     for i in 0..MAX_CHECKPOINTS as u64 {
         at_checkpoint(&mut fx, i + 1);
-        fx.verdict(Verdict::Checkpoint {
-            log_size: i + 1,
-            root: [0; 32],
-        });
+        fx.verdict(cp(i + 1));
     }
     fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS;
-    fx.verdict(Verdict::Checkpoint {
-        log_size: MAX_CHECKPOINTS as u64 + 1,
-        root: [0; 32],
-    });
+    fx.verdict(cp(MAX_CHECKPOINTS as u64 + 1));
 }
 
 #[test]
@@ -1109,30 +1270,14 @@ fn a_checkpoint_before_its_spacing_is_refused() {
     let mut fx = Fx::running();
     at_checkpoint(&mut fx, 1);
     fx.now -= 1;
-    fx.verdict(Verdict::Checkpoint {
-        log_size: 1,
-        root: [0; 32],
-    });
+    fx.verdict(cp(1));
 }
 
 #[test]
 fn checkpoints_at_their_spacing_land_even_in_one_batch() {
     let mut fx = Fx::running();
     at_checkpoint(&mut fx, 3);
-    let batch = (1..=3)
-        .map(|i| {
-            sign(
-                &referee(),
-                fx.id,
-                1 + i,
-                Verdict::Checkpoint {
-                    log_size: u64::from(i),
-                    root: [0; 32],
-                },
-            )
-        })
-        .collect();
-    fx.apply(batch);
+    fx.verdicts((1..=3).map(cp).collect());
     assert_eq!(fx.c.get_roots(hex::encode(fx.id)).unwrap().checkpoints.len(), 3);
 }
 
@@ -1141,50 +1286,24 @@ fn checkpoints_at_their_spacing_land_even_in_one_batch() {
 fn a_checkpoint_whose_log_size_does_not_grow_is_refused() {
     let mut fx = Fx::running();
     at_checkpoint(&mut fx, 1);
-    fx.verdict(Verdict::Checkpoint {
-        log_size: 5,
-        root: [0; 32],
-    });
+    fx.verdict(cp(5));
     at_checkpoint(&mut fx, 2);
-    fx.verdict(Verdict::Checkpoint {
-        log_size: 5,
-        root: [1; 32],
-    });
+    fx.verdict(cp(5));
 }
 
 #[test]
 fn a_checkpoint_whose_log_size_grows_by_one_is_kept() {
     let mut fx = Fx::running();
     at_checkpoint(&mut fx, 1);
-    fx.verdict(Verdict::Checkpoint {
-        log_size: 5,
-        root: [0; 32],
-    });
+    fx.verdict(cp(5));
     at_checkpoint(&mut fx, 2);
-    fx.verdict(Verdict::Checkpoint {
-        log_size: 6,
-        root: [1; 32],
-    });
+    fx.verdict(cp(6));
     assert_eq!(fx.c.get_roots(hex::encode(fx.id)).unwrap().checkpoints.len(), 2);
 }
 
 fn end_with_log_size(fx: &mut Fx, log_size: u64) {
-    let Verdict::End {
-        alpha,
-        vrf_signature,
-        root,
-        ..
-    } = fx.end_body()
-    else {
-        unreachable!()
-    };
     fx.now = fx.view().end_ms.unwrap();
-    fx.verdict(Verdict::End {
-        alpha,
-        vrf_signature,
-        log_size,
-        root,
-    });
+    fx.verdict(end_at(&alpha_for(fx.id), log_size));
 }
 
 #[test]
@@ -1192,10 +1311,7 @@ fn end_with_log_size(fx: &mut Fx, log_size: u64) {
 fn an_end_whose_log_size_is_below_the_last_checkpoint_is_refused() {
     let mut fx = Fx::running();
     at_checkpoint(&mut fx, 1);
-    fx.verdict(Verdict::Checkpoint {
-        log_size: 50,
-        root: [0; 32],
-    });
+    fx.verdict(cp(50));
     end_with_log_size(&mut fx, 49);
 }
 
@@ -1203,12 +1319,367 @@ fn an_end_whose_log_size_is_below_the_last_checkpoint_is_refused() {
 fn an_end_at_the_last_checkpoints_log_size_settles() {
     let mut fx = Fx::running();
     at_checkpoint(&mut fx, 1);
-    fx.verdict(Verdict::Checkpoint {
-        log_size: 50,
-        root: [0; 32],
-    });
+    fx.verdict(cp(50));
     end_with_log_size(&mut fx, 50);
     assert_eq!(fx.view().phase, Phase::Ended);
+}
+
+// ── Consistency proofs ──────────────────────────────────────────────────────────────────────
+
+/// A running match whose first checkpoint (at 10 entries) landed, with the clock where a
+/// second one may land.
+fn with_one_checkpoint() -> Fx {
+    let mut fx = Fx::running();
+    at_checkpoint(&mut fx, 1);
+    fx.verdict(cp(10));
+    at_checkpoint(&mut fx, 2);
+    fx
+}
+
+#[test]
+#[should_panic(expected = "no consistency proof for verdict seq 3")]
+fn a_checkpoint_without_a_proof_is_refused() {
+    let mut fx = with_one_checkpoint();
+    let (v, _) = fx.chain(vec![cp(20)]);
+    fx.apply(v);
+}
+
+#[test]
+#[should_panic(expected = "no consistency proof for verdict seq 2")]
+fn even_the_first_checkpoint_needs_a_proof() {
+    let mut fx = Fx::running();
+    at_checkpoint(&mut fx, 1);
+    let (v, _) = fx.chain(vec![cp(10)]);
+    fx.apply(v);
+}
+
+#[test]
+#[should_panic(expected = "no consistency proof for verdict seq 3")]
+fn an_end_without_a_proof_is_refused() {
+    let mut fx = with_one_checkpoint();
+    fx.now = fx.view().end_ms.unwrap();
+    let (v, _) = fx.chain(vec![fx.end_body()]);
+    fx.apply(v);
+}
+
+#[test]
+#[should_panic(expected = "no consistency proof for verdict seq 3")]
+fn a_proof_for_another_seq_is_refused() {
+    let mut fx = with_one_checkpoint();
+    let (v, _) = fx.chain(vec![cp(20)]);
+    fx.apply_proved(v, vec![consistency(4, 10, 20)]);
+}
+
+#[test]
+#[should_panic(expected = "consistency proof from_size 0 is not the last anchored log size 10")]
+fn a_proof_from_the_start_of_the_log_instead_of_the_last_checkpoint_is_refused() {
+    let mut fx = with_one_checkpoint();
+    let (v, _) = fx.chain(vec![cp(20)]);
+    fx.apply_proved(v, vec![consistency(3, 0, 20)]);
+}
+
+#[test]
+#[should_panic(expected = "consistency proof from_size 9 is not the last anchored log size 10")]
+fn a_proof_from_a_size_never_anchored_is_refused() {
+    let mut fx = with_one_checkpoint();
+    let (v, _) = fx.chain(vec![cp(20)]);
+    fx.apply_proved(v, vec![consistency(3, 9, 20)]);
+}
+
+#[test]
+#[should_panic(expected = "consistency proof does not verify")]
+fn a_proof_with_one_hash_changed_is_refused() {
+    let mut fx = with_one_checkpoint();
+    let (v, mut p) = fx.chain(vec![cp(20)]);
+    p[0].path[1].0[0] ^= 1;
+    fx.apply_proved(v, p);
+}
+
+#[test]
+#[should_panic(expected = "consistency proof does not verify")]
+fn a_proof_missing_its_last_hash_is_refused() {
+    let mut fx = with_one_checkpoint();
+    let (v, mut p) = fx.chain(vec![cp(20)]);
+    p[0].path.pop();
+    fx.apply_proved(v, p);
+}
+
+#[test]
+#[should_panic(expected = "a consistency proof hash is not 32 bytes")]
+fn a_proof_hash_of_the_wrong_length_is_refused() {
+    let mut fx = with_one_checkpoint();
+    let (v, mut p) = fx.chain(vec![cp(20)]);
+    p[0].path[0].0.pop();
+    fx.apply_proved(v, p);
+}
+
+/// The referee rewrote history: the second checkpoint's log does not start with the 10 entries
+/// the first one committed to.
+#[test]
+#[should_panic(expected = "consistency proof does not verify")]
+fn a_checkpoint_over_a_rewritten_log_is_refused() {
+    let mut fx = with_one_checkpoint();
+    let mut forged = log_leaves(20);
+    forged[3] = leaf(&log_entry(1_000));
+    let body = Verdict::Checkpoint {
+        log_size: 20,
+        root: root(&forged),
+    };
+    let (v, _) = fx.chain(vec![body]);
+    let path = consistency_proof(&forged, 10)
+        .into_iter()
+        .map(|h| Base64VecU8(h.to_vec()))
+        .collect();
+    fx.apply_proved(
+        v,
+        vec![ConsistencyArg {
+            seq: 3,
+            from_size: U64(10),
+            path,
+        }],
+    );
+}
+
+#[test]
+#[should_panic(expected = "consistency proof does not verify")]
+fn an_end_at_the_last_checkpoints_size_with_another_root_is_refused() {
+    let mut fx = with_one_checkpoint();
+    fx.now = fx.view().end_ms.unwrap();
+    let Verdict::End {
+        alpha, vrf_signature, ..
+    } = end_at(&alpha_for(fx.id), 10)
+    else {
+        unreachable!()
+    };
+    fx.verdict(Verdict::End {
+        alpha,
+        vrf_signature,
+        log_size: 10,
+        root: log_root(11),
+    });
+}
+
+#[test]
+#[should_panic(expected = "two consistency proofs for one seq")]
+fn two_proofs_for_one_seq_are_refused() {
+    let mut fx = with_one_checkpoint();
+    let (v, p) = fx.chain(vec![cp(20)]);
+    fx.apply_proved(v, vec![p[0].clone(), p[0].clone()]);
+}
+
+#[test]
+#[should_panic(expected = "consistency proof for seq 3 matches no Checkpoint or End in this call")]
+fn a_proof_for_a_verdict_that_is_not_an_anchor_is_refused() {
+    let mut fx = with_one_checkpoint();
+    let (v, _) = fx.chain(vec![hint_of(0, 1, NEAR)]);
+    fx.apply_proved(v, vec![consistency(3, 10, 20)]);
+}
+
+/// A whole match's worth of checkpoints over a log that grows unevenly (sizes that are and are
+/// not powers of two, steps of one and of many), with Hints and Tags between them, proved one
+/// by one and in batches, then End.
+#[test]
+fn valid_proofs_across_a_match_of_many_checkpoints_are_accepted() {
+    let mut fx = Fx::running();
+    let sizes: Vec<u64> = (1..=60u64).map(|k| k * k / 3 + k).collect();
+    let mut nth = 0;
+    for chunk in sizes.chunks(7) {
+        nth += chunk.len() as u64;
+        at_checkpoint(&mut fx, nth);
+        let mut bodies = vec![hint_of(0, 1, NEAR)];
+        bodies.extend(chunk.iter().map(|&n| cp(n)));
+        fx.verdicts(bodies);
+    }
+    let last = *sizes.last().unwrap();
+    end_with_log_size(&mut fx, last + 37);
+    let roots = fx.c.get_roots(hex::encode(fx.id)).unwrap();
+    assert_eq!(roots.checkpoints.len(), sizes.len());
+    for (r, &n) in roots.checkpoints.iter().zip(&sizes) {
+        assert_eq!(r.root, hex::encode(log_root(n)));
+    }
+    assert_eq!(roots.final_root.unwrap().root, hex::encode(log_root(last + 37)));
+    assert_eq!(fx.view().phase, Phase::Ended);
+}
+
+#[test]
+fn an_end_with_no_checkpoint_before_it_is_proved_from_the_empty_log() {
+    let mut fx = Fx::running();
+    fx.end();
+    assert_eq!(
+        fx.c.get_roots(hex::encode(fx.id)).unwrap().final_root,
+        Some(RootView {
+            log_size: 77,
+            root: hex::encode(log_root(77))
+        })
+    );
+}
+
+// ── Gas ─────────────────────────────────────────────────────────────────────────────────────
+
+/// Host-function gas of `f` as the mocked VM counts it (SHA-256, ed25519, storage, borsh in and
+/// out of the host). The wasm instructions themselves are not metered here; see the README.
+fn host_gas(f: impl FnOnce()) -> u64 {
+    let before = env::used_gas().as_gas();
+    f();
+    env::used_gas().as_gas() - before
+}
+
+/// A match log near its end is about 15k entries (12 players, an hour of 5 s batches, contacts,
+/// ticks). One Checkpoint a minute after the last one, proved against it.
+#[test]
+fn a_checkpoint_with_a_proof_over_a_fifteen_thousand_entry_log_stays_cheap() {
+    let mut fx = Fx::running();
+    at_checkpoint(&mut fx, 1);
+    fx.verdict(cp(14_750));
+    at_checkpoint(&mut fx, 2);
+    let leaves = log_leaves(15_013);
+    let body = Verdict::Checkpoint {
+        log_size: 15_013,
+        root: root(&leaves),
+    };
+    let (v, _) = fx.chain(vec![body]);
+    let path: Vec<Base64VecU8> = consistency_proof(&leaves, 14_750)
+        .into_iter()
+        .map(|h| Base64VecU8(h.to_vec()))
+        .collect();
+    let hashes = path.len();
+    let proof = ConsistencyArg {
+        seq: 3,
+        from_size: U64(14_750),
+        path,
+    };
+    fx.as_("relay.testnet");
+    let with_proof = host_gas(|| fx.c.apply(v, Some(vec![proof])));
+    let (hint, _) = fx.chain(vec![hint_of(0, 1, NEAR)]);
+    fx.as_("relay.testnet");
+    let hint_only = host_gas(|| fx.c.apply(hint, None));
+    let entry = Base64VecU8(borsh::to_vec(&log_entry(9_876)).unwrap());
+    let audit: Vec<Base64VecU8> = proof_path(&leaves, 9_876);
+    let audit_len = audit.len();
+    let mut ok = false;
+    let inclusion = host_gas(|| {
+        ok =
+            fx.c.verify_inclusion(hex::encode(fx.id), entry, U64(9_876), U64(15_013), audit);
+    });
+    assert!(ok);
+    let ggas = |g: u64| g / 1_000_000_000;
+    println!(
+        "host gas: apply(Checkpoint + {hashes}-hash proof) {} Ggas, apply(Hint) {} Ggas, \
+         verify_inclusion({audit_len}-hash path) {} Ggas",
+        ggas(with_proof),
+        ggas(hint_only),
+        ggas(inclusion),
+    );
+    assert!(
+        with_proof < 5_000_000_000_000,
+        "apply with a proof used {with_proof} gas"
+    );
+    assert!(
+        inclusion < 2_000_000_000_000,
+        "verify_inclusion used {inclusion} gas"
+    );
+}
+
+fn proof_path(leaves: &[Hash], i: usize) -> Vec<Base64VecU8> {
+    proof(leaves, i)
+        .into_iter()
+        .map(|h| Base64VecU8(h.to_vec()))
+        .collect()
+}
+
+// ── Inclusion proofs (verify_inclusion) ─────────────────────────────────────────────────────
+
+/// Asks the contract whether entry `i` of the stand-in log is at `index` of the root anchored
+/// at `size`, with the audit path for entry `i` in a log of `path_size`.
+fn included(fx: &Fx, i: u64, index: u64, size: u64, path_size: u64) -> bool {
+    let path = proof(&log_leaves(path_size), i as usize)
+        .into_iter()
+        .map(|h| Base64VecU8(h.to_vec()))
+        .collect();
+    fx.c.verify_inclusion(
+        hex::encode(fx.id),
+        Base64VecU8(borsh::to_vec(&log_entry(i)).unwrap()),
+        U64(index),
+        U64(size),
+        path,
+    )
+}
+
+/// A match with checkpoints at 10 and 21 entries and its final root at 40.
+fn ended_with_roots() -> Fx {
+    let mut fx = with_one_checkpoint();
+    fx.verdict(cp(21));
+    end_with_log_size(&mut fx, 40);
+    fx
+}
+
+#[test]
+fn an_entry_proves_in_every_root_anchored_after_it() {
+    let fx = ended_with_roots();
+    for (i, size) in [(0, 10), (9, 10), (4, 21), (20, 21), (0, 40), (17, 40), (39, 40)] {
+        assert!(included(&fx, i, i, size, size), "entry {i} in the root at {size}");
+    }
+}
+
+#[test]
+fn an_entry_does_not_prove_at_another_index() {
+    let fx = ended_with_roots();
+    assert!(!included(&fx, 5, 6, 21, 21));
+}
+
+#[test]
+fn an_entry_does_not_prove_in_a_root_anchored_before_it() {
+    let fx = ended_with_roots();
+    assert!(!included(&fx, 15, 15, 10, 21));
+}
+
+#[test]
+fn a_size_no_root_was_anchored_at_proves_nothing() {
+    let fx = ended_with_roots();
+    // 22 entries make a real tree, but the contract holds no root of that size.
+    assert!(!included(&fx, 3, 3, 22, 22));
+}
+
+#[test]
+fn a_path_for_another_tree_size_does_not_prove() {
+    let fx = ended_with_roots();
+    assert!(!included(&fx, 3, 3, 21, 40));
+}
+
+#[test]
+fn a_changed_entry_does_not_prove() {
+    let fx = ended_with_roots();
+    let path: Vec<Base64VecU8> = proof(&log_leaves(21), 4)
+        .into_iter()
+        .map(|h| Base64VecU8(h.to_vec()))
+        .collect();
+    let id = hex::encode(fx.id);
+    let entry = |e: &LogEntry| Base64VecU8(borsh::to_vec(e).unwrap());
+    assert!(fx
+        .c
+        .verify_inclusion(id.clone(), entry(&log_entry(4)), U64(4), U64(21), path.clone()));
+    assert!(!fx
+        .c
+        .verify_inclusion(id.clone(), entry(&log_entry(5)), U64(4), U64(21), path.clone()));
+    // Bytes that are not a LogEntry prove nothing, even with a path that fits their hash.
+    let mut junk = borsh::to_vec(&log_entry(4)).unwrap();
+    junk.push(0);
+    assert!(!fx
+        .c
+        .verify_inclusion(id.clone(), Base64VecU8(junk), U64(4), U64(21), path.clone()));
+    // A path hash of the wrong length.
+    let mut short = path;
+    short[0].0.pop();
+    assert!(!fx
+        .c
+        .verify_inclusion(id, entry(&log_entry(4)), U64(4), U64(21), short));
+}
+
+#[test]
+fn an_unknown_match_proves_nothing() {
+    let mut fx = ended_with_roots();
+    fx.id = [0x55; 16];
+    assert!(!included(&fx, 0, 0, 10, 10));
 }
 
 // ── End ─────────────────────────────────────────────────────────────────────────────────────
@@ -1217,16 +1688,8 @@ fn an_end_at_the_last_checkpoints_log_size_settles() {
 fn end_with_the_committed_vrf_reveal_credits_every_survivor_their_head() {
     let mut fx = Fx::running();
     at_checkpoint(&mut fx, 1);
-    fx.verdict(Verdict::Checkpoint {
-        log_size: 10,
-        root: [1; 32],
-    });
-    fx.verdict(Verdict::Hint {
-        from: 0,
-        to: 1,
-        amount: 30,
-        hint_id: 1,
-    });
+    fx.verdict(cp(10));
+    fx.verdict(hint_of(0, 1, NEAR));
     let hunter = fx.hunter_of(1);
     fx.verdict(Verdict::Tag { hunter, target: 1 });
     fx.end();
@@ -1234,8 +1697,8 @@ fn end_with_the_committed_vrf_reveal_credits_every_survivor_their_head() {
     assert_eq!(v.phase, Phase::Ended);
     assert_eq!(fx.heads(), vec![0, 0, 0]);
     let paid: Vec<u128> = v.players.iter().map(|p| p.paid.0).collect();
-    let mut want = vec![STAKE - 30, 0, STAKE];
-    want[usize::from(hunter)] += STAKE + 30;
+    let mut want = vec![STAKE - NEAR_PRICE, 0, STAKE];
+    want[usize::from(hunter)] += STAKE + NEAR_PRICE;
     assert_eq!(paid, want);
     for (i, p) in PLAYERS.iter().enumerate() {
         // Each started with 2 stakes and put one in.
@@ -1248,7 +1711,7 @@ fn end_with_the_committed_vrf_reveal_credits_every_survivor_their_head() {
         roots.final_root,
         Some(RootView {
             log_size: 77,
-            root: hex::encode([0xee; 32])
+            root: hex::encode(log_root(77))
         })
     );
 }
@@ -1258,12 +1721,7 @@ fn end_with_the_committed_vrf_reveal_credits_every_survivor_their_head() {
 fn end_with_a_vrf_signature_other_than_the_committed_one_is_refused() {
     let mut fx = Fx::running();
     let alpha = format!("vrf:43:relay.testnet:{}", hex::encode(fx.id));
-    fx.verdict(Verdict::End {
-        vrf_signature: vrf_sig(&alpha),
-        alpha,
-        log_size: 1,
-        root: [0; 32],
-    });
+    fx.verdict(end_at(&alpha, 1));
 }
 
 #[test]
@@ -1291,7 +1749,7 @@ fn end_with_a_committed_signature_that_is_not_from_the_vrf_key_is_refused() {
         alpha,
         vrf_signature: forged,
         log_size: 1,
-        root: [0; 32],
+        root: log_root(1),
     });
 }
 
@@ -1320,7 +1778,7 @@ fn end_with_a_vrf_drawn_for_another_seed_is_refused() {
         alpha,
         vrf_signature: sig,
         log_size: 1,
-        root: [0; 32],
+        root: log_root(1),
     });
 }
 
@@ -1386,10 +1844,7 @@ fn a_running_match_aborted_after_the_referee_timeout_refunds_current_heads() {
 fn a_running_match_cannot_be_aborted_before_the_referee_timeout() {
     let mut fx = Fx::running();
     at_checkpoint(&mut fx, 1);
-    fx.verdict(Verdict::Checkpoint {
-        log_size: 1,
-        root: [0; 32],
-    });
+    fx.verdict(cp(1));
     // The clock restarts at every verdict.
     fx.now += REFEREE_TIMEOUT_MS - 1;
     fx.abort();
@@ -1402,11 +1857,8 @@ fn a_running_match_still_going_past_its_end_by_the_timeout_can_be_aborted() {
     // The referee keeps checkpointing, so the silence rule never fires.
     while fx.now < end_ms + REFEREE_TIMEOUT_MS {
         fx.now += REFEREE_TIMEOUT_MS / 2;
-        let size = u64::from(fx.seq);
-        fx.verdict(Verdict::Checkpoint {
-            log_size: size,
-            root: [0; 32],
-        });
+        let size = fx.anchored() + 1;
+        fx.verdict(cp(size));
     }
     fx.abort();
     assert_eq!(fx.view().phase, Phase::Aborted);
@@ -1420,11 +1872,8 @@ fn a_running_match_just_short_of_its_end_plus_the_timeout_cannot_be_aborted() {
     let end_ms = fx.view().end_ms.unwrap();
     while fx.now + REFEREE_TIMEOUT_MS / 2 < end_ms + REFEREE_TIMEOUT_MS - 1 {
         fx.now += REFEREE_TIMEOUT_MS / 2;
-        let size = u64::from(fx.seq);
-        fx.verdict(Verdict::Checkpoint {
-            log_size: size,
-            root: [0; 32],
-        });
+        let size = fx.anchored() + 1;
+        fx.verdict(cp(size));
     }
     fx.now = end_ms + REFEREE_TIMEOUT_MS - 1;
     fx.abort();
@@ -1526,6 +1975,8 @@ fn vector_match() -> (Fx, near_sdk::serde_json::Value) {
     fx.c.matches.insert(id, m);
     let ring = fx.c.rings.remove(&fx.id).unwrap();
     fx.c.rings.insert(id, ring);
+    fx.c.verdict_heads.remove(&fx.id);
+    fx.c.verdict_heads.insert(id, vhex(&v["verdicts"][0]["digest"]));
     fx.id = id;
     // Late enough for the vector's checkpoint (the first) to land.
     fx.now = start_ms + CHECKPOINT_SPACING_MS;
@@ -1535,10 +1986,16 @@ fn vector_match() -> (Fx, near_sdk::serde_json::Value) {
 #[test]
 fn the_golden_vector_verdicts_apply_through_the_real_path() {
     let (mut fx, v) = vector_match();
-    // seq 2..5: Hint 0→1 20000, Tag 2 takes 0, Forfeit 1 → 2, Checkpoint.
-    fx.apply((1..5).map(|i| vsigned(&v, i)).collect());
+    // seq 2..5: Hint 0→1 20000 (a NEAR hint at 2 % of STAKE), Tag 2 takes 0, Forfeit 1 → 2,
+    // Checkpoint. The Checkpoint is the match's first anchor, so its proof from size 0 is empty.
+    fx.apply_proved(
+        (1..5).map(|i| vsigned(&v, i)).collect(),
+        vec![consistency(5, 0, 0)],
+    );
     assert_eq!(fx.heads(), vec![0, 0, 3 * STAKE]);
-    assert_eq!(fx.view().seq, 5);
+    let head = fx.c.get_verdict_head(hex::encode(fx.id)).unwrap();
+    assert_eq!(head.seq, 5);
+    assert_eq!(head.digest, v["verdicts"][4]["digest"].as_str().unwrap());
     let roots = fx.c.get_roots(hex::encode(fx.id)).unwrap();
     assert_eq!(roots.checkpoints[0].log_size, 1234);
 }
@@ -1562,6 +2019,7 @@ fn the_golden_vector_start_is_refused_for_players_it_does_not_name() {
     let mut m = fx.c.matches.get(&fx.id).unwrap().clone();
     m.referee_pk = vhex(&v["refereePk"]);
     fx.c.matches.insert(id, m);
+    fx.c.verdict_heads.insert(id, [0; 32]);
     fx.id = id;
     fx.apply(vec![vsigned(&v, 0)]);
 }
@@ -1572,7 +2030,10 @@ fn the_golden_vector_end_meets_its_ring_commit_but_its_alpha_seed_is_not_the_mat
     // The vector's End reveals the signature its Start committed to (ring check passes); its
     // alpha seed is a placeholder, which the contract refuses.
     let (mut fx, v) = vector_match();
-    fx.apply((1..6).map(|i| vsigned(&v, i)).collect());
+    fx.apply_proved(
+        (1..6).map(|i| vsigned(&v, i)).collect(),
+        vec![consistency(5, 0, 0)],
+    );
 }
 
 // ── Storage bound ───────────────────────────────────────────────────────────────────────────
@@ -1649,6 +2110,8 @@ fn a_maximal_match_fits_in_the_storage_its_deposit_paid_for() {
     fx.c.checkpoints.flush();
     fx.c.rings.insert([9; 16], ring);
     fx.c.rings.flush();
+    fx.c.verdict_heads.insert([9; 16], [8; 32]);
+    fx.c.verdict_heads.flush();
     let used = u128::from(env::storage_usage() - before);
     assert!(used <= MATCH_STORAGE_BYTES, "a maximal match uses {used} bytes");
     // The bound is not wildly loose either: the deposit is for this, not a guess.
@@ -2175,12 +2638,7 @@ fn end_with_an_alpha_one_byte_over_the_limit_is_refused() {
     let id = Fx::locked().id;
     let alpha = long_alpha(id, MAX_ALPHA_LEN + 1);
     let mut fx = running_with_alpha(&alpha);
-    fx.verdict(Verdict::End {
-        vrf_signature: vrf_sig(&alpha),
-        alpha,
-        log_size: 1,
-        root: [0; 32],
-    });
+    fx.verdict(end_at(&alpha, 1));
 }
 
 #[test]
@@ -2189,12 +2647,7 @@ fn end_with_an_alpha_exactly_at_the_limit_settles() {
     let alpha = long_alpha(id, MAX_ALPHA_LEN);
     let mut fx = running_with_alpha(&alpha);
     fx.now = fx.view().end_ms.unwrap();
-    fx.verdict(Verdict::End {
-        vrf_signature: vrf_sig(&alpha),
-        alpha,
-        log_size: 1,
-        root: [0; 32],
-    });
+    fx.verdict(end_at(&alpha, 1));
     assert_eq!(fx.view().phase, Phase::Ended);
 }
 
@@ -2332,17 +2785,9 @@ fn play_a_maximal_match(fx: &mut Fx, players: &[AccountId]) {
     }
     for i in 0..MAX_CHECKPOINTS as u64 {
         fx.now = start_ms + (i + 1) * CHECKPOINT_SPACING_MS;
-        fx.verdict(Verdict::Checkpoint {
-            log_size: u64::MAX - MAX_CHECKPOINTS as u64 + i,
-            root: [9; 32],
-        });
+        fx.verdict(cp(i + 1));
     }
-    fx.verdict(Verdict::End {
-        vrf_signature: vrf_sig(&alpha),
-        alpha,
-        log_size: u64::MAX,
-        root: [1; 32],
-    });
+    fx.verdict(end_at(&alpha, MAX_CHECKPOINTS as u64 + 1));
 }
 
 /// Re-review port: through the real methods with every id at 64 characters (one token too),
@@ -2362,12 +2807,7 @@ fn storage_never_exceeds_the_deposits_with_maximal_ids() {
         vrf_sender(),
         vec![usdc(), tok.clone()],
     );
-    let mut fx = Fx {
-        c,
-        now: T0,
-        id: [0; 16],
-        seq: 0,
-    };
+    let mut fx = Fx::with(c);
     let mut paid: u128 = 0;
     let players: Vec<AccountId> = (0..MAX_PLAYERS).map(|i| long(&format!("p{i:02}"))).collect();
     let sponsors: Vec<AccountId> = (0..MAX_SPONSORS).map(|i| long(&format!("s{i}"))).collect();
@@ -2389,7 +2829,6 @@ fn storage_never_exceeds_the_deposits_with_maximal_ids() {
         });
         paid += MATCH_STORAGE_BYTES;
         fx.id = parse_hex(&id_hex, "match_id");
-        fx.seq = 0;
         for p in &players {
             ctx(&tok, fx.now, NearToken::from_yoctonear(0));
             let msg = format!(r#"{{"credit":"{p}"}}"#);
@@ -2423,6 +2862,7 @@ fn storage_never_exceeds_the_deposits_with_maximal_ids() {
         fx.c.matches.flush();
         fx.c.checkpoints.flush();
         fx.c.rings.flush();
+        fx.c.verdict_heads.flush();
         let used = stored_bytes();
         assert!(
             used <= paid,
@@ -2458,12 +2898,7 @@ fn a_start_deadline_seven_days_out_is_accepted_and_the_sponsor_can_get_out_after
 }
 
 fn first_match_id(seed: [u8; 32]) -> MatchId {
-    let mut fx = Fx {
-        c: deploy_with_seed(seed),
-        now: T0,
-        id: [0; 16],
-        seq: 0,
-    };
+    let mut fx = Fx::with(deploy_with_seed(seed));
     fx.create(cfg(usdc(), STAKE))
 }
 
@@ -2748,17 +3183,17 @@ impl Model {
                 match rng.below(10) {
                     0..=3 if in_play && !others.is_empty() => {
                         let b = *rng.pick(&others).unwrap();
-                        let head = v.players[usize::from(a)].head.0;
-                        let amount = if head == 0 {
-                            0
-                        } else {
-                            u128::from(rng.next()) % (head + 1)
-                        };
+                        let kind = rng.below(3) as u8;
+                        let amount = hint_price(v.stake.0, kind).unwrap();
+                        if amount > v.players[usize::from(a)].head.0 {
+                            return;
+                        }
                         Verdict::Hint {
                             from: a,
                             to: b,
                             amount,
                             hint_id: 0,
+                            hint: kind,
                         }
                     }
                     4 | 5 if in_play && !others.is_empty() => Verdict::Tag {
@@ -2774,27 +3209,16 @@ impl Model {
                         if (kept + 1) * CHECKPOINT_SPACING_MS > now.min(end_ms).saturating_sub(start_ms) {
                             return;
                         }
-                        Verdict::Checkpoint {
-                            log_size: u64::from(v.seq) + 1,
-                            root: [1; 32],
-                        }
+                        cp(u64::from(v.seq) + 1)
                     }
-                    _ if now >= end_ms || live.len() == 1 => {
-                        let alpha = alpha_for(id);
-                        Verdict::End {
-                            vrf_signature: vrf_sig(&alpha),
-                            alpha,
-                            log_size: u64::from(v.seq) + 1,
-                            root: [2; 32],
-                        }
-                    }
+                    _ if now >= end_ms || live.len() == 1 => end_at(&alpha_for(id), u64::from(v.seq) + 1),
                     _ => return,
                 }
             }
             Phase::Ended | Phase::Aborted => return,
         };
-        let signed = sign(&referee(), id, v.seq + 1, body.clone());
-        self.fx.apply(vec![signed]);
+        self.fx.id = id;
+        self.fx.verdict(body.clone());
         self.track(id, &body);
     }
 
@@ -3017,12 +3441,7 @@ fn ending_with_alpha(alpha: &str) -> Fx {
 }
 
 fn end_with_alpha(fx: &mut Fx, alpha: &str) {
-    fx.verdict(Verdict::End {
-        vrf_signature: vrf_sig(alpha),
-        alpha: alpha.to_owned(),
-        log_size: 1,
-        root: [0; 32],
-    });
+    fx.verdict(end_at(alpha, 1));
 }
 
 /// Audit D4: only the last ':' field of the alpha was checked.
@@ -3130,12 +3549,7 @@ fn rotating_the_vrf_sender_by_anyone_but_the_owner_is_refused() {
 // Timing.
 
 fn hint() -> Verdict {
-    Verdict::Hint {
-        from: 0,
-        to: 1,
-        amount: 1,
-        hint_id: 1,
-    }
+    hint_of(0, 1, NEAR)
 }
 
 #[test]
@@ -3353,7 +3767,7 @@ fn a_forfeit_to_the_hunter_then_a_tag_of_the_inherited_target_settles() {
 // Migration.
 
 /// Turns `fx`'s contract into the first state layout, as the live deployment has it: no ring
-/// record for the match, no `vrf_sender`, the old `STATE` record.
+/// record or verdict head for the match, no `vrf_sender`, the old `STATE` record.
 fn downgrade_to_v1(fx: &mut Fx) {
     fx.c.payouts.flush();
     fx.c.balances.flush();
@@ -3361,6 +3775,8 @@ fn downgrade_to_v1(fx: &mut Fx) {
     fx.c.checkpoints.flush();
     fx.c.rings.remove(&fx.id);
     fx.c.rings.flush();
+    fx.c.verdict_heads.remove(&fx.id);
+    fx.c.verdict_heads.flush();
     let v1 = migrate::TailV1 {
         owner: fx.c.owner.clone(),
         referee_pk: fx.c.referee_pk,
@@ -3376,12 +3792,15 @@ fn downgrade_to_v1(fx: &mut Fx) {
     env::state_write(&v1);
 }
 
-fn migrated_lobby() -> Fx {
-    let mut fx = Fx::lobby();
+fn migrated(mut fx: Fx) -> Fx {
     downgrade_to_v1(&mut fx);
     ctx(&owner(), fx.now, NearToken::from_yoctonear(0));
     fx.c = Tail::migrate(acc("referee-caller.testnet"));
     fx
+}
+
+fn migrated_lobby() -> Fx {
+    migrated(Fx::lobby())
 }
 
 #[test]
@@ -3398,11 +3817,19 @@ fn migrate_keeps_balances_payouts_and_matches_and_pins_the_vrf_sender() {
     let old = fx.view();
     assert_eq!(old.players.len(), 3);
     assert_eq!(old.vrf_sender, None);
-    // The nonce carried over: the next match gets a new id and a ring record.
+    assert_eq!(fx.c.get_verdict_head(hex::encode(fx.id)), None);
+    // The nonce carried over: the next match gets a new id, a ring record and a verdict head.
     let old_id = fx.id;
     fx.id = fx.create(cfg(usdc(), 0));
     assert_ne!(fx.id, old_id);
     assert_eq!(fx.view().vrf_sender, Some(acc("referee-caller.testnet")));
+    assert_eq!(
+        fx.c.get_verdict_head(hex::encode(fx.id)),
+        Some(VerdictHeadView {
+            seq: 0,
+            digest: hex::encode([0u8; 32])
+        })
+    );
 }
 
 #[test]
@@ -3426,40 +3853,44 @@ fn a_match_created_after_migrate_runs_to_end_with_the_ring_checked() {
     assert_eq!(fx.view().phase, Phase::Ended);
 }
 
-/// A match from before the upgrade has no pinned sender or elimination record, so it cannot be
-/// checked at End; the refund path still works.
+/// A match from before the upgrade has no verdict head, pinned sender or elimination record, so
+/// no verdict for it can be checked against the chain or the ring; the refund path still works.
 #[test]
-fn a_match_from_before_migrate_still_moves_hints_and_aborts_with_a_refund() {
+#[should_panic(expected = "match was created before the upgrade")]
+fn a_start_in_a_lobby_from_before_migrate_is_refused() {
     let mut fx = migrated_lobby();
     fx.lock();
     let body = fx.start_body();
     fx.verdict(body);
+}
+
+#[test]
+fn a_lobby_from_before_migrate_aborts_with_a_refund_once_its_lock_runs_out() {
+    let mut fx = migrated_lobby();
+    fx.lock();
+    fx.now += LOCK_MS;
+    fx.abort();
+    for p in PLAYERS {
+        assert_eq!(fx.bal(p), 2 * STAKE);
+    }
+}
+
+#[test]
+fn a_running_match_from_before_migrate_takes_no_verdict_and_aborts_with_its_heads_refunded() {
+    let mut fx = Fx::running();
     fx.verdict(hint());
+    let mut fx = migrated(fx);
+    for body in [hint(), Verdict::Tag { hunter: 0, target: 1 }, cp(1)] {
+        let why = refusal(|| fx.verdict(body));
+        assert!(why.contains("match was created before the upgrade"), "{why}");
+    }
+    let why = refusal(|| fx.end());
+    assert!(why.contains("match was created before the upgrade"), "{why}");
     fx.now += REFEREE_TIMEOUT_MS;
     fx.abort();
     let total: u128 = PLAYERS.iter().map(|p| fx.bal(p)).sum();
     assert_eq!(total, 6 * STAKE);
-    assert_eq!(fx.bal("alice.testnet"), 2 * STAKE - 1);
-}
-
-#[test]
-#[should_panic(expected = "no ring record")]
-fn a_tag_in_a_match_from_before_migrate_is_refused() {
-    let mut fx = migrated_lobby();
-    fx.lock();
-    let body = fx.start_body();
-    fx.verdict(body);
-    fx.verdict(Verdict::Tag { hunter: 0, target: 1 });
-}
-
-#[test]
-#[should_panic(expected = "no ring record")]
-fn an_end_in_a_match_from_before_migrate_is_refused() {
-    let mut fx = migrated_lobby();
-    fx.lock();
-    let body = fx.start_body();
-    fx.verdict(body);
-    fx.end();
+    assert_eq!(fx.bal("alice.testnet"), 2 * STAKE - NEAR_PRICE);
 }
 
 #[test]
