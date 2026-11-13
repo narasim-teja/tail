@@ -18,6 +18,7 @@ import { HomeView } from "../screens/Home";
 import { BlockedView, HuntView, TaggedView } from "../screens/Hunt";
 import { type LobbyModel, LobbyView } from "../screens/Lobby";
 import { PrimerView } from "../screens/Primer";
+import { ProfileView } from "../screens/Profile";
 import { ResultsView } from "../screens/Results";
 import { ScanView } from "../screens/Scan";
 import { color, space, text } from "../ui/theme";
@@ -149,7 +150,7 @@ export const STATES: Record<string, () => ReactNode> = {
       onCreate={noop}
       onScan={noop}
       onCode={noop}
-      onWithdraw={noop}
+      onProfile={noop}
       onSettings={noop}
       onOpen={noop}
     />
@@ -161,9 +162,22 @@ export const STATES: Record<string, () => ReactNode> = {
       onCreate={noop}
       onScan={noop}
       onCode={noop}
-      onWithdraw={noop}
+      onProfile={noop}
       onSettings={noop}
       onOpen={noop}
+    />
+  ),
+  profile: () => (
+    <ProfileView
+      m={{
+        accountId: "teja.tail-dev-a38d13.testnet",
+        balance: 12_500_000n,
+        network: "testnet",
+        contractId: "tail.tail-dev-a38d13.testnet",
+        busy: null,
+        error: null,
+      }}
+      actions={{ onTopUp: noop, onWithdraw: noop, onBack: noop }}
     />
   ),
   create: () => (

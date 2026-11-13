@@ -40,13 +40,15 @@ export interface Settings extends CarryConfig {
   contractId: string;
 }
 
+/** Screens opened from Home, before any match. */
+export type Page = "create" | "scan" | "profile";
+
 export type Route =
   | "loading"
   | "enrol"
   | "primer"
   | "home"
-  | "create"
-  | "scan"
+  | Page
   | "lobby"
   | "briefing"
   | "hunt"
@@ -57,7 +59,11 @@ export interface RecentMatch {
   atMs: number;
 }
 
-const extra = (Constants.expoConfig?.extra ?? {}) as { contractId?: string | null };
+const extra = (Constants.expoConfig?.extra ?? {}) as { contractId?: string | null; nearNetwork?: string };
+/** The NEAR network this build plays on (app.config.ts); testnet unlocks free top-ups. */
+export const NEAR_NETWORK = extra.nearNetwork ?? "testnet";
+/** A testnet top-up: 10 test USDC from the relay, in 6-decimal units. */
+export const TOP_UP = 10_000_000n;
 
 const DEFAULTS: Settings = {
   relayUrl: "",
@@ -93,7 +99,7 @@ class AppModel {
   here: { lat: number; lon: number; acc: number } | null = null;
   showSettings = false;
   /** A page opened from home: the create form or the QR scanner. */
-  page: "create" | "scan" | null = null;
+  page: Page | null = null;
   primerSeen = true;
   recent: RecentMatch[] = [];
   /** Home: this account's contract balance in the match token, and that token. */
@@ -197,7 +203,7 @@ class AppModel {
     this.emit();
   }
 
-  openPage(page: "create" | "scan" | null): void {
+  openPage(page: Page | null): void {
     this.page = page;
     this.error = null;
     this.emit();
@@ -360,6 +366,7 @@ class AppModel {
       const me = this.need();
       await this.relay.topUp(nearSigner(me), me.accountId as string, amount);
       await this.refresh();
+      this.refreshWallet();
     });
   }
 

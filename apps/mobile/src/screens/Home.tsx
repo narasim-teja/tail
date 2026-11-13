@@ -1,11 +1,12 @@
-// Home: Create and Scan to join are the two big actions; balance and Withdraw; recent matches.
+// Home: Create and Scan to join are the two big actions; you and your balance (both open your
+// profile, where top-up and withdraw live); recent matches.
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { money } from "../game/huntModel";
+import { handleOf, money } from "../game/huntModel";
 import { FINDING_LOBBY, type RecentMatch, useApp } from "../state/app";
-import { Mark } from "../ui/brand";
 import { RollingMoney } from "../ui/game";
 import {
+  Avatar,
   Body,
   Button,
   Caption,
@@ -54,7 +55,7 @@ export function HomeView({
   onCreate,
   onScan,
   onCode,
-  onWithdraw,
+  onProfile,
   onSettings,
   onOpen,
 }: {
@@ -63,7 +64,7 @@ export function HomeView({
   onCreate: () => void;
   onScan: () => void;
   onCode: (code: string) => void;
-  onWithdraw: () => void;
+  onProfile: () => void;
   onSettings: () => void;
   onOpen: (matchId: string) => void;
 }) {
@@ -73,10 +74,15 @@ export function HomeView({
   return (
     <Screen>
       <Row style={styles.header}>
-        <Row gap="s">
-          <Mark size={28} />
+        <Pressable
+          onPress={onProfile}
+          accessibilityRole="button"
+          accessibilityLabel={`${m.handle}, profile`}
+          style={({ pressed }) => [styles.me, pressed && styles.pressed]}
+        >
+          <Avatar name={m.handle} size={32} mark />
           <Strong>{m.handle}</Strong>
-        </Row>
+        </Pressable>
         <Button kind="quiet" title="Settings" onPress={onSettings} />
       </Row>
 
@@ -85,23 +91,16 @@ export function HomeView({
         <ChaseBand height={150} reduceMotion={reduceMotion} track="loop" crowd={4} />
       </View>
 
-      <View style={styles.wallet}>
-        <View
-          accessible
-          accessibilityLabel={m.balance === null ? "Balance loading" : `Balance ${money(m.balance)}`}
-        >
-          <Eyebrow muted>Balance</Eyebrow>
-          {m.balance === null ? <Num>-</Num> : <RollingMoney units={m.balance} reduceMotion={reduceMotion} />}
-        </View>
-        <Button
-          kind="secondary"
-          title={m.busy === "Withdrawing" ? "Withdrawing" : "Withdraw"}
-          busy={m.busy === "Withdrawing"}
-          disabled={!m.balance}
-          hint="Sends your balance to your NEAR account"
-          onPress={onWithdraw}
-        />
-      </View>
+      <Pressable
+        onPress={onProfile}
+        accessibilityRole="button"
+        accessibilityLabel={m.balance === null ? "Balance loading" : `Balance ${money(m.balance)}`}
+        accessibilityHint="Top up or withdraw"
+        style={({ pressed }) => [styles.wallet, pressed && styles.pressed]}
+      >
+        <Eyebrow muted>Balance</Eyebrow>
+        {m.balance === null ? <Num>-</Num> : <RollingMoney units={m.balance} reduceMotion={reduceMotion} />}
+      </Pressable>
       {m.error ? <Notice title="Something didn't go through" detail={m.error} /> : null}
 
       <Gap size="m" />
@@ -170,7 +169,7 @@ export function Home() {
   return (
     <HomeView
       m={{
-        handle: app.me ?? "",
+        handle: handleOf(app.me ?? ""),
         balance: app.wallet?.balance ?? null,
         busy: app.busy,
         error: app.error,
@@ -180,7 +179,7 @@ export function Home() {
       onCreate={() => app.openPage("create")}
       onScan={() => app.openPage("scan")}
       onCode={(c) => void app.openMatch(c)}
-      onWithdraw={() => void app.withdraw()}
+      onProfile={() => app.openPage("profile")}
       onSettings={() => app.toggleSettings(true)}
       onOpen={(id) => void app.openMatch(id)}
     />
@@ -191,12 +190,8 @@ const styles = StyleSheet.create({
   header: { justifyContent: "space-between", flexWrap: "nowrap" },
   grow: { flex: 1 },
   park: { borderRadius: radius.l, backgroundColor: color.sand, overflow: "hidden", padding: space.s },
-  wallet: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "space-between",
-    paddingTop: space.s,
-  },
+  me: { flexDirection: "row", alignItems: "center", gap: space.s, minHeight: HIT },
+  wallet: { alignSelf: "flex-start", paddingTop: space.s },
   how: { flexDirection: "row", gap: space.m, alignItems: "flex-start" },
   howNum: {
     ...text.figure,

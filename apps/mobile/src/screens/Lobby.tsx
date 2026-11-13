@@ -7,7 +7,7 @@ import { Animated, Share, StyleSheet, View } from "react-native";
 import Svg, { Path, Rect } from "react-native-svg";
 import { money } from "../game/huntModel";
 import { joinLink } from "../relay/client";
-import { useApp } from "../state/app";
+import { TOP_UP, useApp } from "../state/app";
 import { haptic } from "../ui/haptics";
 import {
   Avatar,
@@ -304,7 +304,7 @@ export function Lobby() {
         onJoin: () => void app.join(),
         onLeave: () => void app.leave(),
         onStart: () => void app.start(),
-        onTopUp: () => void app.topUp(10_000_000n),
+        onTopUp: () => void app.topUp(TOP_UP),
         onBack: () => app.closeMatch(),
       }}
     />

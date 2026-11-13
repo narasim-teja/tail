@@ -11,6 +11,7 @@ import { Home } from "./screens/Home";
 import { Hunt } from "./screens/Hunt";
 import { Lobby } from "./screens/Lobby";
 import { Primer } from "./screens/Primer";
+import { Profile } from "./screens/Profile";
 import { Results } from "./screens/Results";
 import { Scan } from "./screens/Scan";
 import { Settings } from "./screens/Settings";
@@ -79,6 +80,8 @@ function Screen({
       return <Create />;
     case "scan":
       return <Scan />;
+    case "profile":
+      return <Profile />;
     case "lobby":
       return <Lobby />;
     case "briefing":
