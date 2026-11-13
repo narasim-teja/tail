@@ -8,12 +8,21 @@ pinned on NEAR, read through the phone's own RPC, and after the match the phone 
 of its reports is in the log root anchored on NEAR.
 
 **Status.** Unit and integration tests pass without a phone (below). Release builds run on two
-iPhones (17 Pro Max, 14): enrolment with App Attest, lobbies, test players, the hunt and a Tag from
-Bluetooth contact all ran indoors on 2026-11-12, against the relay on a Mac with the local test
-referee. Those runs were protocol v1. The v2 paths (signed HUDs, chain recovery, inclusion
-receipts, presence proofs, mesh carry, the log monitor) pass their tests here but have not run on
-a phone yet. Leave match, the lobby's states after a failed Start and Call it off pass their
-tests here but have not run on a phone yet. Range, pocket and outdoor play are not tested yet.
+iPhones (17 Pro Max, 14), indoors, against the relay on a Mac with the local test referee. On
+2026-11-12 they ran protocol v1: enrolment with App Attest, lobbies, test players, the hunt and a
+Tag from Bluetooth contact. On 2026-11-13 they ran protocol v2 in match `5f36dbbb…` with one test
+player: both refreshed their enrolment with a fresh App Attest attestation after the referee's
+device records were reset, played on signed HUDs, and one bought two demand-priced hints (0.02,
+then 0.0625 USDC on a 1 USDC stake). A Tag from mutual Bluetooth contact landed 84 s after Start:
+contact was logged in epochs 0 to 5, each phone heard the other's token 132 to 581 times per
+15 s epoch at close range, and the two phones' fixes had a median accuracy of 4 m and 11 m. The
+test player forfeited after 180 s dark. During play the log monitor fetched consistency proofs;
+after End both phones found every report under End's root (36 lookups) and showed Results, and
+the dossiers were updated on chain. Mesh carry ran on the same two phones in another match
+(below). Chain recovery (no report was refused), presence proofs shared from the phone, a NEAR AI
+Handler line, Leave match, the lobby's states after a failed Start, Call it off, the Settings
+screen as it is now and the signed private-replay link pass their tests here but have not run on
+a phone yet. Range, pocket and outdoor play are not tested yet.
 
 ## Layout
 
@@ -270,7 +279,8 @@ All served by `apps/server` (shapes in its README):
   the relay's or fails the trial, or Start answers 409 with `code: "refresh"` naming it, the
   phone attests a new App Attest key over a fresh challenge for the same account and signs
   `rebind_sig` (`rebindDigest`) with the NEAR key from the Keychain. It says so in one line on
-  Home and the lobby. Not run on a phone yet.
+  Home and the lobby. Ran on both iPhones on 2026-11-13, after the local test referee's device
+  records were reset.
 - `POST /matches/:id/cancel` (signed, host): Call it off on a lobby whose lock ran out or whose
   start time passed. The contract locks a lobby once, so such a lobby can never start, and the
   phone's key cannot call `abort`; the relay does, and every stake goes back.
@@ -376,6 +386,6 @@ receiver for a forfeit). A HUD without it falls back to "your hunter".
   token to the overflow area, where a scan cannot see it. SDK 0.33.0 has no way to stop or shrink
   its advertisement.
 - **Not yet tested outdoors.** Bluetooth range (`RSSI_MIN_DBM`), pocket mode and a full match in a
-  park have not run; the indoor two-phone runs on 2026-11-12 are the only device runs so far.
+  park have not run; every device run so far (2026-11-12 and 2026-11-13) was indoors.
 - **Relay address.** Use the Mac's LAN IP (`http://<ip>:8787`). Its `.local` name can resolve to
   the USB link to a cabled phone, which drops requests when the cable moves.
