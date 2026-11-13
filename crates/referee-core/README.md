@@ -248,3 +248,6 @@ Local to the engine (`referee_core::*`):
     batch is inside `KEEP_EPOCHS`. Batch times only move forward, so a phone can date a strike
     no earlier than its last accepted batch; one that stays silent and then sets its clock
     back can strike "as of" the start of its silence, paying for the silence in dark time.
+    Contacts older than `KEEP_EPOCHS` are pruned, and the lock counts a window of
+    `WINDOW_EPOCHS` before the strike, so a strike more than about 5 epochs late can be
+    refused for a lock that was full when it was pressed: a missed tag, never a wrong one.

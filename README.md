@@ -118,7 +118,9 @@ Entered: Games, Privacy, Open, NFTs.
 - **A soulbound Dossier per player.** NEP-171 with NEP-177 metadata and NEP-181 enumeration, on
   the tail contract. The token id is the player's sub-account, minted at registration. Its record
   is written when a match settles: totals over matches the contract replayed and paid out, and
-  the last 12 entries. Refunds are listed and count for nothing.
+  the last 12 entries. Refunds are listed and count for nothing. The code here also logs NEP-171
+  `nft_metadata_update` at each settlement so indexers refresh the card; the live contract does
+  not yet (not upgraded since).
 - **Art on-chain.** `media` is an SVG data URI the contract draws from the record on every read:
   a trail with one segment per kept entry. It is byte-identical to `packages/brand/src/dossier.ts`,
   pinned by golden vectors on both sides. The largest vector is 3,969 bytes, and both sides' tests

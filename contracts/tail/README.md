@@ -201,9 +201,10 @@ Every byte is paid for up front, and nothing allocates storage later:
   14,920 bytes. Matches are kept after settlement for the replay.
 - Gas on testnet (e2e, before the End replay, alpha parsing and timing rules), one verdict per
   `apply`: the contract receipt burned 2.0 to 2.7 Tgas (Start 2.00, Hint 1.96, Tag 1.96,
-  Checkpoint 2.14, End 2.65). The current code has not been measured on testnet yet; End now also
-  rebuilds the ring (up to 12 SHA-256) and replays up to 251 events, and Checkpoint and End verify
-  a proof. Each Hint, Tag and Forfeit rewrites the play record (up to about 4.9 KB with 240
+  Checkpoint 2.14, End 2.65). On the contract as upgraded on 2026-11-13, the 8 verdict
+  transactions of a 3-player match burned 2.3 to 4.2 Tgas each in the contract (End the most);
+  a maximal match is not measured on testnet. End now also rebuilds the ring (up to 12 SHA-256)
+  and replays up to 251 events, and Checkpoint and End verify a proof. Each Hint, Tag and Forfeit rewrites the play record (up to about 4.9 KB with 240
   hints). Batches were not measured.
 - Proofs, host-function gas only (the unit-test VM does not meter wasm instructions), over a
   15,013-entry log: `apply` of one Checkpoint with its 13-hash proof from 14,750 entries 0.57 Tgas
