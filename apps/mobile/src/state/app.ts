@@ -18,9 +18,12 @@ import { payoutProblem, withdrawCall, withdrawGas } from "../near/withdraw";
 import {
   isMatchId,
   type MatchView,
+  type MatchZone,
   matchIdBytes,
   type NewMatch,
+  OpenLobbyError,
   RelayClient,
+  RelayError,
   type RelayInfo,
   readJoin,
 } from "../relay/client";
@@ -81,6 +84,10 @@ class AppModel {
   identity: Identity | null = null;
   matchId: string | null = null;
   match: MatchView | null = null;
+  /** The signed part of the open match (zone, this player's keys, Start failure); host and players only. */
+  matchZone: MatchZone | null = null;
+  /** Create was refused because this host already has this lobby open; Create offers to open it. */
+  openLobby: string | null = null;
   balance: bigint | null = null;
   briefing: Briefing | null = null;
   session: HuntSession | null = null;
@@ -203,6 +210,7 @@ class AppModel {
   openPage(page: Page | null): void {
     this.page = page;
     this.error = null;
+    this.openLobby = null;
     this.emit();
   }
 
@@ -213,8 +221,12 @@ class AppModel {
 
   /** The zone the relay sent, only if it matches the chain's commitment. */
   get zone(): Zone | null {
-    const m = this.match;
-    return checkedZone(m?.zone ?? null, m?.chain?.zoneHash ?? null);
+    return checkedZone(this.matchZone?.zone ?? null, this.match?.chain?.zoneHash ?? null);
+  }
+
+  /** Why the open match's last Start failed, as the relay told the host and players. */
+  get startError(): string | null {
+    return this.matchZone?.error ?? null;
   }
 
   /** Home: reads this account's balance in the contract's first allowed token. */
@@ -334,15 +346,22 @@ class AppModel {
 
   createMatch(m: Omit<NewMatch, "zone" | "safehouses" | "startByMs"> & { radiusM: number }) {
     return this.act("Opening a lobby", async () => {
+      this.openLobby = null;
       if (!this.here) throw new Error("Waiting for your location.");
       const { radiusM, ...rest } = m;
-      const { matchId } = await this.relay.createMatch(nearSigner(this.need()), {
-        ...rest,
-        zone: { latE7: Math.round(this.here.lat * 1e7), lonE7: Math.round(this.here.lon * 1e7), radiusM },
-        safehouses: [],
-        // The lobby stays open for an hour; after that anyone can abort it and refund.
-        startByMs: Date.now() + 60 * 60_000,
-      });
+      let matchId: string;
+      try {
+        ({ matchId } = await this.relay.createMatch(nearSigner(this.need()), {
+          ...rest,
+          zone: { latE7: Math.round(this.here.lat * 1e7), lonE7: Math.round(this.here.lon * 1e7), radiusM },
+          safehouses: [],
+          // The lobby stays open for an hour; after that anyone can abort it and refund.
+          startByMs: Date.now() + 60 * 60_000,
+        }));
+      } catch (e) {
+        if (e instanceof OpenLobbyError) this.openLobby = e.matchId;
+        throw e;
+      }
       this.setMatch(matchId);
       await this.callContract("join_match", { match_id: matchId });
     });
@@ -475,6 +494,8 @@ class AppModel {
     );
     files.write(RECENT_FILE, JSON.stringify(this.recent));
     this.match = null;
+    this.matchZone = null;
+    this.openLobby = null;
     this.briefing = null;
     try {
       this.savedTags = this.loadRecord(id).tags;
@@ -495,6 +516,7 @@ class AppModel {
     this.briefing = null;
     this.matchId = null;
     this.match = null;
+    this.matchZone = null;
     this.resultsNow = false;
     files.remove(CURRENT_FILE);
     void this.refreshWallet();
@@ -519,6 +541,12 @@ class AppModel {
       const m = await this.relay.getMatch(id);
       if (this.matchId !== id) return;
       this.match = m;
+      // Once this player's keys are in, the signed view has nothing more to say.
+      if (!this.matchZone?.keys.length && this.inMatch(m)) {
+        const z = await this.loadZone(id);
+        if (this.matchId !== id) return;
+        this.matchZone = z;
+      }
       if (m.chain && this.me && this.settings.contractId) {
         const bal = await this.rpc.view<string>(this.settings.contractId, "get_balance", {
           account_id: this.me,
@@ -534,6 +562,23 @@ class AppModel {
     this.emit();
   }
 
+  /** The host and the players are who the relay shows the signed view to (invites aside). */
+  private inMatch(m: MatchView): boolean {
+    const me = this.me;
+    return !!me && (m.host === me || !!m.chain?.players.some((p) => p.accountId === me));
+  }
+
+  /** The signed view, or null when the relay says this account is not in the match. */
+  private async loadZone(matchId: string): Promise<MatchZone | null> {
+    try {
+      return await this.relay.matchZone(nearSigner(this.need()), matchId);
+    } catch (e) {
+      // The chain view the relay checks may lag a join by a few seconds; the next poll asks again.
+      if (e instanceof RelayError && e.status === 403) return null;
+      throw e;
+    }
+  }
+
   // ── Briefing and hunt ───────────────────────────────────────────────────────────────────
 
   /** Opens this player's sealed keys and checks the referee's box key against the chain. */
@@ -543,7 +588,9 @@ class AppModel {
       const m = this.match;
       const chain = m?.chain;
       if (!m || !chain) throw new Error("The match is not on chain yet.");
-      const seat = m.keys.find((k) => k.accountId === id.accountId);
+      // The poll may not have read the keys yet (they arrive with Start); ask for them now.
+      if (!this.matchZone?.keys.length) this.matchZone = await this.loadZone(m.matchId);
+      const seat = this.matchZone?.keys.find((k) => k.accountId === id.accountId);
       if (!seat) throw new Error("You are not in this match.");
       const keys = openPlayerKeys(id.boxSk, seat.sealed, {
         matchId: matchIdBytes(m.matchId),

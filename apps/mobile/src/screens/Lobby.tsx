@@ -297,7 +297,7 @@ export function Lobby() {
       : m.phase === "starting" || (chain?.lockedUntilMs ?? null) !== null
         ? { kind: "starting" }
         : m.phase === "failed"
-          ? { kind: "failed", error: m.error ?? "The referee did not answer." }
+          ? { kind: "failed", error: app.startError ?? "The referee did not answer." }
           : chain && players.length < chain.minPlayers
             ? { kind: "waiting", need: chain.minPlayers - players.length }
             : chain

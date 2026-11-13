@@ -114,6 +114,16 @@ describe("uploader", () => {
     expect(r.outbox.length).toBe(2);
   });
 
+  test("stops when the relay says a batch is too large, since every later batch chains to it", async () => {
+    const r = rig([0, 1], async () => {
+      throw new RelayError(413, "That was too big for the relay to take.");
+    });
+    r.up.kick();
+    await flush();
+    expect(r.up.state).toEqual({ kind: "stopped", error: "That was too big for the relay to take." });
+    expect(r.outbox.length).toBe(2);
+  });
+
   test("a batch delivered by the mesh leaves the queue and is not sent again", async () => {
     const sent: number[] = [];
     const r = rig([0, 1], async (it) => {

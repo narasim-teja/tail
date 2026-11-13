@@ -13,11 +13,21 @@ export class RelayError extends Error {
   constructor(
     readonly status: number | null,
     message: string,
+    /** The relay's whole answer to a refusal: some carry fields to act on beside `error`. */
+    readonly detail: Readonly<Record<string, unknown>> = {},
   ) {
     super(message);
   }
   get unreachable(): boolean {
     return this.status === null;
+  }
+}
+
+/** `POST /matches` refused because this host already has a lobby that can still start. */
+export class OpenLobbyError extends RelayError {
+  override name = "OpenLobbyError";
+  constructor(readonly matchId: string) {
+    super(409, "You already have an open lobby.");
   }
 }
 
@@ -151,19 +161,27 @@ export interface SealedKeys {
   sealed: Uint8Array;
 }
 
+/** `GET /matches/:id`: public, so it holds nothing about where the match is played. */
 export interface MatchView {
   matchId: string;
   /** The short lobby code as people see it ("K7M-4QX"); null for a match made before codes. */
   code: string | null;
   host: string;
   phase: RelayPhase;
-  error: string | null;
   startMs: number | null;
   endMs: number | null;
-  keys: SealedKeys[];
   chain: ChainMatch | null;
+}
+
+/** `GET /matches/:id/zone`: what only the host and the players may see, asked for signed. */
+export interface MatchZone {
+  matchId: string;
   /** As the relay sent it; check it against `chain.zoneHash` before use (game/zone.ts). */
   zone: { zone: Circle; safehouses: Circle[] } | null;
+  /** The caller's own seat, once the match has started; empty before. */
+  keys: SealedKeys[];
+  /** Why the last Start failed, if it did. */
+  error: string | null;
 }
 
 export interface RefereeKeys {
@@ -174,8 +192,10 @@ export interface RefereeKeys {
 
 /** A signed relay request, ready to send over HTTP or to hand to the mesh carry path. */
 export interface SignedRequest {
-  method: "POST";
+  method: "GET" | "POST";
+  /** Path and query, as given to the client (the base URL's own path is not included). */
   path: string;
+  /** Empty for a GET, which sends no body; the signature covers SHA256 of the empty string. */
   body: string;
   account: string;
   timeMs: number;
@@ -328,8 +348,14 @@ export class RelayClient {
       max_players: m.maxPlayers,
       start_by_ms: m.startByMs,
     });
-    const r = await this.send(this.sign(signer, "/matches", body));
-    return { matchId: read.matchId(r, "match_id"), code: read.code(r, "code") };
+    try {
+      const r = await this.send(this.sign(signer, "POST", "/matches", body));
+      return { matchId: read.matchId(r, "match_id"), code: read.code(r, "code") };
+    } catch (e) {
+      const open = e instanceof RelayError && e.status === 409 ? e.detail["match_id"] : undefined;
+      if (typeof open === "string" && isMatchId(open)) throw new OpenLobbyError(open);
+      throw e;
+    }
   }
 
   /**
@@ -349,13 +375,25 @@ export class RelayClient {
   async getMatch(matchId: string): Promise<MatchView> {
     const r = await this.json("GET", `/matches/${matchId}`);
     return {
-      matchId: read.str(r, "match_id"),
+      matchId: read.matchId(r, "match_id"),
       code: r["code"] === null || r["code"] === undefined ? null : read.code(r, "code"),
       host: read.str(r, "host"),
       phase: read.str(r, "phase") as RelayPhase,
-      error: typeof r["error"] === "string" ? r["error"] : null,
       startMs: read.intOrNull(r, "start_ms"),
       endMs: read.intOrNull(r, "end_ms"),
+      chain: parseChain(r["chain"]),
+    };
+  }
+
+  /**
+   * The zone, this player's sealed keys and the last Start failure. The relay answers only the
+   * host, an invitee and the players (403 to anyone else), so the request is signed.
+   */
+  async matchZone(signer: Signer, matchId: string): Promise<MatchZone> {
+    const r = await this.send(this.sign(signer, "GET", `/matches/${matchId}/zone`, ""));
+    return {
+      matchId: read.matchId(r, "match_id"),
+      zone: parseZone(r["zone"]),
       keys: read.list(r, "keys").map((k) => {
         const o = obj(k, "keys[]");
         return {
@@ -364,21 +402,20 @@ export class RelayClient {
           sealed: read.b64(o, "sealed"),
         };
       }),
-      chain: parseChain(r["chain"]),
-      zone: parseZone(r["zone"]),
+      error: typeof r["error"] === "string" ? r["error"] : null,
     };
   }
 
   /** Host only: locks the lobby and starts the referee. */
   async startMatch(signer: Signer, matchId: string): Promise<void> {
-    await this.send(this.sign(signer, `/matches/${matchId}/start`, "{}"), SLOW_CALL_MS);
+    await this.send(this.sign(signer, "POST", `/matches/${matchId}/start`, "{}"), SLOW_CALL_MS);
   }
 
   // ── Hunt ─────────────────────────────────────────────────────────────────────────────────
 
   /** The signed `POST /batch` for one sealed batch. The same bytes go over HTTP or the mesh. */
   batchRequest(signer: Signer, matchId: string, sealed: Uint8Array): SignedRequest {
-    return this.sign(signer, "/batch", JSON.stringify({ match_id: matchId, sealed: toB64(sealed) }));
+    return this.sign(signer, "POST", "/batch", JSON.stringify({ match_id: matchId, sealed: toB64(sealed) }));
   }
 
   /** `queued: false` means the relay already had this exact upload (a retry); that is success. */
@@ -414,7 +451,7 @@ export class RelayClient {
   /** Test relays only: the host fills one seat with a stand-in that never moves. */
   async addTestPlayer(signer: Signer, matchId: string): Promise<string> {
     const r = await this.send(
-      this.sign(signer, "/dev/ghosts/fill", JSON.stringify({ match_id: matchId })),
+      this.sign(signer, "POST", "/dev/ghosts/fill", JSON.stringify({ match_id: matchId })),
       SLOW_CALL_MS,
     );
     return read.str(r, "account_id");
@@ -422,7 +459,12 @@ export class RelayClient {
 
   async topUp(signer: Signer, accountId: string, amount: bigint): Promise<void> {
     await this.send(
-      this.sign(signer, "/dev/topup", JSON.stringify({ account_id: accountId, amount: amount.toString() })),
+      this.sign(
+        signer,
+        "POST",
+        "/dev/topup",
+        JSON.stringify({ account_id: accountId, amount: amount.toString() }),
+      ),
     );
   }
 
@@ -437,19 +479,24 @@ export class RelayClient {
 
   // ── Plumbing ─────────────────────────────────────────────────────────────────────────────
 
-  /** The relay checks the signature over the path it sees, so the base URL must not be rewritten by a proxy. */
-  sign(signer: Signer, path: string, body: string): SignedRequest {
+  /**
+   * The relay checks the signature over the path and query it sees (`url.pathname + url.search`,
+   * apps/server src/routes/util.ts), so the base URL must not be rewritten by a proxy. A GET has
+   * an empty body.
+   */
+  sign(signer: Signer, method: SignedRequest["method"], path: string, body: string): SignedRequest {
+    if (method === "GET" && body !== "") throw new Error("a GET has no body");
     const timeMs = this.now();
-    const fullPath = new URL(this.baseUrl + path).pathname;
-    const sig = signer.sign(requestDigest("POST", fullPath, timeMs, utf8(body)));
-    return { method: "POST", path, body, account: signer.accountId, timeMs, sig };
+    const url = new URL(this.baseUrl + path);
+    const sig = signer.sign(requestDigest(method, url.pathname + url.search, timeMs, utf8(body)));
+    return { method, path, body, account: signer.accountId, timeMs, sig };
   }
 
   private send(req: SignedRequest, timeoutMs?: number): Promise<Obj> {
     return this.json(
       req.method,
       req.path,
-      req.body,
+      req.method === "GET" ? undefined : req.body,
       {
         "x-tail-account": req.account,
         "x-tail-time": String(req.timeMs),
@@ -493,10 +540,25 @@ export class RelayClient {
       throw new RelayError(res.status, `The relay answered ${res.status} without JSON.`);
     }
     const o = obj(parsed, "relay answer");
-    if (!res.ok)
-      throw new RelayError(res.status, typeof o["error"] === "string" ? o["error"] : `HTTP ${res.status}`);
+    if (!res.ok) throw new RelayError(res.status, refusal(res.status, o["error"]), o);
     return o;
   }
+}
+
+/**
+ * The relay's reason for a refusal, as the screens show it. Too large and too many get plain
+ * words of the phone's own when the relay gives none; a 429's own reason (which limit, when to
+ * try again) is kept.
+ */
+function refusal(status: number, error: unknown): string {
+  const said = typeof error === "string" && error ? error : null;
+  if (status === 413) return "That was too big for the relay to take.";
+  if (status === 429) {
+    if (!said) return "The relay is busy. Try again in a minute.";
+    const s = said.charAt(0).toUpperCase() + said.slice(1);
+    return /[.!?]$/.test(s) ? s : `${s}.`;
+  }
+  return said ?? `HTTP ${status}`;
 }
 
 /** Match ids travel as 32 lowercase hex characters; the protocol uses the 16 bytes. */

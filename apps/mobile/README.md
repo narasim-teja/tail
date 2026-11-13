@@ -199,10 +199,14 @@ All served by `apps/server` (shapes in its README):
 - `GET /referee`: the referee's keys. The app checks `box_pk_sig` (ed25519 over
   `SHA256("tail/referee-box/v1" ‖ box_pk)`) under the `referee_pk` the match pinned on chain, and
   refuses to seal otherwise.
-- `GET /matches/:id`: lobby, sealed keys, the join `code`, the chain view, and the zone and
-  safehouses. The zone is drawn only if it hashes to the chain's `zone_hash`.
+- `GET /matches/:id` (public): lobby, phase, the join `code` and the chain view. No zone, no keys.
+- `GET /matches/:id/zone` (signed like the POSTs, empty body; host and players only): the zone and
+  safehouses, this player's own sealed keys once the match has started, and why a Start failed.
+  The zone is drawn only if it hashes to the chain's `zone_hash`.
 - `GET /join/:code`: a short lobby code (`K7M-4QX`) to a match id.
-- `POST /enroll/challenge`, `POST /enroll`, `POST /matches`, `POST /matches/:id/start`,
+- `POST /matches` answers 409 with the `match_id` when the host already has an open lobby; Create
+  says so and offers to open it. 429 (limits) and 413 (too large) show as short sentences.
+- `POST /enroll/challenge`, `POST /enroll`, `POST /matches/:id/start`,
   `POST /batch`, `GET /hud` (WebSocket), `POST /dev/topup` (testnet), `GET /replay/:id`.
 
 The tagged screen names who got you from the HUD's `tagged_by` (the hunter for a tag, the

@@ -128,7 +128,8 @@ export class Uploader {
         const err = e instanceof RelayError ? e : new RelayError(null, String((e as Error).message ?? e));
         if (!err.unreachable) this.lastContactMs = this.now();
         // 409: the match is not running any more; nothing later can be accepted either.
-        if (err.status === 409) return this.stop(err.message);
+        // 413: this batch will never fit, and the ones after it chain to it, so none can land.
+        if (err.status === 409 || err.status === 413) return this.stop(err.message);
         this.failures++;
         const wait = backoffMs(this.failures);
         this.set({ kind: "waiting", seq: item.seq, retryInMs: wait, error: err.message });

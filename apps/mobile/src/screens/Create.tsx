@@ -14,6 +14,8 @@ export interface CreateModel {
   here: { lat: number; lon: number; acc: number } | null;
   busy: string | null;
   error: string | null;
+  /** The lobby this host already has open, when the relay refused a second one. */
+  openLobby: string | null;
 }
 
 export interface NewMatchForm {
@@ -37,10 +39,12 @@ const PLAYERS = { min: 3, max: 12 };
 export function CreateView({
   m,
   onCreate,
+  onOpenLobby,
   onBack,
 }: {
   m: CreateModel;
   onCreate: (f: NewMatchForm) => void;
+  onOpenLobby: (matchId: string) => void;
   onBack: () => void;
 }) {
   const [stake, setStake] = useState(1);
@@ -49,6 +53,7 @@ export function CreateView({
   const [radiusM, setRadius] = useState(400);
   const [publicReplay, setPublicReplay] = useState(true);
   const here = m.here;
+  const open = m.openLobby;
   return (
     <Screen
       footer={
@@ -103,7 +108,17 @@ export function CreateView({
       <Caption muted>{`Up to ${PLAYERS.max} can join.`}</Caption>
       <ToggleRow label="Public replay" value={publicReplay} onChange={setPublicReplay} />
       <Caption muted>{publicReplay ? "Anyone with the link can watch." : "Only players can watch."}</Caption>
-      {m.error ? <Notice title="Couldn't create the match" detail={m.error} /> : null}
+      {open ? (
+        <>
+          <Notice
+            title="You already have an open lobby"
+            detail="Start it, or let it lapse, before making another."
+          />
+          <Button kind="secondary" title="Open that lobby" onPress={() => onOpenLobby(open)} />
+        </>
+      ) : m.error ? (
+        <Notice title="Couldn't create the match" detail={m.error} />
+      ) : null}
     </Screen>
   );
 }
@@ -116,7 +131,7 @@ export function Create() {
   }, [app]);
   return (
     <CreateView
-      m={{ here: app.here, busy: app.busy, error: app.error }}
+      m={{ here: app.here, busy: app.busy, error: app.error, openLobby: app.openLobby }}
       onCreate={(f) =>
         void app.createMatch({
           stake: f.stake,
@@ -127,6 +142,7 @@ export function Create() {
           publicReplay: f.publicReplay,
         })
       }
+      onOpenLobby={(id) => void app.openMatch(id)}
       onBack={() => app.openPage(null)}
     />
   );

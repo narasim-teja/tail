@@ -3,9 +3,12 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { utf8 } from "@tail/protocol";
 import * as relayAuth from "../../../server/src/auth.ts";
 import * as relayCodes from "../../../server/src/codes.ts";
+import type { Store } from "../../../server/src/db.ts";
+import { HttpError } from "../../../server/src/errors.ts";
+import { signedBody } from "../../../server/src/routes/util.ts";
 import { fromB64, toB64 } from "../lib/b64";
 import { hudDigest, requestDigest, type Signer } from "./auth";
-import { joinLink, parseLobbyCode, RelayClient, readJoin } from "./client";
+import { joinLink, OpenLobbyError, parseLobbyCode, RelayClient, RelayError, readJoin } from "./client";
 import { hudAuthFrame, parseHudMessage } from "./hud";
 
 const sk = ed25519.utils.randomSecretKey();
@@ -183,7 +186,8 @@ describe("lobby codes", () => {
   });
 
   test("a code the relay knows resolves to its match id", async () => {
-    const { client, asked } = relay({ match_id: ID });
+    const zone = { zone: { latE7: 1, lonE7: 2, radiusM: 300 }, safehouses: [] };
+    const { client, asked } = relay({ match_id: ID, zone });
     expect(await client.resolveCode("K7M4QX")).toBe(ID);
     expect(asked).toEqual(["http://relay.test/join/K7M4QX"]);
   });
@@ -214,13 +218,156 @@ describe("lobby codes", () => {
       match_id: ID,
       host: "h",
       phase: "lobby",
-      error: null,
       start_ms: null,
       end_ms: null,
-      keys: [],
+      tick_no: 0,
+      last_seq: {},
+      players: null,
+      chain: null,
     };
     expect((await relay({ ...view, code: "K7M-4QX" }).client.getMatch(ID)).code).toBe("K7M-4QX");
     expect((await relay({ ...view, code: null }).client.getMatch(ID)).code).toBeNull();
     await expect(relay({ ...view, code: "nope" }).client.getMatch(ID)).rejects.toThrow("not a lobby code");
+  });
+});
+
+describe("signed match view and refusals", () => {
+  const ID = "7f3a9c21e4b85d60a1c2e3f405162738";
+  const NOW = 1_700_000_000_000;
+
+  /**
+   * The relay's own signature check (apps/server src/routes/util.ts signedBody) over the request
+   * the phone sends, so a signed GET is accepted or refused by the very code the relay runs. The
+   * context is the part of Hono's that signedBody reads (hono itself is the relay's dependency).
+   */
+  function realRelay(answer: (account: string) => unknown) {
+    const seen: { method: string; url: string; hasBody: boolean }[] = [];
+    const store = {
+      device: (a: string) => (a === signer.accountId ? { near_pk: ed25519.getPublicKey(sk) } : undefined),
+      firstSight: () => true,
+    } as unknown as Store;
+    const client = new RelayClient("http://relay.test", {
+      now: () => NOW,
+      fetch: (async (url: string, init: RequestInit) => {
+        seen.push({ method: String(init.method), url, hasBody: init.body !== undefined });
+        const r = new Request(url, init);
+        const c = {
+          req: { header: (n: string) => r.headers.get(n) ?? undefined, raw: r, url: r.url, method: r.method },
+        } as unknown as Parameters<typeof signedBody>[0];
+        try {
+          const { account } = await signedBody(c, store, NOW);
+          return new Response(JSON.stringify(answer(account)), { status: 200 });
+        } catch (e) {
+          if (!(e instanceof HttpError)) throw e;
+          return new Response(JSON.stringify({ ...e.extra, error: e.message }), { status: e.status });
+        }
+      }) as unknown as typeof fetch,
+    });
+    return { client, seen };
+  }
+
+  test("the zone view is a signed GET with no body that the relay's own check accepts", async () => {
+    const sealed = toB64(Uint8Array.of(7, 8, 9));
+    const { client, seen } = realRelay((account) => ({
+      match_id: ID,
+      zone: { zone: { latE7: 423_550_800, lonE7: -710_655_000, radiusM: 400 }, safehouses: [] },
+      keys: [{ player: 2, account_id: account, sealed }],
+      error: null,
+    }));
+    expect(await client.matchZone(signer, ID)).toEqual({
+      matchId: ID,
+      zone: { zone: { latE7: 423_550_800, lonE7: -710_655_000, radiusM: 400 }, safehouses: [] },
+      keys: [{ player: 2, accountId: signer.accountId, sealed: Uint8Array.of(7, 8, 9) }],
+      error: null,
+    });
+    expect(seen).toEqual([{ method: "GET", url: `http://relay.test/matches/${ID}/zone`, hasBody: false }]);
+  });
+
+  test("a signature over the wrong method or path is refused by the relay", async () => {
+    const { client } = realRelay(() => ({}));
+    const forged = { ...client.sign(signer, "POST", `/matches/${ID}/zone`, ""), method: "GET" as const };
+    const send = (client as unknown as { send(r: typeof forged): Promise<unknown> }).send.bind(client);
+    await expect(send(forged)).rejects.toMatchObject({ status: 401, message: "bad request signature" });
+  });
+
+  test("the query is part of what is signed, as the relay reads it", () => {
+    const c = new RelayClient("http://relay.test/base/", { now: () => NOW });
+    const req = c.sign(signer, "GET", "/replay/x?after=3", "");
+    const digest = relayAuth.requestDigest("GET", "/base/replay/x?after=3", NOW, new Uint8Array(0));
+    expect(relayAuth.verifyEd25519(ed25519.getPublicKey(sk), digest, req.sig)).toBe(true);
+    expect(() => c.sign(signer, "GET", "/x", "{}")).toThrow("a GET has no body");
+  });
+
+  test("before Start the zone view has no keys, and a stranger is told they are not in the match", async () => {
+    const empty = new RelayClient("http://r", {
+      fetch: (async () =>
+        new Response(
+          JSON.stringify({ match_id: ID, zone: null, keys: [], error: "need 3 players, have 2" }),
+          {
+            status: 200,
+          },
+        )) as unknown as typeof fetch,
+    });
+    expect(await empty.matchZone(signer, ID)).toEqual({
+      matchId: ID,
+      zone: null,
+      keys: [],
+      error: "need 3 players, have 2",
+    });
+    const stranger = new RelayClient("http://r", {
+      fetch: (async () =>
+        new Response(JSON.stringify({ error: "not in this match" }), {
+          status: 403,
+        })) as unknown as typeof fetch,
+    });
+    await expect(stranger.matchZone(signer, ID)).rejects.toMatchObject({ status: 403 });
+  });
+
+  const form = {
+    stake: 1n,
+    durationMs: 60_000,
+    zone: { latE7: 0, lonE7: 0, radiusM: 100 },
+    safehouses: [],
+    publicReplay: true,
+    minPlayers: 3,
+    maxPlayers: 3,
+    startByMs: 1,
+  };
+  const answering = (status: number, body: unknown) =>
+    new RelayClient("http://r", {
+      fetch: (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch,
+    });
+
+  test("a host with an open lobby is told so plainly, with the lobby to open", async () => {
+    const refused = answering(409, {
+      match_id: ID,
+      error: "you already have an open lobby; start it or let it lapse first",
+    });
+    const e = await refused.createMatch(signer, form).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(OpenLobbyError);
+    expect(e).toBeInstanceOf(RelayError);
+    expect(e).toMatchObject({ status: 409, matchId: ID, message: "You already have an open lobby." });
+    // Any other 409 (a create already in flight) stays the relay's own refusal.
+    const busy = answering(409, { error: "a lobby is already being made for you" });
+    const other = await busy.createMatch(signer, form).catch((x: unknown) => x);
+    expect(other).not.toBeInstanceOf(OpenLobbyError);
+    expect(other).toMatchObject({ status: 409, message: "a lobby is already being made for you" });
+  });
+
+  test("too many and too large read as short plain sentences", async () => {
+    const limit = answering(429, { error: "daily top-up limit reached (300 USDC.e); try tomorrow" });
+    await expect(limit.topUp(signer, signer.accountId, 1n)).rejects.toMatchObject({
+      status: 429,
+      message: "Daily top-up limit reached (300 USDC.e); try tomorrow.",
+    });
+    await expect(answering(429, {}).enrollChallenge("bob")).rejects.toMatchObject({
+      message: "The relay is busy. Try again in a minute.",
+    });
+    await expect(answering(413, { error: "request too large" }).enrollChallenge("bob")).rejects.toMatchObject(
+      {
+        status: 413,
+        message: "That was too big for the relay to take.",
+      },
+    );
   });
 });

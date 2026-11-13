@@ -226,8 +226,17 @@ export const STATES: Record<string, () => ReactNode> = {
   ),
   create: () => (
     <CreateView
-      m={{ here: { lat: ME.lat, lon: ME.lon, acc: 6 }, busy: null, error: null }}
+      m={{ here: { lat: ME.lat, lon: ME.lon, acc: 6 }, busy: null, error: null, openLobby: null }}
       onCreate={noop}
+      onOpenLobby={noop}
+      onBack={noop}
+    />
+  ),
+  "create-open-lobby": () => (
+    <CreateView
+      m={{ here: { lat: ME.lat, lon: ME.lon, acc: 6 }, busy: null, error: null, openLobby: "ab".repeat(16) }}
+      onCreate={noop}
+      onOpenLobby={noop}
       onBack={noop}
     />
   ),
