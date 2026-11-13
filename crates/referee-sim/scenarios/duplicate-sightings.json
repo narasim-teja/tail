@@ -1,0 +1,150 @@
+{
+  "name": "duplicate-sightings",
+  "about": "Alice hears Bob for one second per epoch, one sample, below MIN_SAMPLES. Her phone lists each sighting three times. Summing those copies used to make three samples and fill the lock; one count per token per batch keeps it at one, so there is no contact and the strike is refused. The test also runs the honest twin, two seconds per epoch listed once, which tags.",
+  "duration_s": 200,
+  "ring": ["alice", "bob", "carol"],
+  "players": [
+    {
+      "name": "alice",
+      "path": [[0, -2, 0]]
+    },
+    {
+      "name": "bob",
+      "path": [[0, 0, 0]]
+    },
+    {
+      "name": "carol",
+      "path": [[0, 500, -500]]
+    }
+  ],
+  "radio": [
+    {
+      "a": "bob",
+      "b": "alice",
+      "from": 0,
+      "to": 300,
+      "dir": "a_hears_b"
+    },
+    {
+      "a": "alice",
+      "b": "bob",
+      "from": 16,
+      "to": 17,
+      "dir": "a_hears_b"
+    },
+    {
+      "a": "alice",
+      "b": "bob",
+      "from": 31,
+      "to": 32,
+      "dir": "a_hears_b"
+    },
+    {
+      "a": "alice",
+      "b": "bob",
+      "from": 46,
+      "to": 47,
+      "dir": "a_hears_b"
+    },
+    {
+      "a": "alice",
+      "b": "bob",
+      "from": 61,
+      "to": 62,
+      "dir": "a_hears_b"
+    },
+    {
+      "a": "alice",
+      "b": "bob",
+      "from": 76,
+      "to": 77,
+      "dir": "a_hears_b"
+    },
+    {
+      "a": "alice",
+      "b": "bob",
+      "from": 91,
+      "to": 92,
+      "dir": "a_hears_b"
+    },
+    {
+      "a": "alice",
+      "b": "bob",
+      "from": 106,
+      "to": 107,
+      "dir": "a_hears_b"
+    },
+    {
+      "a": "alice",
+      "b": "bob",
+      "from": 121,
+      "to": 122,
+      "dir": "a_hears_b"
+    },
+    {
+      "a": "alice",
+      "b": "bob",
+      "from": 136,
+      "to": 137,
+      "dir": "a_hears_b"
+    },
+    {
+      "a": "alice",
+      "b": "bob",
+      "from": 151,
+      "to": 152,
+      "dir": "a_hears_b"
+    },
+    {
+      "a": "alice",
+      "b": "bob",
+      "from": 166,
+      "to": 167,
+      "dir": "a_hears_b"
+    },
+    {
+      "a": "alice",
+      "b": "bob",
+      "from": 181,
+      "to": 182,
+      "dir": "a_hears_b"
+    }
+  ],
+  "events": [
+    {
+      "do": "copies",
+      "player": "alice",
+      "from": 0,
+      "to": 300,
+      "copies": 3
+    },
+    {
+      "do": "strike",
+      "t": 146,
+      "player": "alice"
+    }
+  ],
+  "expect": {
+    "verdicts": ["Start", "End"],
+    "refusals": [
+      {
+        "player": "alice",
+        "reason": "Lock",
+        "from": 150,
+        "to": 150
+      }
+    ],
+    "huds": [
+      {
+        "t": 140,
+        "player": "alice",
+        "lock": 0
+      },
+      {
+        "t": 140,
+        "player": "bob",
+        "heat": 0
+      }
+    ]
+  }
+}

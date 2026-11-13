@@ -1,0 +1,33 @@
+{
+  "name": "inherited-target",
+  "about": "All three stand together from the start, so every pair is in contact. Alice tags Bob and inherits Carol, with whom she already has eight epochs of contact. That contact predates the hunt, so her lock on Carol starts empty: the strike at 110 s is refused, and only after four new epochs does the strike at 200 s land.",
+  "duration_s": 300,
+  "ring": ["alice", "bob", "carol"],
+  "radio_auto_m": 15,
+  "players": [
+    { "name": "alice", "path": [[0, -2, 0]] },
+    { "name": "bob", "path": [[0, 0, 0]] },
+    { "name": "carol", "path": [[0, 2, 0]] }
+  ],
+  "events": [
+    { "do": "strike", "t": 96, "player": "alice" },
+    { "do": "strike", "t": 106, "player": "alice" },
+    { "do": "strike", "t": 196, "player": "alice" }
+  ],
+  "expect": {
+    "verdicts": ["Start", "Tag alice bob", "Tag alice carol", "End"],
+    "verdict_times": [
+      { "verdict": "Tag alice bob", "from": 100, "to": 100 },
+      { "verdict": "Tag alice carol", "from": 200, "to": 200 }
+    ],
+    "refusals": [{ "player": "alice", "reason": "Lock", "from": 110, "to": 110 }],
+    "huds": [
+      { "t": 90, "player": "carol", "heat": 6 },
+      { "t": 100, "player": "alice", "target": "carol", "lock": 0 },
+      { "t": 100, "player": "carol", "heat": 0 },
+      { "t": 110, "player": "alice", "lock": 1 },
+      { "t": 200, "player": "alice", "status": "won" }
+    ],
+    "heads": { "alice": 3000000, "bob": 0, "carol": 0 }
+  }
+}

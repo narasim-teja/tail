@@ -1,0 +1,11 @@
+{
+  "name": "duel-clock-behind",
+  "about": "Alice's clock runs 15 s behind, close enough that her contacts still count. Both strike at the same instant. Ordering by device time let her win every such duel; now the VRF coin decides, so either can win (the test runs this trace under twelve match names).",
+  "duration_s": 300,
+  "radio_auto_m": 15,
+  "players": [
+    { "name": "alice", "path": [[0, -2, 0]], "clock_offset_ms": -15000 },
+    { "name": "bob", "path": [[0, 0, 0]] }
+  ],
+  "events": [{ "do": "strike", "t": 96, "player": "alice" }, { "do": "strike", "t": 96, "player": "bob" }]
+}

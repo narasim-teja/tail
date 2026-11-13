@@ -24,6 +24,8 @@ pub struct Phone {
     nonce: u32,
     pub clock_offset_ms: i64,
     pub batch_phase_s: u64,
+    /// How many times each sighting is listed in a batch (1 for an honest app).
+    pub sighting_copies: u8,
     pub last_hud: Option<Hud>,
 }
 
@@ -53,6 +55,7 @@ impl Phone {
             nonce: 0,
             clock_offset_ms: 0,
             batch_phase_s: 0,
+            sighting_copies: 1,
             last_hud: None,
         }
     }
@@ -119,17 +122,19 @@ impl Phone {
 
     /// Builds, chains and asserts the next batch from everything gathered since the last one.
     pub fn batch(&mut self, t_ms: u64) -> BatchEnvelope {
+        let copies = usize::from(self.sighting_copies.max(1));
         let sightings = std::mem::take(&mut self.heard)
             .into_iter()
-            .map(|((epoch, token), mut rssi)| {
+            .flat_map(|((epoch, token), mut rssi)| {
                 rssi.sort_unstable();
-                Sighting {
+                let s = Sighting {
                     epoch,
                     token,
                     rssi_max: *rssi.last().expect("at least one sample"),
                     rssi_med: rssi[rssi.len() / 2],
                     n: rssi.len().min(255) as u8,
-                }
+                };
+                std::iter::repeat_n(s, copies)
             })
             .collect();
         let batch = Batch {

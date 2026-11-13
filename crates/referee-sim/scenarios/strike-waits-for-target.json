@@ -1,0 +1,21 @@
+{
+  "name": "strike-waits-for-target",
+  "about": "Alice strikes with a full lock at 96 s, but Bob's phone has had no connection since 75 s, so the referee has no contact for the last two epochs. The strike waits one tick; Bob's backlog arrives at 110 s, every batch of it is accepted, the contacts appear and the strike lands. It used to be refused at once, and the older half of the backlog was rejected for clock skew.",
+  "duration_s": 300,
+  "ring": ["alice", "bob", "carol"],
+  "radio_auto_m": 15,
+  "players": [
+    { "name": "alice", "path": [[0, -2, 0]] },
+    { "name": "bob", "path": [[0, 0, 0]] },
+    { "name": "carol", "path": [[0, 500, -500]] }
+  ],
+  "events": [
+    { "do": "hold", "player": "bob", "from": 75, "to": 105 },
+    { "do": "strike", "t": 96, "player": "alice" }
+  ],
+  "expect": {
+    "verdicts": ["Start", "Tag alice bob", "End"],
+    "verdict_times": [{ "verdict": "Tag alice bob", "from": 110, "to": 110 }],
+    "heads": { "alice": 2000000, "bob": 0, "carol": 1000000 }
+  }
+}

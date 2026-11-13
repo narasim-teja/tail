@@ -1,5 +1,6 @@
 {
   "name": "duel-bob-earlier-in-tick",
+  "about": "Bob's batch is dated 3 s before Alice's. As in duel-alice-earlier the device time does not matter: the VRF coin for this match and tick picks Bob.",
   "duration_s": 300,
   "radio_auto_m": 15,
   "players": [

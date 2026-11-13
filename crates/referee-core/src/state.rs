@@ -66,12 +66,19 @@ pub(crate) struct Player {
     /// out without the HUD being able to say who got them.
     pub taken_by: Option<u16>,
     pub target: Option<u16>,
+    /// First contact epoch that counts toward the lock on the current target. Set when the
+    /// target is assigned (start, or inheriting one), so contact a hunter had with a player
+    /// before hunting them cannot fill the lock the moment they inherit them.
+    pub lock_from: u32,
     pub head: u128,
     /// Latest accepted fix with `acc ≤ MAX_ACC_M`.
     pub last_fix: Option<StoredFix>,
     /// Time of the latest accepted fix of any accuracy (fixes must move forward).
     pub last_fix_t: Option<u64>,
-    /// Referee time of the latest valid batch whose last usable fix was inside the zone.
+    /// Device time of the latest accepted batch (batch times must not go back).
+    pub last_batch_t: Option<u64>,
+    /// Referee time of the latest fresh valid batch whose last fix with
+    /// `acc ≤ PRESENCE_ACC_M` was inside the zone.
     pub present_ms: u64,
     /// Cumulative dark time, and the referee time it has been counted up to.
     pub dark_ms: u64,
@@ -80,7 +87,8 @@ pub(crate) struct Player {
     pub fast_since: Option<u64>,
     /// Vehicle freezes, device-time intervals `[from, until)`.
     pub freezes: Vec<(u64, u64)>,
-    pub last_hint_t: Option<u64>,
+    /// Referee time of the last hint charged (the cooldown runs on the referee clock).
+    pub last_hint_ms: Option<u64>,
     /// Ascending by epoch, trailing window only.
     pub epochs: Vec<EpochData>,
 }
@@ -89,6 +97,16 @@ impl Player {
     pub(crate) fn alive(&self) -> bool {
         self.taken_by.is_none()
     }
+}
+
+/// A strike that lacked contact only because the target's batches for its epoch had not
+/// arrived yet. It is decided once more at the start of the next tick, before that tick's
+/// actions, so it keeps its place ahead of later strikes.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DeferredStrike {
+    pub player: u16,
+    pub t_ms: u64,
+    pub nonce: u32,
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +134,8 @@ pub struct State {
     pub(crate) next_hint_id: u32,
     /// Hints still waiting for a voice receipt: `(hint_id, referee time issued)`.
     pub(crate) pending_receipts: Vec<(u32, u64)>,
+    /// Strikes from the previous tick waiting for the target's data, in their action order.
+    pub(crate) deferred: Vec<DeferredStrike>,
     pub(crate) last_tick: Option<(u32, u64)>,
     pub(crate) phase: Phase,
 }

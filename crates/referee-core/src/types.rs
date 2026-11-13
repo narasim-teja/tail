@@ -62,9 +62,8 @@ pub struct TickInput {
     pub receipts: Vec<HintReceipt>,
 }
 
-/// Why a batch was not accepted. Only [`Reject::ClockSkew`], [`Reject::FixFlags`],
-/// [`Reject::FixOrder`] and [`Reject::Teleport`] batches still advance the player's hash chain:
-/// they are authentic, just not usable.
+/// Why a batch was not accepted. From [`Reject::ClockSkew`] on, the batch is authentic, just
+/// not usable, and it still advances the player's hash chain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reject {
     UnknownPlayer,
@@ -76,9 +75,20 @@ pub enum Reject {
     },
     Prev,
     Assertion(appattest::Step),
+    /// Dated more than `CLOCK_SKEW_MS` after the referee clock.
     ClockSkew {
         t_ms: u64,
-        median_ms: u64,
+        now_ms: u64,
+    },
+    /// Dated before the player's previous accepted batch.
+    BatchOrder {
+        t_ms: u64,
+        last_ms: u64,
+    },
+    /// Dated before the evidence the referee keeps (`KEEP_EPOCHS`), so nothing in it can count.
+    TooOld {
+        t_ms: u64,
+        oldest_ms: u64,
     },
     FixFlags {
         flags: u8,
@@ -108,7 +118,8 @@ pub enum Refuse {
     Lock {
         lock: u32,
     },
-    /// Strike: no contact in the strike's epoch or the one before.
+    /// Strike: no contact in the strike's epoch or the one before. When the target's batches
+    /// for those epochs had not arrived, the strike waited one tick before this answer.
     NoContact,
     UnknownHint,
     TextTooLong,

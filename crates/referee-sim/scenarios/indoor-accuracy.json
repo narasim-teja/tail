@@ -1,0 +1,25 @@
+{
+  "name": "indoor-accuracy",
+  "about": "Bob is indoors (120 m accuracy) and Carol uses approximate location (300 m). A fix up to 200 m keeps a player present, so Bob never goes dark, while Carol bleeds dark time and forfeits at 180 s. Contact still needs 50 m, so Alice, standing next to Bob, gets no lock on him.",
+  "duration_s": 300,
+  "ring": ["alice", "bob", "carol"],
+  "radio_auto_m": 15,
+  "players": [
+    { "name": "alice", "path": [[0, -2, 0]] },
+    { "name": "bob", "path": [[0, 0, 0]], "acc_m": 120 },
+    { "name": "carol", "path": [[0, 0, 100]], "acc_m": 300 }
+  ],
+  "events": [{ "do": "strike", "t": 146, "player": "alice" }],
+  "expect": {
+    "verdicts": ["Start", "Forfeit carol bob", "End"],
+    "verdict_times": [{ "verdict": "Forfeit carol bob", "from": 180, "to": 180 }],
+    "refusals": [{ "player": "alice", "reason": "Lock", "from": 150, "to": 150 }],
+    "huds": [
+      { "t": 140, "player": "alice", "lock": 0, "leak": false },
+      { "t": 140, "player": "bob", "heat": 0 },
+      { "t": 180, "player": "carol", "status": "out" },
+      { "t": 300, "player": "bob", "status": "won" }
+    ],
+    "heads": { "alice": 1000000, "bob": 2000000, "carol": 0 }
+  }
+}

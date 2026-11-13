@@ -1,20 +1,21 @@
 //! `init`, `tick` and `finish`. Each tick runs in a fixed order so its output depends only on
 //! its inputs: receipts → batch authenticity → batch validity and ingestion → contacts →
-//! actions (strikes, hints) → dark rules → end check → checkpoint → HUDs → pruning.
+//! deferred strikes → actions (strikes, hints) → dark rules → end check → checkpoint → HUDs →
+//! pruning.
 // Millisecond spans and metre distances stay far below 2^52, so the f64 conversions are exact
 // where it matters, and speeds converted back are never negative.
 #![allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
 
 use crate::geo::{bearing8, distance, Plane, Point};
 use crate::log::Log;
-use crate::state::{Contact, EpochData, Heard, Phase, Player, Secrets, State, StoredFix};
+use crate::state::{Contact, DeferredStrike, EpochData, Heard, Phase, Player, Secrets, State, StoredFix};
 use crate::types::{
     ActionKind, Device, FinishError, Finished, HintIssued, HintReceipt, InitError, MatchConfig, Refusal,
     Refuse, Reject, Rejection, Started, TickError, TickInput, TickOutput,
 };
 use crate::{
-    COIN_DOMAIN, DARK_GRACE_MS, KEEP_EPOCHS, MAX_DURATION_MS, MAX_PLAYERS, MIN_PLAYERS, RECEIPT_WINDOW_MS,
-    TREND_SAME_M,
+    COIN_DOMAIN, DARK_GRACE_MS, KEEP_EPOCHS, MAX_DURATION_MS, MAX_PLAYERS, MIN_PLAYERS, PRESENCE_ACC_M,
+    RECEIPT_WINDOW_MS, TREND_SAME_M,
 };
 use std::collections::BTreeMap;
 use tail_protocol::beacon::{beacon_token, derive_player_key, derive_tag_key, epoch_at};
@@ -149,6 +150,7 @@ pub fn init(
         next_checkpoint_ms: start_ms + CHECKPOINT_MS,
         next_hint_id: 0,
         pending_receipts: Vec::new(),
+        deferred: Vec::new(),
         last_tick: None,
         phase: Phase::Running,
     };
@@ -215,11 +217,12 @@ pub fn tick(mut st: State, input: TickInput) -> Result<TickOutput, TickError> {
     st.log_receipts(&mut out, receipts, now);
 
     let authentic = st.authenticate_all(batches, &mut rejected);
-    let median = median_device_time(&authentic);
     let table = st.token_table(cur);
     let mut pending = Vec::new();
+    // Authentic batches come sorted by player and seq, so each check sees the time of the
+    // player's previous accepted batch, including one accepted earlier in this tick.
     for b in authentic {
-        match st.check(&b, median) {
+        match st.check(&b, now, cur) {
             Ok(()) => st.ingest(&b, now, cur, &table, &mut out, &mut pending),
             Err(reason) => rejected.push(Rejection {
                 player: b.player,
@@ -231,12 +234,25 @@ pub fn tick(mut st: State, input: TickInput) -> Result<TickOutput, TickError> {
 
     st.find_contacts(cur, &mut out);
     let mut facts = vec![None; st.players.len()];
-    let hints = st.run_actions(tick_no, pending, now, &mut out, &mut refused, &mut facts);
-    st.dark_rules(now, &mut out);
+    let hints = st.run_actions(tick_no, pending, now, cur, &mut out, &mut refused, &mut facts);
+    st.dark_rules(now, cur, &mut out);
 
     let over = now >= st.end_ms || st.alive_count() <= 1;
     if over {
         st.phase = Phase::Over;
+        // No tick follows, so a strike still waiting gets its answer now.
+        for d in std::mem::take(&mut st.deferred) {
+            let reason = st
+                .judge_strike(d.player, d.t_ms)
+                .err()
+                .unwrap_or(Refuse::MatchOver);
+            refused.push(Refusal {
+                player: d.player,
+                nonce: d.nonce,
+                action: ActionKind::Strike,
+                reason,
+            });
+        }
     } else if now >= st.next_checkpoint_ms {
         let cp = Verdict::Checkpoint {
             log_size: st.log.size(),
@@ -298,23 +314,6 @@ pub fn finish(
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────────────
-
-/// Median over each player's newest authentic batch, so a phone that uploads a backlog gets
-/// one vote, not one per batch. With an even count it is the mean of the middle two, so a
-/// two-player match treats both clocks alike.
-fn median_device_time(batches: &[Batch]) -> u64 {
-    let mut latest: BTreeMap<u16, u64> = BTreeMap::new();
-    for b in batches {
-        latest.insert(b.player, b.t_ms);
-    }
-    let mut times: Vec<u64> = latest.into_values().collect();
-    times.sort_unstable();
-    match times.len() {
-        0 => 0,
-        n if n % 2 == 1 => times[n / 2],
-        n => u64::midpoint(times[n / 2 - 1], times[n / 2]),
-    }
-}
 
 fn epoch_mid_ms(start_ms: u64, epoch: u32) -> u64 {
     start_ms + u64::from(epoch) * EPOCH_MS + EPOCH_MS / 2
@@ -461,20 +460,38 @@ impl State {
         Ok(())
     }
 
-    // ── batch validity (4.3): skew, flags, fix order, teleport ──────────────────────
+    // ── batch validity (4.3): clock, order, age, flags, fix order, teleport ─────────
 
-    fn check(&self, b: &Batch, median: u64) -> Result<(), Reject> {
-        if b.t_ms.abs_diff(median) > CLOCK_SKEW_MS {
+    /// A batch may arrive late (a reconnect backlog, or carried by another phone) but never
+    /// from the future. Lateness is not a clock error, so an old batch is still valid while it
+    /// keeps its player's batch times in order and falls inside the kept evidence; it only
+    /// cannot make its player present (`ingest`). Each player's clock is judged on its own
+    /// against the referee clock, so one player's clock can never move another's window.
+    fn check(&self, b: &Batch, now: u64, cur: u32) -> Result<(), Reject> {
+        if b.t_ms > now.saturating_add(CLOCK_SKEW_MS) {
             return Err(Reject::ClockSkew {
                 t_ms: b.t_ms,
-                median_ms: median,
+                now_ms: now,
+            });
+        }
+        let p = &self.players[b.player as usize];
+        if let Some(last) = p.last_batch_t.filter(|&l| b.t_ms < l) {
+            return Err(Reject::BatchOrder {
+                t_ms: b.t_ms,
+                last_ms: last,
+            });
+        }
+        let oldest = self.start_ms + u64::from(cur.saturating_sub(KEEP_EPOCHS)) * EPOCH_MS;
+        if b.t_ms < oldest {
+            return Err(Reject::TooOld {
+                t_ms: b.t_ms,
+                oldest_ms: oldest,
             });
         }
         let flags = b.fixes.iter().fold(0u8, |acc, f| acc | f.flags);
         if flags != 0 {
             return Err(Reject::FixFlags { flags });
         }
-        let p = &self.players[b.player as usize];
         let mut last_t = p.last_fix_t;
         for f in &b.fixes {
             if f.t_ms > b.t_ms || last_t.is_some_and(|l| f.t_ms <= l) {
@@ -530,22 +547,33 @@ impl State {
         let keep_from = cur.saturating_sub(KEEP_EPOCHS);
         let horizon = cur + 2;
         let pi = b.player as usize;
-        let mut last_usable = None;
+        let mut last_placed = None;
         for f in &b.fixes {
             self.players[pi].last_fix_t = Some(f.t_ms);
-            if f.acc_m > MAX_ACC_M {
+            if f.acc_m > PRESENCE_ACC_M {
                 continue;
             }
             let sf = stored(f);
-            last_usable = Some(sf);
+            last_placed = Some(sf);
+            // Fine enough to place the player in the zone, not to prove contact.
+            if f.acc_m > MAX_ACC_M {
+                continue;
+            }
             self.vehicle(pi, f);
             self.players[pi].last_fix = Some(sf);
             self.assign_fix(pi, sf, keep_from, horizon);
         }
-        if last_usable.is_some_and(|f| self.in_zone(&f)) {
+        self.players[pi].last_batch_t = Some(b.t_ms);
+        // Only a batch about now says where the player is now. A late one still counts as
+        // evidence, but a phone whose clock runs far behind must not stay present while its
+        // tokens sit in epochs no hunter's phone accepts.
+        let fresh = b.t_ms.saturating_add(CLOCK_SKEW_MS) >= now;
+        if fresh && last_placed.is_some_and(|f| self.in_zone(&f)) {
             self.players[pi].present_ms = now;
         }
         if let Some(eb) = self.epoch(b.t_ms) {
+            // One count per token per batch: listing a token twice must not double its samples.
+            let mut seen: BTreeMap<Token, (u16, u32, u8)> = BTreeMap::new();
             for s in &b.sightings {
                 // The phone's epoch must fit the batch time, and the token's epoch the phone's:
                 // a token recorded earlier and replayed later resolves to an epoch too old.
@@ -558,10 +586,14 @@ impl State {
                 if j == b.player || e.abs_diff(s.epoch) > 1 || e < keep_from || e > horizon {
                     continue;
                 }
+                let n = &mut seen.entry(s.token).or_insert((j, e, 0)).2;
+                *n = (*n).max(s.n);
+            }
+            for (j, e, n) in seen.into_values() {
                 let slot = slot(&mut self.players[pi].epochs, e);
                 match slot.heard.iter_mut().find(|h| h.player == j) {
-                    Some(h) => h.n = h.n.saturating_add(s.n),
-                    None => slot.heard.push(Heard { player: j, n: s.n }),
+                    Some(h) => h.n = h.n.saturating_add(n),
+                    None => slot.heard.push(Heard { player: j, n }),
                 }
             }
         }
@@ -729,10 +761,14 @@ impl State {
         }
     }
 
-    /// lock(h→t, e) = contact epochs in (e − WINDOW_EPOCHS, e].
+    /// lock(h→t, e) = contact epochs in (e − WINDOW_EPOCHS, e], from the epoch h was assigned
+    /// t on.
     fn lock(&self, hunter: u16, target: u16, epoch: u32) -> u32 {
         let (lo_player, hi_player) = pair(hunter, target);
-        let first = epoch.saturating_add(1).saturating_sub(WINDOW_EPOCHS);
+        let first = epoch
+            .saturating_add(1)
+            .saturating_sub(WINDOW_EPOCHS)
+            .max(self.players[hunter as usize].lock_from);
         self.contacts
             .iter()
             .filter(|c| c.a == lo_player && c.b == hi_player && (first..=epoch).contains(&c.epoch))
@@ -751,29 +787,37 @@ impl State {
         ])
     }
 
-    /// Earlier device time first; equal times go by the VRF coin, so in a duel neither side can
-    /// know or steer who wins a simultaneous strike.
+    /// Strikes waiting from the previous tick go first: they arrived earlier. Then this tick's
+    /// actions, which are simultaneous: device times are set by the phones and cannot rank
+    /// them, so the VRF coin orders the players, and neither side of a duel can know or steer
+    /// who wins.
+    #[allow(clippy::too_many_arguments)]
     fn run_actions(
         &mut self,
         tick_no: u32,
         mut pending: Vec<Pending>,
         now: u64,
+        cur: u32,
         out: &mut Out,
         refused: &mut Vec<Refusal>,
         facts: &mut [Option<HintFact>],
     ) -> Vec<HintIssued> {
+        for d in std::mem::take(&mut self.deferred) {
+            if let Err(reason) = self.strike(d.player, d.t_ms, d.nonce, cur, false, out) {
+                refused.push(Refusal {
+                    player: d.player,
+                    nonce: d.nonce,
+                    action: ActionKind::Strike,
+                    reason,
+                });
+            }
+        }
         let coins: Vec<Hash> = (0..self.players.len())
             .map(|p| self.coin(tick_no, p as u16))
             .collect();
-        pending.sort_by(|x, y| {
-            (x.t_ms, coins[x.player as usize], x.player, x.seq, x.index).cmp(&(
-                y.t_ms,
-                coins[y.player as usize],
-                y.player,
-                y.seq,
-                y.index,
-            ))
-        });
+        pending.sort_by_key(|a| (coins[a.player as usize], a.player, a.seq, a.index));
+        // A strike can wait only if another tick follows.
+        let may_defer = now < self.end_ms;
         let mut issued = Vec::new();
         for a in pending {
             let (nonce, kind) = match &a.action {
@@ -781,7 +825,7 @@ impl State {
                 Action::Hint { hint, nonce, .. } => (*nonce, ActionKind::Hint(*hint)),
             };
             let result = match a.action {
-                Action::Strike { .. } => self.strike(a.player, a.t_ms, out),
+                Action::Strike { nonce } => self.strike(a.player, a.t_ms, nonce, cur, may_defer, out),
                 Action::Hint { hint, nonce, text } => {
                     self.hint(a.player, hint, nonce, text, a.t_ms, now, out).map(|h| {
                         facts[a.player as usize] = Some(h.fact);
@@ -813,32 +857,87 @@ impl State {
         pl.target.ok_or(Refuse::MatchOver)
     }
 
-    /// Accepted iff lock ≥ LOCK_EPOCHS at the strike's epoch and contact holds in that epoch
-    /// or the one before.
-    fn strike(&mut self, h: u16, t_ms: u64, out: &mut Out) -> Result<(), Refuse> {
+    /// Contact in epoch `e` that counts toward h's lock on t.
+    fn counted_contact(&self, h: u16, t: u16, e: u32) -> bool {
+        e >= self.players[h as usize].lock_from && self.has_contact(h, t, e)
+    }
+
+    /// A strike stands iff lock ≥ LOCK_EPOCHS at its epoch and contact holds in that epoch or
+    /// the one before. Returns the target.
+    fn judge_strike(&self, h: u16, t_ms: u64) -> Result<u16, Refuse> {
         let t = self.live_target(h, t_ms)?;
         let e = self.epoch(t_ms).ok_or(Refuse::NoContact)?;
         let lock = self.lock(h, t, e);
         if lock < LOCK_EPOCHS {
             return Err(Refuse::Lock { lock });
         }
-        let in_contact = self.has_contact(h, t, e) || (e > 0 && self.has_contact(h, t, e - 1));
+        let in_contact = self.counted_contact(h, t, e) || (e > 0 && self.counted_contact(h, t, e - 1));
         if !in_contact {
             return Err(Refuse::NoContact);
         }
-        self.eliminate(t, h);
-        self.verdict(out, Verdict::Tag { hunter: h, target: t });
-        Ok(())
+        Ok(t)
     }
 
-    /// `loser`'s head moves to `winner`, who inherits `loser`'s target.
-    fn eliminate(&mut self, loser: u16, winner: u16) {
+    /// Whether the target's batches for e−1 or e could still turn this refusal into a tag: the
+    /// target has sent nothing dated past the end of an epoch that lacks contact, and contact
+    /// there would fill the lock. The hunter's phone sent its strike as soon as it had the
+    /// evidence; the target's phone may simply be a batch or a tick behind.
+    fn awaits_target(&self, h: u16, t_ms: u64) -> bool {
+        let (Ok(t), Some(e)) = (self.live_target(h, t_ms), self.epoch(t_ms)) else {
+            return false;
+        };
+        let from = self.players[h as usize].lock_from;
+        let target_t = self.players[t as usize].last_batch_t;
+        let missing = [e.checked_sub(1), Some(e)]
+            .into_iter()
+            .flatten()
+            .filter(|&x| {
+                let end_ms = self.start_ms + u64::from(x + 1) * EPOCH_MS;
+                x >= from && !self.has_contact(h, t, x) && target_t.is_none_or(|l| l < end_ms)
+            })
+            .count() as u32;
+        missing > 0 && self.lock(h, t, e) + missing >= LOCK_EPOCHS
+    }
+
+    /// Tags the target, or refuses; with `may_defer`, a strike short only of the target's late
+    /// data waits for the next tick instead (once).
+    fn strike(
+        &mut self,
+        h: u16,
+        t_ms: u64,
+        nonce: u32,
+        cur: u32,
+        may_defer: bool,
+        out: &mut Out,
+    ) -> Result<(), Refuse> {
+        match self.judge_strike(h, t_ms) {
+            Ok(t) => {
+                self.eliminate(t, h, cur);
+                self.verdict(out, Verdict::Tag { hunter: h, target: t });
+                Ok(())
+            }
+            Err(Refuse::Lock { .. } | Refuse::NoContact) if may_defer && self.awaits_target(h, t_ms) => {
+                self.deferred.push(DeferredStrike {
+                    player: h,
+                    t_ms,
+                    nonce,
+                });
+                Ok(())
+            }
+            Err(reason) => Err(reason),
+        }
+    }
+
+    /// `loser`'s head moves to `winner`, who inherits `loser`'s target. The lock on it counts
+    /// from the next epoch: contact the winner had with that player before now was not a hunt.
+    fn eliminate(&mut self, loser: u16, winner: u16, cur: u32) {
         let (l, w) = (loser as usize, winner as usize);
         let head = std::mem::take(&mut self.players[l].head);
         self.players[w].head += head;
         self.players[l].taken_by = Some(winner);
         let next = self.players[l].target.take();
         self.players[w].target = next.filter(|&n| n != winner);
+        self.players[w].lock_from = cur + 1;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -857,9 +956,10 @@ impl State {
         if text.as_ref().is_some_and(|s| s.chars().count() > HINT_TEXT_MAX) {
             return Err(Refuse::TextTooLong);
         }
-        if let Some(last) = self.players[p as usize].last_hint_t {
+        // On the referee clock: a phone that moves its own clock forward must not skip it.
+        if let Some(last) = self.players[p as usize].last_hint_ms {
             let ready_ms = last.saturating_add(HINT_COOLDOWN_MS);
-            if t_ms < ready_ms {
+            if now < ready_ms {
                 return Err(Refuse::Cooldown { ready_ms });
             }
         }
@@ -870,7 +970,7 @@ impl State {
         let value = self.hint_value(p, t, kind, t_ms).ok_or(Refuse::NoFix)?;
         self.players[p as usize].head -= price;
         self.players[t as usize].head += price;
-        self.players[p as usize].last_hint_t = Some(t_ms);
+        self.players[p as usize].last_hint_ms = Some(now);
         let hint_id = self.next_hint_id;
         self.next_hint_id += 1;
         self.pending_receipts.push((hint_id, now));
@@ -940,7 +1040,7 @@ impl State {
 
     /// Dark time accrues once a gap passes `DARK_GRACE_MS` and then counts from the gap's start;
     /// cumulative dark time reaching `DARK_FORFEIT_MS` forfeits the head to the hunter.
-    fn dark_rules(&mut self, now: u64, out: &mut Out) {
+    fn dark_rules(&mut self, now: u64, cur: u32, out: &mut Out) {
         let eff = now.min(self.end_ms);
         for pi in 0..self.players.len() {
             if !self.players[pi].alive() || self.dark_gap(pi, now) <= DARK_GRACE_MS {
@@ -959,7 +1059,7 @@ impl State {
                 let Some(to) = self.hunter_of(pi as u16) else {
                     continue;
                 };
-                self.eliminate(pi as u16, to);
+                self.eliminate(pi as u16, to, cur);
                 self.verdict(
                     out,
                     Verdict::Forfeit {
@@ -1056,16 +1156,18 @@ impl Player {
             prev: [0; 32],
             taken_by: None,
             target,
+            lock_from: 0,
             head: stake,
             last_fix: None,
             last_fix_t: None,
+            last_batch_t: None,
             // Everyone starts present, so the dark clock runs from the start of the match.
             present_ms: start_ms,
             dark_ms: 0,
             dark_counted_ms: start_ms,
             fast_since: None,
             freezes: Vec::new(),
-            last_hint_t: None,
+            last_hint_ms: None,
             epochs: Vec::new(),
         }
     }

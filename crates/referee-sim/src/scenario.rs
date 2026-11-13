@@ -8,6 +8,9 @@ use std::collections::BTreeMap;
 #[serde(deny_unknown_fields)]
 pub struct Scenario {
     pub name: String,
+    /// What the trace shows, and why its expectations are what they are.
+    #[serde(default)]
+    pub about: Option<String>,
     #[serde(default = "default_stake")]
     pub stake: u64,
     pub duration_s: u64,
@@ -157,6 +160,26 @@ pub enum Event {
         to: u64,
         #[serde(default = "one")]
         flags: u8,
+    },
+    /// The phone keeps batching but nothing reaches the relay: batches made in `[from, to)`
+    /// are delivered together with its first batch from `to` on (a reconnect backlog).
+    Hold {
+        player: String,
+        from: u64,
+        to: u64,
+    },
+    /// From second `t` on, the phone's clock reads `offset_ms` off true time.
+    Clock {
+        player: String,
+        t: u64,
+        offset_ms: i64,
+    },
+    /// Batches made in `[from, to)` list every sighting `copies` times.
+    Copies {
+        player: String,
+        from: u64,
+        to: u64,
+        copies: u8,
     },
     /// `hearer` records `of`'s token from `epoch_offset` epochs away, bypassing the tag filter.
     Inject {

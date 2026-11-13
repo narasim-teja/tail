@@ -332,6 +332,43 @@ impl Sim<'_> {
         !self.phones[i].out() && !self.dark(i, s)
     }
 
+    fn held(&self, i: usize, s: u64) -> bool {
+        let name = &self.report.names[i];
+        self.sc.events.iter().any(
+            |e| matches!(e, Event::Hold { player, from, to } if player == name && (*from..*to).contains(&s)),
+        )
+    }
+
+    fn copies(&self, i: usize, s: u64) -> u8 {
+        let name = &self.report.names[i];
+        self.sc
+            .events
+            .iter()
+            .find_map(|e| match e {
+                Event::Copies {
+                    player,
+                    from,
+                    to,
+                    copies,
+                } if player == name && (*from..*to).contains(&s) => Some(*copies),
+                _ => None,
+            })
+            .unwrap_or(1)
+    }
+
+    /// Clock changes that take effect at second `s`.
+    fn set_clocks(&mut self, s: u64) {
+        for e in &self.sc.events {
+            if let Event::Clock { player, t, offset_ms } = e {
+                if *t == s {
+                    if let Some(i) = self.report.index(player) {
+                        self.phones[i as usize].clock_offset_ms = *offset_ms;
+                    }
+                }
+            }
+        }
+    }
+
     fn flags(&self, i: usize, s: u64) -> u8 {
         let name = &self.report.names[i];
         self.sc.events.iter().fold(0, |acc, e| match e {
@@ -523,6 +560,7 @@ impl Sim<'_> {
 
     fn run(&mut self, mut state: State, vrf: &[u8; 64]) -> Result<(), String> {
         let mut outbox = Vec::new();
+        let mut held: Vec<Vec<_>> = vec![Vec::new(); self.phones.len()];
         let mut receipts = Vec::new();
         let mut s = 0;
         loop {
@@ -531,13 +569,18 @@ impl Sim<'_> {
                 return Err("the match never ended".into());
             }
             let t_ms = START_MS + s * 1000;
+            self.set_clocks(s);
             self.move_players(s);
             self.sense(s, t_ms);
             self.scripted_actions(s, t_ms)?;
             self.bot_actions(s);
             for i in 0..self.phones.len() {
                 if self.active(i, s) && self.phones[i].batches_at(s) {
-                    outbox.push(self.phones[i].batch(t_ms));
+                    self.phones[i].sighting_copies = self.copies(i, s);
+                    held[i].push(self.phones[i].batch(t_ms));
+                    if !self.held(i, s) {
+                        outbox.append(&mut held[i]);
+                    }
                 }
             }
             if s % (tail_protocol::TICK_MS / 1000) != 0 {
@@ -789,6 +832,7 @@ pub fn load(path: &std::path::Path) -> Result<Scenario, String> {
 pub fn random_walk(n: usize, minutes: u64, radius_m: u32, bots: BotMode) -> Scenario {
     Scenario {
         name: format!("random-walk-{n}x{minutes}m-{bots:?}"),
+        about: None,
         stake: 1_000_000,
         duration_s: minutes * 60,
         zone: scenario::Zone {

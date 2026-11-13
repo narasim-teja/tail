@@ -1,0 +1,21 @@
+{
+  "name": "backlog-reconnect",
+  "about": "Bob stands next to Alice and loses his connection from 100 s to 160 s while his phone keeps recording. The minute of backlog arrives in one tick and is accepted: its contacts fill Alice's lock window, and Bob is present again. Before, every batch more than 20 s older than the tick's median was rejected for clock skew. The gap still leaked his cell at 150 s and counted as dark time.",
+  "duration_s": 300,
+  "ring": ["alice", "bob", "carol"],
+  "radio_auto_m": 15,
+  "players": [
+    { "name": "alice", "path": [[0, -2, 0]] },
+    { "name": "bob", "path": [[0, 0, 0]] },
+    { "name": "carol", "path": [[0, 500, -500]] }
+  ],
+  "events": [{ "do": "hold", "player": "bob", "from": 100, "to": 160 }],
+  "expect": {
+    "verdicts": ["Start", "End"],
+    "huds": [
+      { "t": 150, "player": "alice", "leak": true, "lock": 4 },
+      { "t": 160, "player": "alice", "leak": false, "lock": 8 },
+      { "t": 160, "player": "bob", "heat": 8 }
+    ]
+  }
+}

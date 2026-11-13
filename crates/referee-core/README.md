@@ -32,8 +32,9 @@ finish(state: State, alpha: String, vrf_signature: &[u8; 64], call_id: CallId,
 - Player index = position of the account id in byte-sorted order (the order `players_hash`
   hashes), whatever order `devices` arrives in. `Hint`, `Tag` and `Forfeit` use these indices.
 - Verdict `seq` starts at 1 (`Start`) and is contiguous across `init`, every `tick` and `finish`.
-- Within one tick: `Hint`/`Tag` in action order (below), then `Forfeit`s by player index, then
-  `Checkpoint` if one is due. No `Checkpoint` on the tick that ends the match.
+- Within one tick: `Tag`s of strikes deferred from the previous tick, then `Hint`/`Tag` in action
+  order (below), then `Forfeit`s by player index, then `Checkpoint` if one is due. No
+  `Checkpoint` on the tick that ends the match.
 - A tick returns `over = true` when `now_ms ≥ end_ms` or one player is left. Later ticks fail
   with `NotRunning`. Call `finish` next. It emits `End` and passes in receipts for the last
   hints first.
@@ -50,34 +51,46 @@ next one, `prev` is the hash of the previous batch, and the App Attest assertion
 counter above the last one. The cheap checks run first, and nothing changes unless all of them
 pass, so a batch rejected for a seq gap can be sent again in order. An authentic batch moves
 the player's chain forward even if it then fails validity. The phone chains on every batch it
-sends, so a single bad batch must not cut it off for good. Validity:
-`|t_ms − median| ≤ CLOCK_SKEW_MS`, no `Fix.flags` bit set, fixes strictly increasing in time and
-no later than `t_ms`, no teleport. Only valid batches are logged and used.
+sends, so a single bad batch must not cut it off for good. Validity: `t_ms ≤ now_ms +
+CLOCK_SKEW_MS` (`ClockSkew`), `t_ms` not below the player's previous accepted batch
+(`BatchOrder`), `t_ms` inside the kept evidence, the last `KEEP_EPOCHS` epochs (`TooOld`), no
+`Fix.flags` bit set, fixes strictly increasing in time and no later than `t_ms`, no teleport.
+Only valid batches are logged and used. A batch may be late: a reconnect backlog or one carried
+by another phone is valid and its evidence counts. Only a batch dated within `CLOCK_SKEW_MS` of
+`now_ms` can make its player present, so a phone whose clock runs far behind (and whose tokens
+no hunter's phone accepts) goes dark instead of becoming untaggable.
 
 **Contact (4.5).** A sighting counts for the token's own epoch `e`. The phone's `Sighting.epoch`
 must be within 1 of `e` and within 1 of the batch's epoch. That is the replay check: an old
-token resolves to an old epoch. Sightings below `RSSI_MIN_DBM` are dropped. `n` is summed over
-every batch that reported that token. `contact(a, b, e)` holds when each side has `n ≥ MIN_SAMPLES`
+token resolves to an old epoch. Sightings below `RSSI_MIN_DBM` are dropped. A token counts once per
+batch (the highest `n` if the batch lists it more than once), and `n` is summed over batches. `contact(a, b, e)` holds when each side has `n ≥ MIN_SAMPLES`
 for the other's epoch-e token, both have a usable fix (`acc ≤ MAX_ACC_M`) within
 `FIX_WINDOW_MS` of the epoch midpoint (the nearest one counts), the two fixes are within
 `GEO_SLACK_M + acc_a + acc_b`, neither fix is inside a safehouse, and neither player is
 vehicle-frozen at the midpoint. Once established, a contact is never withdrawn.
 
-**Lock, heat, strike (4.6).** `lock(h→t, e)` = contact epochs in `(e − WINDOW_EPOCHS, e]`;
-heat is the same number seen from the target. HUDs carry the count (0..8); the phone divides by
-`LOCK_EPOCHS`. A strike is judged at the epoch of its batch's `t_ms`: it needs `lock ≥ LOCK_EPOCHS`
-and contact in that epoch or the one before. A tag moves the target's whole head to the
+**Lock, heat, strike (4.6).** `lock(h→t, e)` = contact epochs in `(e − WINDOW_EPOCHS, e]` that
+are not before `lock_from`, the epoch after h was assigned t (0 for the starting ring). Contact
+a hunter had with a player before hunting them never fills the lock on an inherited target.
+Heat is the same number seen from the target. HUDs carry the count (0..8); the phone divides
+by `LOCK_EPOCHS`. A strike is judged at the epoch of its batch's `t_ms`: it needs `lock ≥
+LOCK_EPOCHS` and contact in that epoch or the one before. A strike that fails only because the
+target has sent nothing dated past the end of e−1 or e, where contact is missing and would fill
+the lock, waits: it is judged again at the start of the next tick, once, before that tick's
+actions. If the match ends first it is refused. A tag moves the target's whole head to the
 hunter, puts the target out, and the hunter inherits the target's target.
 
-**Action order and the duel.** All actions of a tick are sorted by device `t_ms`, then by
+**Action order and the duel.** The actions of one tick are simultaneous. Device `t_ms` does not
+order them, since a phone can set its own clock. They are sorted by
 `SHA256("tail/coin" ‖ SHA256(vrf_signature) ‖ u32le(tick_no) ‖ u16le(player))` (lower first),
-then player, seq and position. Earlier ticks always win because ticks run in order. The coin
-is secret until `End` reveals the VRF signature; after that the replay can recompute it. An action
-by a player who is already out is refused with `PlayerOut`.
+then player, seq and position. Earlier ticks always win because ticks run in order, and
+deferred strikes go before the new tick's actions. The coin is secret until `End` reveals the
+VRF signature; after that the replay can recompute it. An action by a player who is already out
+is refused with `PlayerOut`.
 
 **Hints (4.7).** `price = hint_price(stake, kind)`, moved from the asker's head to the target's.
 A hint is refused, and costs nothing, for: an unknown kind, text over 140 characters, a
-cooldown (`HINT_COOLDOWN_MS` measured on device `t_ms`), a head below the price, or no usable fix
+cooldown (`HINT_COOLDOWN_MS` on the referee clock `now_ms`), a head below the price, or no usable fix
 for the asker or the target. The fact comes from the latest usable fixes. NEAR: the distance
 is at most `HINT_NEAR_M` (0/1). BEARING: 8-way direction from asker to target (0 = N, clockwise).
 TREND: the distance now against the distance between both players' fixes nearest `t − HINT_TREND_MS`
@@ -85,10 +98,13 @@ TREND: the distance now against the distance between both players' fixes nearest
 `hint_id` counts up from 0 across the match. A `HintReceipt` joins the log only for a hint
 this referee issued, at most once, and within `RECEIPT_WINDOW_MS`.
 
-**Dark and the zone.** A player is _present_ at a tick when that tick brought a valid batch
-whose last usable fix is inside the zone. The zone is one circle, and you are out only when
-`distance − acc > radius`. Leaving the zone, GPS off and rejected batches therefore all count
-as dark. Gaps are measured on the referee clock (`now_ms`). Once a gap passes `DARK_LEAK_MS`,
+**Dark and the zone.** A player is _present_ at a tick when that tick brought a valid batch,
+dated within `CLOCK_SKEW_MS` of `now_ms`, whose last fix with `acc ≤ PRESENCE_ACC_M` is inside
+the zone. Indoors a phone reports 60–150 m, which keeps you present but cannot prove contact
+(`MAX_ACC_M`). Above `PRESENCE_ACC_M` (iOS approximate location reports kilometres) a fix
+counts as dark, so a coarse location cannot make a player both untaggable and present. The
+zone is one circle, and you are out only when `distance − acc > radius`. Leaving the zone, GPS
+off and rejected batches therefore all count as dark. Gaps are measured on the referee clock (`now_ms`). Once a gap passes `DARK_LEAK_MS`,
 the hunter's HUD carries the `LEAK_CELL_M` grid cell of the target's last usable fix, on every
 tick until the target is present again. Dark time accrues only once a gap exceeds
 `DARK_GRACE_MS`, and then counts in full from the gap's start. Cumulative dark time of
@@ -113,21 +129,23 @@ From `tail_protocol::constants` (shared with TS): `EPOCH_MS` sets the token and 
 `FIX_WINDOW_MS` decide which fixes count and how close they must be. `MAX_SPEED_MPS`,
 `VEHICLE_HOLD_MS` and `VEHICLE_FREEZE_MS` set the vehicle freeze. `TELEPORT_MPS` sets the
 implied speed beyond both accuracies, over at least 1 s, that rejects a batch.
-`CLOCK_SKEW_MS` sets the batch clock tolerance. `DARK_LEAK_MS`, `LEAK_CELL_M` and
+`CLOCK_SKEW_MS` sets how far ahead of the referee clock a batch may be dated, and how
+recent a batch must be to make its player present. `DARK_LEAK_MS`, `LEAK_CELL_M` and
 `DARK_FORFEIT_MS` drive the dark rules. `HINT_*` and `hint_bps` set hint prices and facts.
 `CHECKPOINT_MS` sets how often roots are anchored.
 
 Local to the engine (`referee_core::*`):
 
-| Constant                      | Value       | Effect                                                                          |
-| ----------------------------- | ----------- | ------------------------------------------------------------------------------- |
-| `MIN_PLAYERS` / `MAX_PLAYERS` | 2 / 16      | Allowed match size (the product rule is 3–12; 2 allows duel tests)              |
-| `MAX_DURATION_MS`             | 24 h        | Bounds every epoch number, so no arithmetic can overflow                        |
-| `DARK_GRACE_MS`               | 20 s        | Gaps up to this cost no dark time (one or two missed ticks on a flaky network)  |
-| `TREND_SAME_M`                | 10 m        | TREND says "same" inside this band                                              |
-| `RECEIPT_WINDOW_MS`           | 120 s       | How long a hint waits for its voice receipt                                     |
-| `KEEP_EPOCHS`                 | 12          | Per-epoch evidence kept: the lock window plus skew, e−1 and the TREND look-back |
-| `COIN_DOMAIN`                 | `tail/coin` | Domain of the action tie-break coin                                             |
+| Constant                      | Value       | Effect                                                                         |
+| ----------------------------- | ----------- | ------------------------------------------------------------------------------ |
+| `MIN_PLAYERS` / `MAX_PLAYERS` | 2 / 16      | Allowed match size (the product rule is 3–12; 2 allows duel tests)             |
+| `MAX_DURATION_MS`             | 24 h        | Bounds every epoch number, so no arithmetic can overflow                       |
+| `DARK_GRACE_MS`               | 20 s        | Gaps up to this cost no dark time (one or two missed ticks on a flaky network) |
+| `TREND_SAME_M`                | 10 m        | TREND says "same" inside this band                                             |
+| `RECEIPT_WINDOW_MS`           | 120 s       | How long a hint waits for its voice receipt                                    |
+| `KEEP_EPOCHS`                 | 12          | Evidence kept: lock window, backlog, e−1, TREND look-back; older is `TooOld`   |
+| `PRESENCE_ACC_M`              | 200 m       | Coarsest in-zone fix that keeps a player present (contact needs `MAX_ACC_M`)   |
+| `COIN_DOMAIN`                 | `tail/coin` | Domain of the coin that orders a tick's actions                                |
 
 ## Choices TECHNICAL.md did not fix
 
@@ -138,20 +156,24 @@ Local to the engine (`referee_core::*`):
 3. **Teleport**: the implied speed is measured against the last accepted usable fix, beyond
    both accuracies. "Strike logged" means the batch shows up in `TickOutput.rejected`. There is
    no other penalty, but the gap counts as dark.
-4. **Median device time**: one vote per player (their newest authentic batch), and the mean of
-   the middle two for an even count. A phone uploading a backlog gets no extra weight, and a
-   2-player match treats both clocks alike. A lone batch is its own median.
+4. **Clock per player**: each phone's batches are judged against the referee clock alone, not
+   against the other phones, so in a 2-player match one clock cannot widen the window for the
+   other. Late is allowed (backlog, mesh carry); ahead is not.
 5. **Geometry**: distances use an equirectangular plane around the zone centre, with a Taylor
    cosine computed once. It is not haversine, but only `+ − × ÷ sqrt` are involved, so native,
    wasm and the replay agree bit for bit. The error is under 0.1 % across a city zone.
 6. **Leak cell**: a grid anchored at the zone centre. The HUD carries the cell centre.
-7. **Hint cooldown and strike epoch** use device `t_ms` (the action's time). Dark timing uses
-   `now_ms`.
+7. **Strike epoch and TREND look-back** use device `t_ms` (the action's time). The hint
+   cooldown, dark timing and action order do not.
 8. **Zero-price hints** (stake under 50 units) are allowed and emit `Hint` with amount 0.
 9. **finish** checks the VRF signature against the ring commitment. It does not check that
    `alpha` names this match; the contract must (`alpha` ends with `:` + hex(match_id)).
 10. **Rejections and refusals** are not in the HUD wire format. `TickOutput.rejected` and
     `TickOutput.refused` carry them for the relay or UI (for example "simulated location rejected").
-11. A device clock that jumps far ahead in a batch that is alone in its tick gets accepted.
-    Its later fixes then fail the fix-order rule until the clock catches up. That costs only
-    the player whose clock is wrong.
+11. A device clock up to `CLOCK_SKEW_MS` ahead is accepted. If it is then set right, its
+    batches fail `BatchOrder` (and then the fix-order rule) until device time passes the last
+    accepted one. That costs only the player whose clock was wrong.
+12. **Late strikes**: a strike in a backlog batch is judged at its own epoch, as long as that
+    batch is inside `KEEP_EPOCHS`. Batch times only move forward, so a phone can date a strike
+    no earlier than its last accepted batch; one that stays silent and then sets its clock
+    back can strike "as of" the start of its silence, paying for the silence in dark time.

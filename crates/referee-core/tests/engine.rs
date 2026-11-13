@@ -11,7 +11,7 @@ use referee_core::{
 use tail_protocol::beacon::{beacon_token, derive_player_key, derive_tag_key, epoch_at};
 use tail_protocol::digest::{batch_client_data_hash, batch_hash, verdict_digest};
 use tail_protocol::{
-    ring, target_status, Action, Batch, BatchEnvelope, Fix, Hash, Hud, LogEntry, Sighting, Verdict,
+    ring, target_status, Action, Batch, BatchEnvelope, Fix, Hash, Hud, LogEntry, Sighting, Verdict, EPOCH_MS,
 };
 
 const START: u64 = 1_800_000_000_000;
@@ -354,7 +354,7 @@ fn a_batch_for_another_match_is_rejected() {
 }
 
 #[test]
-fn a_clock_more_than_20_s_from_the_median_is_rejected_while_15_s_is_tolerated() {
+fn a_batch_dated_more_than_20_s_after_the_referee_clock_is_rejected_while_15_s_is_tolerated() {
     let (st, mut ph) = three();
     let t = START + 10_000;
     let batches = vec![
@@ -369,7 +369,7 @@ fn a_clock_more_than_20_s_from_the_median_is_rejected_while_15_s_is_tolerated() 
             2,
             Reject::ClockSkew {
                 t_ms: t + 30_000,
-                median_ms: t
+                now_ms: t
             }
         )]
     );
@@ -381,6 +381,100 @@ fn a_clock_more_than_20_s_from_the_median_is_rejected_while_15_s_is_tolerated() 
     ];
     let out = tick(out.state, input(2, t, batches)).unwrap();
     assert_eq!(out.rejected, vec![]);
+}
+
+#[test]
+fn in_a_two_player_match_each_clock_is_judged_alone_so_one_cannot_widen_the_other() {
+    // Under a median of two, a phone 39 s ahead of its rival passed. Each clock now answers to
+    // the referee clock only.
+    let a = Phone::new(0, "a");
+    let b = Phone::new(1, "b");
+    let started = init(
+        cfg(),
+        vec![a.device("a"), b.device("b")],
+        &K_M,
+        &VRF,
+        START,
+        [0; 16],
+    )
+    .unwrap();
+    let mut ph = [a, b];
+    let t = START + 10_000;
+    let batches = vec![
+        ph[0].next(t - 5_000, Vec::new(), Vec::new()),
+        ph[1].next(t + 34_000, Vec::new(), Vec::new()),
+    ];
+    let out = tick(started.state, input(1, t, batches)).unwrap();
+    assert_eq!(
+        reasons(&out),
+        vec![(
+            1,
+            Reject::ClockSkew {
+                t_ms: t + 34_000,
+                now_ms: t
+            }
+        )]
+    );
+}
+
+#[test]
+fn batch_times_must_not_go_back_and_an_equal_time_passes() {
+    let (st, mut ph) = three();
+    let t = START + 10_000;
+    let out = tick(st, input(1, t, vec![ph[0].next(t, Vec::new(), Vec::new())])).unwrap();
+    let back = ph[0].next(t - 1, Vec::new(), Vec::new());
+    let out = tick(out.state, input(2, t + 10_000, vec![back])).unwrap();
+    assert_eq!(
+        reasons(&out),
+        vec![(
+            0,
+            Reject::BatchOrder {
+                t_ms: t - 1,
+                last_ms: t
+            }
+        )]
+    );
+    // The rejected batch still moved the chain on; the next one in order passes.
+    let same = ph[0].next(t, Vec::new(), Vec::new());
+    let out = tick(out.state, input(3, t + 20_000, vec![same])).unwrap();
+    assert_eq!(out.rejected, vec![]);
+}
+
+#[test]
+fn a_backlog_batch_is_accepted_while_it_is_inside_the_kept_epochs_and_older_is_too_old() {
+    let (st, mut ph) = three();
+    // A phone that was offline for three minutes delivers everything at once.
+    let now = START + 200_000;
+    let batches: Vec<BatchEnvelope> = (1..=40u64)
+        .map(|k| {
+            ph[0].next(
+                START + k * 5_000,
+                vec![fix(START + k * 5_000 - 1_000, 0)],
+                Vec::new(),
+            )
+        })
+        .collect();
+    let out = tick(st, input(1, now, batches)).unwrap();
+    // Epoch 13 is current, so evidence from epoch 1 on is kept: batches from 15 s on count.
+    let oldest_ms = START + EPOCH_MS;
+    let too_old: Vec<(u16, Reject)> = (1..=2u64)
+        .map(|k| {
+            (
+                0,
+                Reject::TooOld {
+                    t_ms: START + k * 5_000,
+                    oldest_ms,
+                },
+            )
+        })
+        .collect();
+    assert_eq!(reasons(&out), too_old);
+    let logged = out
+        .log
+        .iter()
+        .filter(|e| matches!(e, LogEntry::Batch { .. }))
+        .count();
+    assert_eq!(logged, 38);
 }
 
 #[test]
@@ -567,7 +661,7 @@ fn a_match_longer_than_a_day_is_refused_and_one_of_a_day_starts() {
 }
 
 #[test]
-fn absurd_device_times_cannot_crash_the_referee_and_play_goes_on() {
+fn absurd_times_cannot_crash_the_referee_and_play_goes_on() {
     let (st, mut ph) = three();
     let t = u64::MAX - 1;
     let mut fast = fix(t - 30_000, 0);
@@ -582,23 +676,33 @@ fn absurd_device_times_cannot_crash_the_referee_and_play_goes_on() {
             text: None,
         },
     ];
-    // Alone in its tick, the batch is its own median, so only the later rules can stop it.
-    let out = tick(
-        st,
-        input(
-            1,
-            START + 10_000,
-            vec![ph[0].next(t, vec![fast, faster], actions)],
-        ),
-    )
-    .unwrap();
+    // A device clock at the end of time is far ahead of the referee clock.
+    let far = ph[0].next(t, vec![fast.clone(), faster.clone()], actions.clone());
+    let out = tick(st, input(1, START + 10_000, vec![far])).unwrap();
+    assert_eq!(
+        reasons(&out),
+        vec![(
+            0,
+            Reject::ClockSkew {
+                t_ms: t,
+                now_ms: START + 10_000
+            }
+        )]
+    );
+    let keep = out.state.clone();
+    let out = tick(out.state, input(2, START + 20_000, Vec::new())).unwrap();
+    assert_eq!(out.state.total_heads(), 3_000_000);
+    // A referee clock there too (the caller cannot get it there, but the engine must cope):
+    // every later rule runs on those times without overflowing, and the match is over.
+    let b = ph[0].next(t, vec![fast, faster], actions);
+    let out = tick(keep, input(2, t, vec![b])).unwrap();
     assert_eq!(out.rejected, vec![]);
+    assert_eq!(out.refused.len(), 2);
     assert!(out
         .refused
         .iter()
         .all(|r| r.reason == referee_core::Refuse::TimeUp));
-    assert_eq!(out.refused.len(), 2);
-    let out = tick(out.state, input(2, START + 20_000, Vec::new())).unwrap();
+    assert!(out.over);
     assert_eq!(out.state.total_heads(), 3_000_000);
 }
 
@@ -723,4 +827,107 @@ fn a_forfeited_players_hud_names_the_account_that_received_the_head() {
         st = out.state;
     }
     panic!("the dark player never forfeited");
+}
+
+// ── presence, sightings, cooldown ─────────────────────────────────────────────────
+
+fn fix_acc(t_ms: u64, acc_m: u16) -> Fix {
+    Fix {
+        acc_m,
+        ..fix(t_ms, 0)
+    }
+}
+
+#[test]
+fn an_indoor_fix_keeps_its_player_present_and_approximate_location_counts_as_dark() {
+    let (mut st, mut ph) = three();
+    for n in 1..=9u32 {
+        let now = START + u64::from(n) * 10_000;
+        let batches = vec![
+            ph[0].next(now, vec![fix_acc(now - 1_000, 200)], Vec::new()),
+            ph[1].next(now, vec![fix_acc(now - 1_000, 201)], Vec::new()),
+            ph[2].next(now, vec![fix_acc(now - 1_000, 5)], Vec::new()),
+        ];
+        st = tick(st, input(n, now, batches)).unwrap().state;
+    }
+    let dark: Vec<u64> = st.players().iter().map(|p| p.dark_ms).collect();
+    assert_eq!(dark, vec![0, 90_000, 0]);
+}
+
+#[test]
+fn a_stale_batch_counts_as_evidence_but_does_not_make_its_player_present() {
+    let (mut st, mut ph) = three();
+    // From the third tick on, so the late phone's batches are dated after the start.
+    for n in 3..=11u32 {
+        let now = START + u64::from(n) * 10_000;
+        // Player 0's batches are dated 21 s behind the referee clock: valid, never about now.
+        let batches = vec![
+            ph[0].next(now - 21_000, vec![fix(now - 22_000, 0)], Vec::new()),
+            ph[1].next(now, vec![fix(now - 1_000, 0)], Vec::new()),
+        ];
+        let out = tick(st, input(n, now, batches)).unwrap();
+        assert_eq!(out.rejected, vec![]);
+        st = out.state;
+    }
+    let dark: Vec<u64> = st.players().iter().map(|p| p.dark_ms).collect();
+    assert_eq!(dark, vec![110_000, 0, 110_000]);
+}
+
+fn contacts(out: &TickOutput) -> usize {
+    out.log
+        .iter()
+        .filter(|e| matches!(e, LogEntry::Contact { .. }))
+        .count()
+}
+
+#[test]
+fn a_token_listed_three_times_in_one_batch_counts_once() {
+    let [h, t, _] = ring_order();
+    let run = |copies: usize, n: u8| {
+        let (st, mut ph) = three();
+        let now = START + 10_000;
+        let weak: Vec<Sighting> = heard(t, now)
+            .into_iter()
+            .flat_map(|s| std::iter::repeat_n(Sighting { n, ..s }, copies))
+            .collect();
+        let batches = vec![
+            walk(&mut ph[h as usize], now, 0, weak, Vec::new()),
+            walk(&mut ph[t as usize], now, 3, heard(h, now), Vec::new()),
+        ];
+        contacts(&tick(st, input(1, now, batches)).unwrap())
+    };
+    assert_eq!(run(3, 1), 0, "three copies of one sample are one sample");
+    assert!(run(1, 2) > 0, "two real samples are enough");
+}
+
+#[test]
+fn the_hint_cooldown_runs_on_the_referee_clock_whatever_the_device_says() {
+    let (st, mut ph) = three();
+    let [asker, target, _] = ring_order();
+    let hint = |nonce| Action::Hint {
+        hint: 0,
+        nonce,
+        text: None,
+    };
+    let mut now = START + 10_000;
+    let batches = |ph: &mut Vec<Phone>, now: u64, device: u64, nonce| {
+        vec![
+            ph[asker as usize].next(device, vec![fix(device - 1_000, 0)], vec![hint(nonce)]),
+            ph[target as usize].next(now, vec![fix(now - 1_000, 50)], Vec::new()),
+        ]
+    };
+    let out = tick(st, input(1, now, batches(&mut ph, now, now, 1))).unwrap();
+    assert_eq!(out.hints.len(), 1);
+    // Ten seconds later by the referee, but the device clock claims 39 s have passed.
+    now += 10_000;
+    let out = tick(out.state, input(2, now, batches(&mut ph, now, now + 19_000, 2))).unwrap();
+    assert_eq!(
+        out.refused[0].reason,
+        referee_core::Refuse::Cooldown {
+            ready_ms: START + 40_000
+        }
+    );
+    now += 20_000;
+    let out = tick(out.state, input(3, now, batches(&mut ph, now, now + 19_000, 3))).unwrap();
+    assert_eq!(out.hints.len(), 1);
 }

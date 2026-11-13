@@ -12,7 +12,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use tail_protocol::MatchId;
 
 /// Bumped when the layout changes; an old blob is refused rather than misread.
-pub const VERSION: u8 = 2;
+pub const VERSION: u8 = 3;
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, PartialEq)]
 pub struct MatchState {

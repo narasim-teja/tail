@@ -105,16 +105,6 @@ fn hints_move_money_from_asker_to_target_and_respect_cooldown_kind_text_and_head
 }
 
 #[test]
-fn in_a_duel_the_earlier_strike_in_the_same_tick_wins() {
-    passes("duel-alice-earlier");
-}
-
-#[test]
-fn in_a_duel_moving_the_other_strike_earlier_flips_the_winner() {
-    passes("duel-bob-earlier");
-}
-
-#[test]
 fn in_a_duel_a_strike_in_an_earlier_tick_wins() {
     passes("duel-earlier-tick");
 }
@@ -129,32 +119,106 @@ fn coin(vrf_signature: &[u8], tick_no: u32, player: u16) -> [u8; 32] {
     ])
 }
 
+/// The one tag of a duel, checked against the coin: the lower coin of its tick strikes first.
+fn coin_winner(r: &Report) -> u16 {
+    let tags: Vec<(u32, u16)> = r
+        .verdicts
+        .iter()
+        .filter_map(|(_, tick, v)| match v.body {
+            Verdict::Tag { hunter, .. } => Some((*tick, hunter)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tags.len(), 1, "exactly one strike lands");
+    let (tick, hunter) = tags[0];
+    let want = u16::from(coin(&r.vrf_signature, tick, 1) < coin(&r.vrf_signature, tick, 0));
+    assert_eq!(hunter, want, "the lower coin strikes first");
+    hunter
+}
+
+#[test]
+fn in_a_duel_an_earlier_device_time_in_the_same_tick_does_not_win_the_coin_does() {
+    let r = passes("duel-alice-earlier");
+    assert_eq!(r.name(coin_winner(&r)), "bob", "alice's batch was dated earlier");
+    let r = passes("duel-bob-earlier");
+    coin_winner(&r);
+}
+
+/// Runs a duel trace under twelve match names and returns who won each.
+fn duel_winners(trace: &str) -> std::collections::BTreeSet<u16> {
+    (0..12)
+        .map(|k| {
+            let mut sc = scenario(trace);
+            sc.name = format!("{trace}-{k}");
+            coin_winner(&run(&sc).unwrap())
+        })
+        .collect()
+}
+
 #[test]
 fn simultaneous_duel_strikes_are_decided_by_the_vrf_coin_and_each_side_can_win() {
-    let mut winners = std::collections::BTreeSet::new();
-    for k in 0..12 {
-        let mut sc = scenario("duel-same-instant");
-        sc.name = format!("duel-same-instant-{k}");
-        let r = run(&sc).unwrap();
-        let tags: Vec<(u32, u16)> = r
-            .verdicts
-            .iter()
-            .filter_map(|(_, tick, v)| match v.body {
-                Verdict::Tag { hunter, .. } => Some((*tick, hunter)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(tags.len(), 1, "exactly one strike lands");
-        let (tick, hunter) = tags[0];
-        let want = u16::from(coin(&r.vrf_signature, tick, 1) < coin(&r.vrf_signature, tick, 0));
-        assert_eq!(hunter, want, "the lower coin strikes first");
-        winners.insert(hunter);
-    }
     assert_eq!(
-        winners.len(),
+        duel_winners("duel-same-instant").len(),
         2,
         "the coin, not the player index, picks the winner"
     );
+}
+
+#[test]
+fn a_clock_set_back_does_not_win_a_duel() {
+    assert_eq!(
+        duel_winners("duel-clock-behind").len(),
+        2,
+        "alice's clock runs 15 s behind, and still bob wins some"
+    );
+}
+
+#[test]
+fn a_hunter_who_inherits_a_target_starts_its_lock_from_scratch() {
+    passes("inherited-target");
+}
+
+#[test]
+fn an_indoor_fix_keeps_a_player_present_while_approximate_location_goes_dark() {
+    passes("indoor-accuracy");
+}
+
+#[test]
+fn moving_the_clock_cannot_skip_the_hint_cooldown_or_send_batches_back_in_time() {
+    passes("clock-jumps");
+}
+
+#[test]
+fn a_sighting_listed_twice_in_a_batch_counts_once() {
+    passes("duplicate-sightings");
+}
+
+#[test]
+fn the_honest_twin_hearing_two_samples_per_epoch_listed_once_does_tag() {
+    use referee_sim::scenario::Event;
+    let mut sc = scenario("duplicate-sightings");
+    sc.name = "duplicate-sightings-honest".into();
+    sc.events.retain(|e| !matches!(e, Event::Copies { .. }));
+    for r in sc.radio.iter_mut().filter(|r| r.a == "alice") {
+        r.to = r.from + 2;
+    }
+    let r = run(&sc).unwrap();
+    assert_eq!(r.verdict_texts(false), ["Start", "Tag alice bob", "End"]);
+}
+
+#[test]
+fn a_strike_short_only_of_the_targets_late_data_waits_one_tick_and_lands() {
+    passes("strike-waits-for-target");
+}
+
+#[test]
+fn a_strike_waits_only_once_for_a_target_who_stays_offline() {
+    passes("strike-waits-once");
+}
+
+#[test]
+fn a_reconnect_backlog_is_accepted_and_its_contacts_count() {
+    passes("backlog-reconnect");
 }
 
 #[test]

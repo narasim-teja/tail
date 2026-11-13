@@ -1,5 +1,6 @@
 {
   "name": "duel-alice-earlier-in-tick",
+  "about": "Alice's batch is dated 3 s before Bob's, but both strikes arrive in the same tick, so they are simultaneous and the VRF coin decides. Device time used to decide, and a phone could set its clock back to win; under this match's coin Bob strikes first.",
   "duration_s": 300,
   "radio_auto_m": 15,
   "players": [
@@ -27,10 +28,10 @@
     }
   ],
   "expect": {
-    "verdicts": ["Start", "Tag alice bob", "End"],
+    "verdicts": ["Start", "Tag bob alice", "End"],
     "refusals": [
       {
-        "player": "bob",
+        "player": "alice",
         "reason": "PlayerOut",
         "from": 100,
         "to": 100

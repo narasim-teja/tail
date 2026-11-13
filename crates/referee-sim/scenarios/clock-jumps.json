@@ -1,0 +1,28 @@
+{
+  "name": "clock-jumps",
+  "about": "Alice moves her clock 19 s forward after a hint. By device time her next hint, ten seconds later, would be past the 30 s cooldown; on the referee clock it is not, so it is refused, and the one 30 s later is charged. At 100 s she sets her clock back: batches dated before her last accepted one are rejected until device time passes it, and the first batch after that still fails because its fixes overlap ones already accepted.",
+  "duration_s": 200,
+  "ring": ["alice", "bob", "carol"],
+  "players": [
+    { "name": "alice", "path": [[0, 0, 0]] },
+    { "name": "bob", "path": [[0, 70, 70]] },
+    { "name": "carol", "path": [[0, 500, -500]] }
+  ],
+  "events": [
+    { "do": "hint", "t": 20, "player": "alice", "kind": "near" },
+    { "do": "clock", "t": 25, "player": "alice", "offset_ms": 19000 },
+    { "do": "hint", "t": 31, "player": "alice", "kind": "bearing" },
+    { "do": "hint", "t": 46, "player": "alice", "kind": "bearing" },
+    { "do": "clock", "t": 100, "player": "alice", "offset_ms": 0 }
+  ],
+  "expect": {
+    "verdicts": ["Start", "Hint alice bob 20000", "Hint alice bob 50000", "End"],
+    "verdict_times": [{ "verdict": "Hint alice bob 50000", "from": 50, "to": 50 }],
+    "refusals": [{ "player": "alice", "reason": "Cooldown", "from": 40, "to": 40 }],
+    "rejections": [
+      { "player": "alice", "reason": "BatchOrder", "from": 100, "to": 110 },
+      { "player": "alice", "reason": "FixOrder", "from": 120, "to": 120 }
+    ],
+    "heads": { "alice": 930000, "bob": 1070000, "carol": 1000000 }
+  }
+}

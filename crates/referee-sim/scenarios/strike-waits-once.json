@@ -1,0 +1,21 @@
+{
+  "name": "strike-waits-once",
+  "about": "Twin of strike-waits-for-target with Bob offline until 125 s. The strike waits one tick, Bob's data is still missing at 110 s, and the strike is refused then. A strike waits once, so a target who stays offline cannot keep it hanging.",
+  "duration_s": 300,
+  "ring": ["alice", "bob", "carol"],
+  "radio_auto_m": 15,
+  "players": [
+    { "name": "alice", "path": [[0, -2, 0]] },
+    { "name": "bob", "path": [[0, 0, 0]] },
+    { "name": "carol", "path": [[0, 500, -500]] }
+  ],
+  "events": [
+    { "do": "hold", "player": "bob", "from": 75, "to": 125 },
+    { "do": "strike", "t": 96, "player": "alice" }
+  ],
+  "expect": {
+    "verdicts": ["Start", "End"],
+    "refusals": [{ "player": "alice", "reason": "NoContact", "from": 110, "to": 110 }],
+    "huds": [{ "t": 120, "player": "alice", "leak": true }, { "t": 130, "player": "alice", "leak": false }]
+  }
+}

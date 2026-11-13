@@ -37,9 +37,16 @@ pub const DARK_GRACE_MS: u64 = 20_000;
 pub const TREND_SAME_M: f64 = 10.0;
 /// A voice receipt is logged only if it arrives within this long of its hint.
 pub const RECEIPT_WINDOW_MS: u64 = 120_000;
-/// Per-epoch evidence kept in the state: the lock window plus room for late batches (skew),
-/// the strike's e−1 and the TREND look-back.
+/// Per-epoch evidence kept in the state: the lock window plus room for backlog batches, the
+/// strike's e−1 and the TREND look-back. A batch dated before this window is rejected, since
+/// its evidence would have nowhere to go.
 pub const KEEP_EPOCHS: u32 = WINDOW_EPOCHS + 4;
-/// Tie-break for actions with the same device time:
+/// A fix this accurate, inside the zone, keeps its player present. Indoors a phone often
+/// reports 60–150 m, and a player standing in a building must not bleed dark time for it.
+/// Above this the fix counts as dark: iOS "approximate location" reports kilometres, and a
+/// player who switches to it must not become untaggable (contact still needs `MAX_ACC_M`)
+/// and present at once.
+pub const PRESENCE_ACC_M: u16 = 200;
+/// Order of the actions within one tick, which are simultaneous whatever their device times:
 /// `SHA256("tail/coin" ‖ SHA256(vrf_signature) ‖ u32le(tick_no) ‖ u16le(player))`, lower first.
 pub const COIN_DOMAIN: &[u8] = b"tail/coin";
