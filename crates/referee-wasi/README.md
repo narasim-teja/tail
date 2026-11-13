@@ -68,6 +68,12 @@ app_attest_pk: [u8;65], attested: bool, player_box_pk: [u8;32], near_pk: [u8;32]
 [u8;16]}`; `sig` = ed25519 under `referee_pk` (base64) over SHA256(`"tail/enroll-receipt/v1"` ‖
 receipt), so the relay can tell which referee holds the device.
 
+**`devices`** `{accounts: [account_id]}`, at most 16. Read-only. → `{devices: [{account_id,
+receipt, unreadable?}]}` in input order: `receipt` is the receipt body (borsh `Device`, as
+`enroll` returns it) of the record `start` would load for the account, or null when there is
+none or it does not decode (`unreadable` then says why). The relay asks before it locks a lobby,
+so a player whose device the referee does not hold as the relay recorded it re-enrols first.
+
 **`start`** `{match_id (16 B), players: [account_id], start_ms?, duration_ms, stake ("u128"),
 zone: {lat_e7, lon_e7, radius_m}, safehouses?: [circle]}`. `start_ms` defaults to the host
 clock. The App ID every assertion is checked against is `LKABS9RZAC.com.lkabs9rzac.tail`, the

@@ -729,6 +729,50 @@ fn an_enrolled_account_moves_only_with_its_devices_consent() {
     assert!(refused(Some(dir), &input(1, 1)).contains("rebind_sig"));
 }
 
+/// The raw storage record under `key`, where the local referee keeps it.
+fn record_file(dir: &Path, key: &str) -> PathBuf {
+    dir.join("storage").join(hex::encode(key))
+}
+
+#[test]
+fn devices_names_the_receipt_start_would_read() {
+    let tmp = TempDir::new("devices");
+    let dir = tmp.0.as_path();
+    let (_, referee_pk, _) = pubkeys(dir);
+    let accounts = ["alice.test.near", "bob.test.near"];
+    enroll_all(dir, &referee_pk, &accounts);
+    let enrolled = call(
+        dir,
+        &json!({ "cmd": "enroll", "account_id": "alice.test.near",
+                 "app_attest_pk": b64(&appattest::public_key_bytes(device_key("alice.test.near").verifying_key())),
+                 "player_box_pk": b64(&seal::public_key(&box_sk("alice.test.near"))),
+                 "near_pk": b64(&[10; 32]) }),
+    );
+    let ask =
+        json!({ "cmd": "devices", "accounts": ["alice.test.near", "carol.test.near", "bob.test.near"] });
+    let d = call(dir, &ask);
+    assert_eq!(d["devices"][0]["account_id"], "alice.test.near");
+    assert_eq!(d["devices"][0]["receipt"], enrolled["receipt"]);
+    assert_eq!(
+        d["devices"][1],
+        json!({ "account_id": "carol.test.near", "receipt": null })
+    );
+    // A record `start` cannot read is not held, and says why.
+    let bob = record_file(dir, "device:bob.test.near");
+    let mut bytes = std::fs::read(&bob).unwrap();
+    bytes.truncate(bytes.len() - 3);
+    std::fs::write(&bob, &bytes).unwrap();
+    let d = call(dir, &ask);
+    assert!(d["devices"][2]["receipt"].is_null(), "{d}");
+    assert!(d["devices"][2]["unreadable"].is_string(), "{d}");
+    // Malformed or too many account ids are refused before any read.
+    assert!(
+        refused(Some(dir), &json!({ "cmd": "devices", "accounts": ["Not An Id"] })).contains("account id")
+    );
+    let many: Vec<String> = (0..17).map(|n| format!("p{n}.test.near")).collect();
+    assert!(refused(Some(dir), &json!({ "cmd": "devices", "accounts": many })).contains("at most 16"));
+}
+
 #[test]
 fn plays_a_match_with_keys_on_disk() {
     let tmp = TempDir::new("match");

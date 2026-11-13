@@ -2,6 +2,7 @@
 //! returns the JSON result; `main` wraps it in `{ok, result | error}`.
 
 mod bench;
+mod devices;
 mod end;
 mod enroll;
 mod pubkeys;
@@ -29,6 +30,7 @@ pub fn dispatch(name: &str, input: Value) -> Result<Value, String> {
     match name {
         "pubkeys" => pubkeys::run(input),
         "enroll" => enroll::run(input),
+        "devices" => devices::run(input),
         "start" => start::run(input),
         "tick" => tick::run(input),
         "voice" => voice::run(input),
