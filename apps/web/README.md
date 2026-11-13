@@ -96,8 +96,9 @@ bundle, so a relay running its own contract copy, referee or OutLayer mirror can
 | published referee wasm | `20446c643bd4b1cc8a017669596ed361506ad557c99464ecfe19beead6d08664`               |
 
 A bundle that names another contract or network, or (for `?match=`) another match id, fails
-whole: every verdict is "Doesn't match NEAR". Publishing a new referee build or key means adding
-it here.
+whole: the header names the reason ("Names another contract", "Names another network", "Not the
+match in the link") and nothing in it is compared with NEAR. Publishing a new referee build or
+key means adding it here.
 
 ### Build, test, screenshots
 
@@ -133,9 +134,10 @@ film plays, so each event's mark appears when its own checks have run.
 | Contacts behind a tag                                  | each cited `Contact` entry's Merkle inclusion path to the first anchored root that covers it, verified in the browser (`merkleVerify`); "Check on NEAR" calls the contract's `verify_inclusion` view over RPC so NEAR checks the same path itself                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Presence proofs                                        | "Make presence proof" on a contact window builds a `PresenceProof` (the Contact entry, its index, an anchored size, the path, the two accounts). `/?presence=` checks one with `verifyPresence` against the roots and player list read from the pinned contract over RPC, never from a relay; a proof naming another contract fails                                                                                                                                                                                                                                                                                                                                                       |
 | The log stayed private during play                     | v2: every `Contact`, `HintReceipt` and `Evidence` entry ends in `logSalt(K_log, index)`, K_log = HKDF(K_m, "tail/log"), with K_m from the bundle's `reveal.kM` (`badLogSalts`). The referee releases K_m only with the log after End, so during play the relay could not hash guesses of these entries against its leaves. No `kM`: not checked. v1 logs had no salts                                                                                                                                                                                                                                                                                                                     |
-| Devices                                                | v2: each player's `Enrolled` log entry; `attested: false` is labelled "test player (no Apple attestation)" on the player and on every verdict involving them. The relay's `devices` list is not used                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Devices                                                | v2: each player's `Enrolled` log entry; `attested: false` is labelled "test player (no Apple attestation)" on the player and on every verdict involving them. The relay's `devices` list is not used here (`tail-verify` uses it to re-check App Attest assertions)                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Handler key's hardware                                 | the "Verified" panel under a Handler line fetches NEAR AI's attestation report for the model with a fresh 32-byte nonce (`src/verify/nearai.ts`, `nearai-live.ts`) and checks the Intel TDX quote with dcap-qvl against Intel-signed collateral (through Phala's cache, which sends CORS headers), the signing address and nonce in its report data, and `mr_config_id` against the container manifest. NVIDIA's NRAS refuses browsers, so the GPU row comes from `public/nearai-attestation.json`, the saved output of `scripts/verify-nearai.ts`, with its date. It checks NEAR AI's current key, and says whether the line's logged address is that key                                |
 | Handler lines                                          | v1: SHA-256 of the quoted text equals the `HintReceipt` text hash. v2: the words were sealed to the asker, so the bundle has none and the page doesn't quote them                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Handler chat signature                                 | the receipt's ECDSA signature, Ethereum `personal_sign` over the bundle's `signedText` (`model:sha256(req):sha256(resp)`), recovers (secp256k1 + keccak-256) to the logged `signing_address` (and, for v1, names the quoted model). It shows that address signed those hashes; it does not show the address is a TEE key, nor tie the response hash to any quote                                                                                                                                                                                                                                                                                                                          |
+| Handler chat signature                                 | the receipt's ECDSA signature, Ethereum `personal_sign` over the bundle's `signedText` (`model:sha256(req):sha256(resp)`), recovers (secp256k1 + keccak-256) to the logged `signing_address` (and, for v1, names the quoted model). It shows that address signed those hashes, not that the address is a TEE key (the next row checks that) nor that the response hash is any quote                                                                                                                                                                                                                                                                                                       |
 | Which referee                                          | NEAR's `referee_pk` for the match against the pinned enclave and local keys (never the bundle's `referee.kind`). "Enclave" only for a verdict whose record, read from the pinned OutLayer API, names its call and an `executed_wasm_sha256` in the pinned list                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 A broken verdict chain, a head that isn't NEAR's or a failed consistency link fails the match
@@ -148,8 +150,17 @@ tags, forfeits and End carry no credits or hint targets; the page keeps that sha
 and says no settlement replay ran.
 
 Marks: **Matches NEAR** (every check passed and NEAR holds the same root), **Signed, not on
-NEAR** (every local check passed, but NEAR has no such match or could not be reached),
-**Doesn't match NEAR** (a check failed; the event still plays). The tamper tests in
+NEAR** (every local check passed, but NEAR has no such match or could not be reached), **Fails a
+check** (a check failed here; the event still plays), which the details sheet words as **Doesn't
+match NEAR** only when NEAR was asked and holds something else. The header line counts failures
+the same way ("2 verdicts fail a check"). The match's checks are badges, each named for exactly
+what it checked: "Signed by the referee", "Verdict history is one unbroken chain" (", same as on
+NEAR" only when NEAR's head was read and compared), "Each checkpoint extends the previous one",
+"Ran the published code in the enclave" (only for an enclave-pinned match), "The log adds up",
+"Matches NEAR", "The draw matches its commitment", "Trails come from the log", "The referee says it
+checked every phone's Apple attestation" (or "… skipped some phones' …": the log's record, not
+Apple's attestation), "Log salts come from the match key" (with who held that key) and "Handler
+chats are signed". The tamper tests in
 `test/verify.test.ts` flip every byte of a Tag verdict, a log entry and a batch in turn and
 assert each one fails; `test/v2.test.ts` covers the verdict chain, consistency, tag evidence,
 presence proofs, unattested players, both tampered fixtures and the v1 bundle;
@@ -197,7 +208,7 @@ minute in a debug build), and skips it without cargo. Its Handler lines are temp
 receipts are unsigned. Check it the way you would a real match:
 
 ```sh
-cargo run -q -p referee-verify --bin tail-verify -- --strict apps/web/public/fixtures/boston-common-economy.json
+cargo run -q -p referee-verify --bin tail-verify -- apps/web/public/fixtures/boston-common-economy.json
 ```
 
 **The referee, VRF and Handler-model keys in the fixture are public test keys** derived from
@@ -226,8 +237,9 @@ strings in the script. They were never used on NEAR, the bundle names no transac
   back is not compared (`get_match` lists sponsors' contributions, not their refunds).
 - Whom a v2 hint was about comes only from End's `hintTargets`, so it is shown only for a match
   that has ended (the only kind this page replays).
-- The phones' App Attest assertions are not re-checked here; the declassified batches do not
-  carry them.
+- The phones' App Attest assertions are not re-checked here, and contact is not recomputed from
+  the sightings: the bundle carries the assertions and device keys, and `tail-verify`
+  (`crates/referee-verify`) re-runs both.
 - Private replays need a player's NEAR key to answer the relay's challenge; this page has no
   wallet, so it shows who can watch instead.
 - deck.gl 9.4 reads `map.transform`, which MapLibre 6 moved onto its camera; `Scene3D.tsx`

@@ -8,7 +8,7 @@ import type { MatchProblem, Summary, VerdictStatus } from "../verify/report.ts";
  * check: the brand's ringed check, "Matches NEAR" only.
  * tick: a bare tick, one local check that ran and held (a proof row), never a NEAR claim.
  * hollow: a plain ring, signed and logged but not on NEAR (or NEAR unreachable).
- * bar: a ring with a bar through it, in ink, "Doesn't match NEAR" / a check that failed.
+ * bar: a ring with a bar through it, in ink, "Fails a check" ("Doesn't match NEAR" when NEAR differs).
  * dashed: a dashed ring, not checked yet.
  */
 export type Glyph = "check" | "tick" | "hollow" | "bar" | "dashed";

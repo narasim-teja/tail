@@ -123,8 +123,10 @@ export function summaryLine(
   const n = (k: number) => `${k} verdict${k === 1 ? "" : "s"}`;
   if (problem) return problem.line;
   if (localDone < s.total) return `Checking ${localDone} of ${s.total}`;
+  // A mismatch is any failed check, most of them run in this browser with no NEAR involved
+  // (statusOf), so the count says that a check failed, not that NEAR disagrees.
   if (s.mismatched > 0 && s.checked === s.total)
-    return `${n(s.mismatched)} ${s.mismatched === 1 ? "doesn't" : "don't"} match NEAR`;
+    return `${n(s.mismatched)} ${s.mismatched === 1 ? "fails" : "fail"} a check`;
   if (s.checked < s.total || chain === "checking") return "Comparing with NEAR";
   if (chain === "absent") return "Not on NEAR";
   if (chain === "unreachable") return "Couldn't reach NEAR";

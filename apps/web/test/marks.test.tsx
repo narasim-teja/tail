@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { icons } from "@tail/brand";
 import { renderToStaticMarkup } from "react-dom/server";
+import { markLabel } from "../src/replay/copy.ts";
 import { GlyphIcon, Mark } from "../src/ui/icons.tsx";
 import { type Check, overall, proofGlyph, STATUS_GLYPH } from "../src/ui/marks.ts";
 import { summarize, type VerdictStatus } from "../src/verify/report.ts";
@@ -30,7 +31,15 @@ describe("verification marks", () => {
 
   test("marks are labelled with their status for screen readers", () => {
     expect(html("unanchored")).toContain('aria-label="Signed, not on NEAR"');
-    expect(html("mismatch")).toContain('aria-label="Doesn&#x27;t match NEAR"');
+    // From the status alone a barred mark can't tell a local failure from NEAR disagreeing.
+    expect(html("mismatch")).toContain('aria-label="Fails a check"');
+  });
+
+  test("a barred mark names NEAR only when NEAR was asked and holds something else", () => {
+    expect(markLabel("mismatch", "mismatch")).toBe("Doesn't match NEAR");
+    expect(markLabel("mismatch", "absent")).toBe("Fails a check");
+    expect(markLabel("mismatch", undefined)).toBe("Fails a check");
+    expect(markLabel("verified", "match")).toBe("Matches NEAR");
   });
 
   test("a proof row shows the ringed check only when it compares with NEAR and passes", () => {

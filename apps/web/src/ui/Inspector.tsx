@@ -9,15 +9,14 @@ import { Button } from "../components/ui/button.tsx";
 import { clock, money, short } from "../lib/format.ts";
 import { useStore } from "../lib/store.ts";
 import { lockAt, type MatchEvent, snapshotAt, snapshotBefore, walked } from "../model/match.ts";
-import { drawSource, eventLine, list, settlementProof, statusLabel, TEST_PLAYER } from "../replay/copy.ts";
+import { drawSource, eventLine, list, markLabel, settlementProof, TEST_PLAYER } from "../replay/copy.ts";
 import type { Selection } from "../replay/state.ts";
-import type { Anchor } from "../verify/anchor.ts";
 import { attestationUrl, isEnclave } from "../verify/attestation.ts";
 import { explorerTx } from "../verify/chain.ts";
 import { checkSalts, enrolments, localOk, ringOk } from "../verify/checks.ts";
 import { tagEvidence } from "../verify/evidence.ts";
 import { PINS } from "../verify/pins.ts";
-import { matchProblem, summarize, type VerdictStatus } from "../verify/report.ts";
+import { matchProblem, summarize } from "../verify/report.ts";
 import type { Signer } from "../verify/signer.ts";
 import { useReplay } from "./context.tsx";
 import { HandlerVerified } from "./HandlerVerified.tsx";
@@ -94,14 +93,6 @@ function Body({ sel }: { sel: Selection }) {
  */
 const RECORD_LIMIT =
   "The record is found by the call id the verdict names. Its output hash isn't compared with this verdict, because the replay doesn't carry the call's output, so a verdict could name an honest call it didn't come from.";
-
-/**
- * A barred mark's words. "Doesn't match NEAR" only when NEAR was asked and holds something else;
- * a check that failed here, on a match NEAR never saw or couldn't be asked about, says just that.
- */
-function markLabel(status: VerdictStatus, anchor: Anchor | undefined): string {
-  return status === "mismatch" && anchor !== "mismatch" ? "Fails a check" : statusLabel[status];
-}
 
 /** Whether the End verdict, which reveals the draw, ran a published build in the enclave. */
 function useEndInEnclave(): boolean {

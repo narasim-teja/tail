@@ -2,6 +2,7 @@
 
 import type { Match, MatchEvent } from "../model/match.ts";
 import { snapshotAt } from "../model/match.ts";
+import type { Anchor } from "../verify/anchor.ts";
 import type { VerdictStatus } from "../verify/report.ts";
 import type { Settlement } from "../verify/settle.ts";
 import type { Signer } from "../verify/signer.ts";
@@ -41,12 +42,25 @@ export function list(names: string[]): string {
 /** How a player the referee enrolled without an Apple attestation is named everywhere. */
 export const TEST_PLAYER = "test player (no Apple attestation)";
 
+/**
+ * A verdict's mark in words, from its status alone. "mismatch" covers a check that failed in this
+ * browser as well as a root NEAR holds differently, so on its own it can only say a check failed:
+ * a fixture that never went to NEAR must not read "Doesn't match NEAR".
+ */
 export const statusLabel: Record<VerdictStatus, string> = {
   pending: "Checking",
   verified: "Matches NEAR",
   unanchored: "Signed, not on NEAR",
-  mismatch: "Doesn't match NEAR",
+  mismatch: "Fails a check",
 };
+
+/** The words for a verdict NEAR was asked about and holds something else for. */
+export const NEAR_DIFFERS = "Doesn't match NEAR";
+
+/** A verdict's mark in words when its anchor is known: NEAR is named only when NEAR differs. */
+export function markLabel(status: VerdictStatus, anchor: Anchor | undefined): string {
+  return status === "mismatch" && anchor === "mismatch" ? NEAR_DIFFERS : statusLabel[status];
+}
 
 /**
  * Where the target draw's randomness came from, as the end of a sentence. "The enclave" only when
