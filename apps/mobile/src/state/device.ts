@@ -1,8 +1,9 @@
 // Adapters from the native modules to the proximity client's ports.
 import TailAttest from "../../modules/tail-attest";
 import TailRadio from "../../modules/tail-radio";
+import { attestKeyGone } from "../identity/enrol";
 import { fromB64, toB64 } from "../lib/b64";
-import type { Assert } from "../proximity/batch";
+import { type Assert, DeviceKeyGone } from "../proximity/batch";
 import type { RadioPort } from "../proximity/client";
 
 export const radioPort: RadioPort = {
@@ -45,5 +46,10 @@ export const attestor = TailAttest;
 
 export const assertWith =
   (keyId: string): Assert =>
-  async (cdh) =>
-    fromB64(await TailAttest.generateAssertion(keyId, toB64(cdh)));
+  async (cdh) => {
+    try {
+      return fromB64(await TailAttest.generateAssertion(keyId, toB64(cdh)));
+    } catch (e) {
+      throw attestKeyGone(e) ? new DeviceKeyGone() : e;
+    }
+  };

@@ -347,6 +347,7 @@ export const STATES: Record<string, () => ReactNode> = {
   "hunt-blocked-bt": () => <BlockedView what="bluetooth" onOpenSettings={noop} />,
   "hunt-blocked-loc": () => <BlockedView what="location" onOpenSettings={noop} />,
   "hunt-blocked-approx": () => <BlockedView what="approximate" onOpenSettings={noop} />,
+  "hunt-blocked-key": () => <BlockedView what="device-key" onOpenSettings={noop} />,
   "results-survived": () => (
     <ResultsView
       m={{

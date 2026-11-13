@@ -89,7 +89,8 @@ export function HuntView({
     ]).start();
   }, [m.landedAtMs, reduceMotion, flash, slide]);
 
-  if (m.blocked) return <BlockedView what={m.blocked} onOpenSettings={actions.onOpenSettings} />;
+  // Tagged first: an out player reports nothing more, so nothing blocks them, and a player whose
+  // device key is gone must still reach Results once the forfeit lands.
   if (m.tagged)
     return (
       <TaggedView
@@ -99,6 +100,7 @@ export function HuntView({
         reduceMotion={reduceMotion}
       />
     );
+  if (m.blocked) return <BlockedView what={m.blocked} onOpenSettings={actions.onOpenSettings} />;
 
   const tone: Tone = full ? "persimmon" : "paper";
   return (
@@ -285,21 +287,32 @@ export function TaggedView({
   );
 }
 
-/** Bluetooth or location is off or denied: the hunt cannot work, so say so in one line. */
-const BLOCKED: Record<Blocked, { title: string; line: string }> = {
+/**
+ * What stops the hunt, in one line. `settings`: iOS Settings can fix it. The device key cannot
+ * be fixed during a match: the referee takes a new key only once the match is over.
+ */
+const BLOCKED: Record<Blocked, { title: string; line: string; settings: boolean }> = {
+  "device-key": {
+    title: "Device key gone",
+    line: "This phone's device key is gone, so the referee can't take its reports. You will forfeit this match. Once it ends, TAIL sets this phone up with a new key.",
+    settings: false,
+  },
   bluetooth: {
     title: "Bluetooth is off",
     line: "TAIL finds players over Bluetooth. Turn it on for TAIL in Settings.",
+    settings: true,
   },
   location: {
     title: "Location is off",
     line: "TAIL needs your location while you play. Allow it in Settings.",
+    settings: true,
   },
   // Approximate location is kilometres wide; the referee judges contact in metres and refuses a
   // tag on it, so the hunt cannot run until Precise Location is on.
   approximate: {
     title: "Precise location is off",
     line: "TAIL needs your exact position to judge a tag. Turn on Precise Location for TAIL in Settings.",
+    settings: true,
   },
 };
 
@@ -308,7 +321,9 @@ export function BlockedView({ what, onOpenSettings }: { what: Blocked; onOpenSet
   return (
     <Screen
       scroll={false}
-      footer={<Button symbol="gearshape" title="Open Settings" onPress={onOpenSettings} />}
+      footer={
+        b.settings ? <Button symbol="gearshape" title="Open Settings" onPress={onOpenSettings} /> : null
+      }
     >
       <View style={styles.center}>
         <Icon name="dark" size={48} tint={color.ink} />

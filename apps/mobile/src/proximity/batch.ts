@@ -43,8 +43,22 @@ export interface OutboxItem {
   resent: boolean;
 }
 
-/** Signs a clientDataHash with the device's App Attest key; returns the raw assertion bytes. */
+/**
+ * Signs a clientDataHash with the device's App Attest key; returns the raw assertion bytes.
+ * Throws DeviceKeyGone when the device no longer has the key.
+ */
 export type Assert = (clientDataHash: Uint8Array) => Promise<Uint8Array>;
+
+/**
+ * The device no longer has its App Attest key (iOS drops it when the app is deleted): no batch
+ * can be signed again, and the referee takes no other key during a match.
+ */
+export class DeviceKeyGone extends Error {
+  constructor() {
+    super("This phone's device key is gone.");
+    this.name = "DeviceKeyGone";
+  }
+}
 
 export interface BatchParts {
   fixes: Fix[];

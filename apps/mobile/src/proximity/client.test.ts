@@ -27,7 +27,7 @@ import {
 import type { RadioSighting } from "../../modules/tail-radio";
 import { fakeTime } from "../../test/fake-time";
 import { hudOf, refereePk, sealedHud } from "../../test/referee";
-import { type Assert, genesis } from "./batch";
+import { type Assert, DeviceKeyGone, genesis } from "./batch";
 import { unconfirmed } from "./chain";
 import {
   ANCHOR_POLL_MS,
@@ -275,6 +275,21 @@ describe("proximity client", () => {
     }
     expect(notices).toHaveLength(1);
     expect(r.batches().map((b) => b.seq)).toEqual([0, 1]);
+  });
+
+  test("a device key iOS no longer has blocks the hunt for good, with no report notes piling up", async () => {
+    const r = rig(genesisRecord(), noLog, async () => {
+      throw new DeviceKeyGone();
+    });
+    const notices: ProximityNotice[] = [];
+    r.client.onNotice((n) => notices.push(n));
+    r.client.start(keys);
+    for (let i = 0; i < 3; i++) {
+      r.t.advance(BATCH_MS);
+      await flush();
+    }
+    expect(r.client.status()).toMatchObject({ blocked: "device-key", seq: 0 });
+    expect(notices).toEqual([]);
   });
 
   test("one client is for one match", () => {

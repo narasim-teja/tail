@@ -41,7 +41,7 @@ import type {
   RadioSighting,
 } from "../../modules/tail-radio";
 import { ActionQueue } from "./actions";
-import { type Assert, BatchBuilder, type ChainState, type OutboxItem } from "./batch";
+import { type Assert, BatchBuilder, type ChainState, DeviceKeyGone, type OutboxItem } from "./batch";
 import {
   type CarryDelivery,
   type CarryStatus,
@@ -149,7 +149,7 @@ export interface ProximityDeps {
   timers?: Timers;
 }
 
-export type Blocked = "bluetooth" | "location" | "approximate";
+export type Blocked = "bluetooth" | "location" | "approximate" | "device-key";
 
 export interface ProximityStatus {
   epoch: number | null;
@@ -170,8 +170,9 @@ export interface ProximityStatus {
   over: boolean;
   pendingActions: number;
   /**
-   * What stops reporting from working at all: Bluetooth or location switched off or denied, or
-   * location allowed only as approximate (the referee needs metres, not kilometres).
+   * What stops reporting from working at all: the device's App Attest key gone, Bluetooth or
+   * location switched off or denied, or location allowed only as approximate (the referee needs
+   * metres, not kilometres).
    */
   blocked: Blocked | null;
   /** The last stretch other phones could not hear you (backgrounded or locked), once you are back. */
@@ -273,6 +274,8 @@ export class ProximityClient {
     central: "unknown",
   };
   private location: { status: string; fullAccuracy: boolean } = { status: "unknown", fullAccuracy: true };
+  // The last build found the App Attest key gone; every build after it will too.
+  private keyGone = false;
   // When the app left the foreground or the phone locked: iOS stops the beacon then (F17).
   private hiddenSinceMs: number | null = null;
   private reporting = false;
@@ -445,8 +448,11 @@ export class ProximityClient {
     try {
       await k.builder.build();
       this.heard = 0;
+      this.setKeyGone(false);
     } catch (e) {
-      this.on.notice.emit({ kind: "build-failed", message: (e as Error).message });
+      // Said once and kept on screen (blocked), not as a note every batch.
+      if (e instanceof DeviceKeyGone) this.setKeyGone(true);
+      else this.on.notice.emit({ kind: "build-failed", message: (e as Error).message });
     }
     this.uploader.kick();
     if (this.uploader.offline()) await this.offerToMesh();
@@ -793,11 +799,19 @@ export class ProximityClient {
     return { kind: "rebuild", dropped, fromSeq: plan.chain.seq };
   }
 
+  private setKeyGone(gone: boolean): void {
+    if (gone === this.keyGone) return;
+    this.keyGone = gone;
+    this.updateBlocked();
+  }
+
   private updateBlocked(): void {
     const bad = (s: string) => s === "unauthorized" || s === "poweredOff" || s === "unsupported";
     const { status, fullAccuracy } = this.location;
-    const blocked: Blocked | null =
-      bad(this.radioStates.peripheral) || bad(this.radioStates.central)
+    // The key first: Settings can fix the radio, nothing on the phone brings the key back.
+    const blocked: Blocked | null = this.keyGone
+      ? "device-key"
+      : bad(this.radioStates.peripheral) || bad(this.radioStates.central)
         ? "bluetooth"
         : status === "denied" || status === "restricted"
           ? "location"
