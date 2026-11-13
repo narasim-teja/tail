@@ -33,7 +33,7 @@ export function toWireFix(f: RadioFix): Fix | null {
 
 export class FixCollector {
   private pending: Fix[] = [];
-  /** The newest fix time taken in, saved with the match (session.ts) so a relaunch keeps order. */
+  /** The newest fix time taken in, saved with the match (client.ts) so a relaunch keeps order. */
   lastT: bigint | null;
   /** The newest usable fix, for the map and for zones. */
   latest: Fix | null = null;

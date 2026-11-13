@@ -36,14 +36,15 @@ import type {
 } from "../../modules/tail-radio";
 import { fakeTime } from "../../test/fake-time";
 import { hudOf, refereePk, refereeSk, sealedHud } from "../../test/referee";
-import { decodeMeshMessage, encodeMeshMessage, type MeshLink } from "../carry/mesh";
-import { type CarryReply, RelayError, type SignedRequest } from "../relay/client";
-import type { HudMessage } from "../relay/hud";
-import { type Assert, genesis, type OutboxItem } from "./batch";
-import { STALL_MS, unconfirmed } from "./chain";
+import { type Assert, genesis, type OutboxItem } from "../proximity/batch";
+import { decodeMeshMessage, encodeMeshMessage, type MeshLink } from "../proximity/carry/mesh";
+import { STALL_MS, unconfirmed } from "../proximity/chain";
+import type { CarryPlan, RadioPort } from "../proximity/client";
+import type { HudMessage } from "../proximity/hud";
+import { OFFLINE_CARRY_MS } from "../proximity/outbox";
+import { type CarryReply, RelayError, type SignedRequest } from "../proximity/relay";
 import { NOT_SIGNED } from "./hud";
-import { OFFLINE_CARRY_MS } from "./outbox";
-import { type CarryPlan, HuntSession, type RadioPort, type SessionRecord } from "./session";
+import { type HuntRecord, TailHunt } from "./hunt";
 
 const START = 1_800_000_000_000;
 const km = sha256(new TextEncoder().encode("session K_m"));
@@ -123,7 +124,7 @@ const flush = async () => {
   for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 };
 
-const fresh = (): SessionRecord => ({
+const fresh = (): HuntRecord => ({
   chain: genesis(),
   outbox: [],
   confirmed: unconfirmed(),
@@ -163,7 +164,7 @@ function fakeMesh() {
 function rig(
   o: {
     upload?: (r: SignedRequest) => Promise<unknown>;
-    record?: SessionRecord;
+    record?: HuntRecord;
     assert?: Assert;
     startMs?: number;
     carry?: (mesh: ReturnType<typeof fakeMesh>) => CarryPlan;
@@ -177,11 +178,10 @@ function rig(
   const boxSk = o.boxSk ?? x25519.utils.randomSecretKey();
   const boxPk = x25519.getPublicKey(boxSk);
   const uploaded: Uint8Array[] = [];
-  const saved: SessionRecord[] = [];
+  const saved: HuntRecord[] = [];
   const mesh = fakeMesh();
   let hud: ((m: HudMessage) => void) | undefined;
-  const s = new HuntSession({
-    matchIdHex: toHex(keys.matchId),
+  const s = new TailHunt({
     keys,
     stake: 5_000_000n,
     boxSk,
@@ -232,7 +232,7 @@ function rig(
     openBatch,
     batches,
     saved,
-    last: () => saved.at(-1) as SessionRecord,
+    last: () => saved.at(-1) as HuntRecord,
     sendHud,
     hud: (m: HudMessage) => hud?.(m),
     /** Runs `n` batch rounds. */
@@ -245,7 +245,7 @@ function rig(
   };
 }
 
-describe("hunt session", () => {
+describe("hunt", () => {
   test("starting turns on pocket mode, location, beacon and scan, and advertises this epoch's token", () => {
     const r = rig();
     r.s.start();

@@ -5,8 +5,8 @@
 import { LEAK_CELL_M } from "@tail/protocol";
 import { StyleSheet, View } from "react-native";
 import MapView, { Circle as MapCircle, Marker, Polygon } from "react-native-maps";
-import type { Circle, LatLon } from "../game/geo";
-import type { Zone } from "../game/zone";
+import type { Circle, LatLon } from "../tail/geo";
+import type { Zone } from "../tail/zone";
 import { Icon, TrailMarker } from "./brand";
 import { Caption, Eyebrow } from "./kit";
 import { alpha, color, radius, space } from "./theme";

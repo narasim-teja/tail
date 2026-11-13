@@ -6,12 +6,6 @@ import Constants from "expo-constants";
 import { useSyncExternalStore } from "react";
 import { Share } from "react-native";
 import TailRadio from "../../modules/tail-radio";
-import { meshProfile } from "../carry/mesh";
-import { offlineProtocolLink } from "../carry/sdk";
-import { openPlayerKeys } from "../game/hud";
-import { checkReceipts, type Meeting, meetings, presenceJson, type ReceiptResult } from "../game/receipts";
-import { type CarryPlan, HuntSession } from "../game/session";
-import { checkedZone, type Zone } from "../game/zone";
 import { enrol } from "../identity/enrol";
 import { forgetAccount, type Identity, loadIdentity, nearSigner } from "../identity/identity";
 import { keychain } from "../identity/keychain";
@@ -19,21 +13,30 @@ import { anchoredRoots, matchFacts } from "../near/chain";
 import { NearRpc } from "../near/rpc";
 import { PLAYER_GAS } from "../near/tx";
 import { payoutProblem, withdrawCall, withdrawGas } from "../near/withdraw";
+import { meshProfile } from "../proximity/carry/mesh";
+import { offlineProtocolLink } from "../proximity/carry/sdk";
+import type { CarryPlan } from "../proximity/client";
+import { HudSocket, openPlayerKeys } from "../proximity/hud";
 import {
-  type CarryKey,
-  isMatchId,
+  checkReceipts,
+  type Meeting,
+  meetings,
+  presenceJson,
+  type ReceiptResult,
+} from "../proximity/receipts";
+import { checkedRefereeBox } from "../proximity/referee";
+import { type CarryKey, isMatchId, matchIdBytes, RelayError } from "../proximity/relay";
+import {
   type MatchView,
   type MatchZone,
-  matchIdBytes,
   type NewMatch,
   OpenLobbyError,
   RelayClient,
-  RelayError,
   type RelayInfo,
   readJoin,
 } from "../relay/client";
-import { HudSocket } from "../relay/hud";
-import { checkedRefereeBox } from "../relay/referee";
+import { TailHunt } from "../tail/hunt";
+import { checkedZone, type Zone } from "../tail/zone";
 import { assertWith, attestor, radioPort } from "./device";
 import { files } from "./files";
 import { decodeMatchRecord, emptyRecord, encodeMatchRecord, type MatchRecord } from "./persist";
@@ -49,7 +52,7 @@ export interface Settings {
   rpcUrl: string;
   contractId: string;
   /**
-   * Run the Offline Protocol mesh during a hunt (carry/mesh.ts). Off by default: whether the
+   * Run the Offline Protocol mesh during a hunt (proximity/carry/mesh.ts). Off by default: whether the
    * mesh's Bluetooth advertising leaves room for TAIL's beacon token is not measured yet.
    */
   meshCarry: boolean;
@@ -106,7 +109,7 @@ export interface Briefing {
   carryKey: CarryKey | null;
 }
 
-/** Results' check that every report is in the log anchored on NEAR (game/receipts.ts). */
+/** Results' check that every report is in the log anchored on NEAR (proximity/receipts.ts). */
 export type Receipts =
   | { kind: "idle" }
   | { kind: "checking" }
@@ -125,7 +128,7 @@ class AppModel {
   openLobby: string | null = null;
   balance: bigint | null = null;
   briefing: Briefing | null = null;
-  session: HuntSession | null = null;
+  session: TailHunt | null = null;
   here: { lat: number; lon: number; acc: number } | null = null;
   showSettings = false;
   /** A page opened from home: the create form or the QR scanner. */
@@ -677,8 +680,7 @@ class AppModel {
     const record = this.loadRecord(matchId);
     const signer = nearSigner(id);
     const relay = this.relay;
-    this.session = new HuntSession({
-      matchIdHex: matchId,
+    this.session = new TailHunt({
       keys: b.keys,
       stake: m.chain.stake,
       boxSk: id.boxSk,

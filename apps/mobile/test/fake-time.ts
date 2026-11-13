@@ -1,4 +1,4 @@
-import type { Timers } from "../src/game/epoch";
+import type { Timers } from "../src/proximity/epoch";
 
 /** A fake clock whose timers fire when time is advanced past them. */
 export function fakeTime(start: number) {

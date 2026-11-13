@@ -3,7 +3,7 @@
 // borsh(BatchEnvelope) to the referee's box key with context "tail/batch". Only the enclave can
 // open it. The referee accepts a player's batches only with contiguous seqs and matching
 // `prev`, so a seq is consumed only once its sealed batch is safely in the outbox. When the
-// referee's chain and the phone's part (game/chain.ts), the builder is moved to the referee's
+// referee's chain and the phone's part (chain.ts), the builder is moved to the referee's
 // position with `rebase`.
 
 import {
@@ -39,7 +39,7 @@ export interface OutboxItem {
   actions: Action["kind"][];
   /** When the relay first took it (over HTTP or carried); null until then. */
   sentMs: number | null;
-  /** Sent a second time after the referee's chain stalled on it (game/chain.ts). */
+  /** Sent a second time after the referee's chain stalled on it (chain.ts). */
   resent: boolean;
 }
 
@@ -157,7 +157,7 @@ export class BatchBuilder {
 
   /**
    * Actions not yet inside a committed batch: what a failed build kept, then the queue. The
-   * session saves these with the match, so a strike or hint survives a failed build and a relaunch.
+   * client saves these with the match, so a game action survives a failed build and a relaunch.
    */
   unsentActions(): Action[] {
     return [...this.carry.actions, ...this.d.actions.peek()];

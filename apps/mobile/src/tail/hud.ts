@@ -1,53 +1,23 @@
-// Opening and reading the referee's sealed messages to this phone: PlayerKeys once at start, a
-// Hud every tick and the Handler's lines, each sealed to the player's box key and signed by the
-// referee (packages/protocol signed.ts). Sealing alone proves nothing: anyone holding the box
-// public key, the relay included, can seal to it. So each is opened with the referee key the
-// contract pinned for the match, read from NEAR by the phone itself, and anything that does not
-// verify is dropped. The view model turns a Hud into what the hunt screen shows; it never holds
-// anyone else's position.
+// Reading the referee's word to a TAIL player: the Handler's signed lines, the HUD as the hunt
+// screen shows it (it never holds anyone else's position), and every refusal code in plain words.
+// Opening and checking the sealed HUD itself is the proximity layer's (proximity/hud.ts).
 
 import {
-  equal,
   type GridCell,
   type HintFact,
   HintKind,
   type Hud,
   LOCK_EPOCHS,
-  openSignedHud,
-  openSignedPlayerKeys,
   openSignedVoiceLine,
-  type PlayerKeys,
   RefuseCode,
   RejectCode,
   TargetStatus,
   type VoiceLine,
 } from "@tail/protocol";
+import { forSeat, type Seat } from "../proximity/hud";
 
 /** What the phone shows for anything sealed to it that the referee did not sign. */
 export const NOT_SIGNED = "This update was not signed by the referee";
-
-export interface Seat {
-  matchId: Uint8Array;
-  player: number;
-}
-
-function forSeat<T extends Seat>(v: T, seat: Seat, what: string): T {
-  if (!equal(v.matchId, seat.matchId)) throw new Error(`${what} is for another match`);
-  if (v.player !== seat.player) throw new Error(`${what} is for another player`);
-  return v;
-}
-
-/** Opens a sealed SignedHud for this seat; throws if it does not open, verify or fit. */
-export const openHud = (boxSk: Uint8Array, sealed: Uint8Array, refereePk: Uint8Array, seat: Seat): Hud =>
-  forSeat(openSignedHud(boxSk, sealed, refereePk), seat, "HUD");
-
-/** Opens this player's keys and checks they are signed by the referee, for this match and seat. */
-export const openPlayerKeys = (
-  boxSk: Uint8Array,
-  sealed: Uint8Array,
-  refereePk: Uint8Array,
-  seat: Seat,
-): PlayerKeys => forSeat(openSignedPlayerKeys(boxSk, sealed, refereePk), seat, "keys");
 
 /** Opens one Handler line, signed by the referee and sealed to this player. */
 export const openVoice = (
@@ -158,7 +128,7 @@ function refuseWhy(code: number | null): string {
 
 /**
  * Why the referee refused one of your reports (a RejectCode from the signed HUD), as a short line
- * a player understands. Null for a refusal the phone recovers from by itself (game/chain.ts), so
+ * a player understands. Null for a refusal the phone recovers from by itself (proximity/chain.ts), so
  * there is nothing for the player to do about it.
  */
 export function describeRejectCode(code: number): string | null {
@@ -219,6 +189,3 @@ export function rejectReason(code: number): string {
       return `reason ${code}`;
   }
 }
-
-/** Every RejectCode value, for looking a refused report up in the log. */
-export const REJECT_CODES: readonly number[] = Object.values(RejectCode);

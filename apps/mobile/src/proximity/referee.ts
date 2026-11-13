@@ -3,7 +3,7 @@
 // box_pk)) (crates/referee-wasi/README.md), under the referee key the match pinned on chain.
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { concat, equal, sha256, utf8 } from "@tail/protocol";
-import type { RefereeKeys } from "./client";
+import type { RefereeKeys } from "./relay";
 
 export const REFEREE_BOX_DOMAIN = "tail/referee-box/v1";
 

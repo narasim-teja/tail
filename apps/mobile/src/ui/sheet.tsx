@@ -6,7 +6,7 @@ import { HINT_TEXT_MAX, HintKind } from "@tail/protocol";
 import { useEffect, useRef, useState } from "react";
 import { Animated, KeyboardAvoidingView, Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { HintOption } from "../game/huntModel";
+import type { HintOption } from "../tail/huntModel";
 import { Icon } from "./brand";
 import { Body, Button, Caption, Field, Figure, Strong, Title } from "./kit";
 import { ease } from "./motion";

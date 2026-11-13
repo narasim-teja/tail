@@ -13,9 +13,9 @@
 //
 // The offline phone treats a report as delivered only once the relay's CarryAck verifies under
 // the relay's ack key over its own envelope; the HUD that comes back is sealed and signed like
-// any other and is opened the same way (game/hud.ts). The session's outbox stays the one owner
+// any other and is opened the same way (hud.ts). The client's outbox stays the one owner
 // of the reports: HTTP and the mesh both report delivery to it by batch hash, so a report
-// delivered both ways counts once (game/outbox.ts).
+// delivered both ways counts once (outbox.ts).
 //
 // What a carrier learns: a fixed-size ciphertext (4144 bytes) and the sender's mesh address. No
 // account, no match id, no request kind or length is in the clear. Mesh addresses come from a
@@ -40,9 +40,9 @@ import {
   utf8,
   verifyCarryAck,
 } from "@tail/protocol";
-import { fromB64, toB64 } from "../lib/b64";
-import type { CarryKey, CarryReply, SignedRequest } from "../relay/client";
-import { RelayClient } from "../relay/client";
+import { fromB64, toB64 } from "../../lib/b64";
+import type { CarryKey, CarryReply, SignedRequest } from "../relay";
+import { RelayTransport } from "../relay";
 
 export const MESH_APP_ID = "tail";
 
@@ -67,7 +67,7 @@ export interface MeshLink {
 
 /** Seals one signed request for the relay; carriers see only this. */
 export const carryEnvelope = (relayBoxPk: Uint8Array, req: SignedRequest) =>
-  sealCarry(relayBoxPk, RelayClient.carryRequest(req));
+  sealCarry(relayBoxPk, RelayTransport.carryRequest(req));
 
 export const envelopeDigest = (envelope: Uint8Array) => sha256(envelope);
 

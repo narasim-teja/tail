@@ -5,9 +5,9 @@
 import { useEffect, useRef } from "react";
 import { Animated, Share, StyleSheet, View } from "react-native";
 import Svg, { Path, Rect } from "react-native-svg";
-import { handleOf, money } from "../game/huntModel";
 import { joinLink } from "../relay/client";
 import { TOP_UP, useApp } from "../state/app";
+import { handleOf, money } from "../tail/huntModel";
 import { haptic } from "../ui/haptics";
 import {
   Avatar,

@@ -4,7 +4,7 @@
 import { utf8 } from "@tail/protocol";
 import { toB64 } from "../lib/b64";
 import { fromBase58 } from "../lib/base58";
-import type { Fetch } from "../relay/client";
+import type { Fetch } from "../proximity/relay";
 import { type FunctionCall, nearPublicKeyString, signTransaction } from "./tx";
 
 export class NearError extends Error {

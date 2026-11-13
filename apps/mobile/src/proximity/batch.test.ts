@@ -40,7 +40,7 @@ function rig(assert: Assert, commit?: (item: OutboxItem, chain: ChainState) => v
   let now = START + 20_000;
   const fixes = new FixCollector(() => now);
   const sightings = new SightingAggregator(kTag);
-  const actions = new ActionQueue(() => 7);
+  const actions = new ActionQueue();
   const committed: { item: OutboxItem; chain: ChainState }[] = [];
   const builder = new BatchBuilder({
     matchId: new Uint8Array(16).fill(9),
@@ -91,11 +91,11 @@ describe("batch path, phone to referee", () => {
     });
     r.sightings.add(1, peer, -60);
     r.sightings.add(1, peer, -70);
-    r.actions.hint(HintKind.Bearing, "where?");
+    r.actions.push({ kind: "Hint", hint: HintKind.Bearing, nonce: 7, text: "where?" });
     await r.builder.build();
     r.advance(BATCH_MS);
     r.sightings.add(1, peer, -65);
-    r.actions.strike();
+    r.actions.push({ kind: "Strike", nonce: 7 });
     await r.builder.build();
 
     expect(r.committed.map((c) => c.item.seq)).toEqual([0, 1]);
@@ -162,12 +162,12 @@ describe("batch path, phone to referee", () => {
       if (fail) throw new Error("App Attest busy");
       return dev.assert(cdh);
     });
-    r.actions.strike();
+    r.actions.push({ kind: "Strike", nonce: 7 });
     await expect(r.builder.build()).rejects.toThrow("App Attest busy");
     expect(r.committed).toHaveLength(0);
     expect(r.builder.chain.seq).toBe(0);
     fail = false;
-    r.actions.hint(HintKind.Near);
+    r.actions.push({ kind: "Hint", hint: HintKind.Near, nonce: 7 });
     await r.builder.build();
     const env = r.openEnvelope((r.committed[0] as { item: OutboxItem }).item.sealed);
     expect(env.batch.seq).toBe(0);
@@ -187,12 +187,12 @@ describe("batch path, phone to referee", () => {
         unsentAtCommit = r.builder.unsentActions().map((a) => a.kind);
       },
     );
-    r.actions.strike();
+    r.actions.push({ kind: "Strike", nonce: 7 });
     await expect(r.builder.build()).rejects.toThrow();
     // Taken from the queue by the failed build, but still unsent: the session saves it.
     expect(r.actions.size).toBe(0);
     expect(r.builder.unsentActions().map((a) => a.kind)).toEqual(["Strike"]);
-    r.actions.hint(HintKind.Near);
+    r.actions.push({ kind: "Hint", hint: HintKind.Near, nonce: 7 });
     fail = false;
     await r.builder.build();
     // What the commit saves as unsent no longer holds the actions inside the batch it commits.
@@ -205,7 +205,7 @@ describe("batch path, phone to referee", () => {
     const r = rig(enclave().assert, () => {
       if (failCommit) throw new Error("disk full");
     });
-    r.actions.strike();
+    r.actions.push({ kind: "Strike", nonce: 7 });
     await expect(r.builder.build()).rejects.toThrow("disk full");
     expect(r.builder.chain.seq).toBe(0);
     expect(r.builder.unsentActions().map((a) => a.kind)).toEqual(["Strike"]);

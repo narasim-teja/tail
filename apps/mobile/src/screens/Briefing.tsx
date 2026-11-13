@@ -3,9 +3,9 @@
 // name slides up out of a mask with a tick in the hand, and the last seconds count down by feel.
 import { useEffect, useState } from "react";
 import { Animated, StyleSheet, View } from "react-native";
-import { handleOf, isTestPlayer, money } from "../game/huntModel";
-import { clock } from "../game/rules";
 import { useApp } from "../state/app";
+import { handleOf, isTestPlayer, money } from "../tail/huntModel";
+import { clock } from "../tail/rules";
 import { Mark } from "../ui/brand";
 import { haptic } from "../ui/haptics";
 import { Body, Button, Eyebrow, Notice, Num, Poster, Row, Screen } from "../ui/kit";

@@ -1,7 +1,7 @@
 // The ordered upload queue. The referee takes a player's batches only in seq order with no gap
 // (crates/referee-core: Reject::Seq), so the outbox sends one batch at a time, oldest first, and
 // moves on only after the relay has it. A batch stays in the outbox after the relay took it,
-// until a signed HUD's `next_seq` and `chain_tip` show the referee accepted it (game/chain.ts):
+// until a signed HUD's `next_seq` and `chain_tip` show the referee accepted it (chain.ts):
 // the relay taking a batch is not the referee accepting it, and a batch that never opened or
 // was refused must still be there to send again, or to rebuild from.
 //
@@ -10,9 +10,9 @@
 // batch delivered both ways counts once and the HTTP path never sends what the mesh delivered.
 
 import { equal } from "@tail/protocol";
-import { RelayError } from "../relay/client";
 import type { OutboxItem } from "./batch";
 import { realTimers, type Timers } from "./epoch";
+import { RelayError } from "./relay";
 
 /** No relay contact for this long counts as offline; the mesh carry path takes over (TECHNICAL.md 7). */
 export const OFFLINE_CARRY_MS = 20_000;

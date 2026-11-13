@@ -2,8 +2,8 @@
 // profile, where top-up and withdraw live); recent matches.
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { handleOf, money } from "../game/huntModel";
 import { FINDING_LOBBY, NEAR_NETWORK, type RecentMatch, useApp } from "../state/app";
+import { handleOf, money } from "../tail/huntModel";
 import { ContractMismatch } from "../ui/contract";
 import { RollingMoney } from "../ui/game";
 import {

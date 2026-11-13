@@ -9,8 +9,6 @@
 import type { ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaInsetsContext, useSafeAreaInsets } from "react-native-safe-area-context";
-import type { HuntModel } from "../game/huntModel";
-import { hintOptions } from "../game/huntModel";
 import { BriefingView } from "../screens/Briefing";
 import { CreateView } from "../screens/Create";
 import { EnrolView } from "../screens/Enrol";
@@ -22,6 +20,8 @@ import { ProfileView } from "../screens/Profile";
 import { ResultsView } from "../screens/Results";
 import { ScanView } from "../screens/Scan";
 import type { Receipts } from "../state/app";
+import type { HuntModel } from "../tail/huntModel";
+import { hintOptions } from "../tail/huntModel";
 import { color, space, text } from "../ui/theme";
 
 const NOW = 1_800_000_000_000;

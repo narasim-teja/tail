@@ -20,7 +20,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { handleOf } from "../game/huntModel";
+import { handleOf } from "../tail/huntModel";
 import { Icon, SystemIcon, type SystemSymbol } from "./brand";
 import { haptic } from "./haptics";
 import { ease } from "./motion";

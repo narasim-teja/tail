@@ -2,11 +2,12 @@
 // the design preview builds it from fixtures. Both render the same HuntView.
 
 import { HintKind, hintPrice, LOCK_EPOCHS, type PlayerKeys } from "@tail/protocol";
+import type { Blocked } from "../proximity/client";
 import type { RefereeKind } from "../relay/client";
 import type { LatLon } from "./geo";
 import { formatAmount } from "./hud";
+import type { HuntSnapshot, Note } from "./hunt";
 import { clock, darkState, zoneState } from "./rules";
-import type { Blocked, Note, SessionSnapshot } from "./session";
 import type { Zone } from "./zone";
 
 export type Banner =
@@ -131,7 +132,7 @@ export function hintOptions(stake: bigint): HintOption[] {
   ];
 }
 
-function status(s: SessionSnapshot): string {
+function status(s: HuntSnapshot): string {
   const parts: string[] = [];
   if (s.queued > 1) parts.push(`${s.queued - 1} waiting`);
   if (s.socket !== "live") parts.push("Reconnecting");
@@ -140,7 +141,7 @@ function status(s: SessionSnapshot): string {
 }
 
 export function huntModel(
-  s: SessionSnapshot,
+  s: HuntSnapshot,
   ctx: { keys: PlayerKeys; stake: bigint; zone: Zone | null },
   nowMs: number,
 ): HuntModel {

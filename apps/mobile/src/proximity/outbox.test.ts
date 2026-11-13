@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { fakeTime } from "../../test/fake-time";
-import { RelayError } from "../relay/client";
 import type { OutboxItem } from "./batch";
 import { backoffMs, OFFLINE_CARRY_MS, Outbox, Uploader } from "./outbox";
+import { RelayError } from "./relay";
 
 const item = (seq: number): OutboxItem => ({
   seq,

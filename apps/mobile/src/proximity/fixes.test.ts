@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { FixFlag, HINT_TEXT_MAX, HintKind } from "@tail/protocol";
+import { FixFlag } from "@tail/protocol";
 import type { RadioFix } from "../../modules/tail-radio";
-import { ActionQueue } from "./actions";
 import { FIX_MAX_AGE_MS, FixCollector, toWireFix } from "./fixes";
 
 const fix = (tMs: number, o: Partial<RadioFix> = {}): RadioFix => ({
@@ -73,17 +72,5 @@ describe("location fixes", () => {
     expect(after.add(fix(49_500))).toBe(false);
     expect(after.add(fix(51_000))).toBe(true);
     expect(after.take(52_000n).map((f) => Number(f.tMs))).toEqual([51_000]);
-  });
-});
-
-describe("actions", () => {
-  test("a hint question is trimmed and cut to the protocol's limit; an empty one is left out", () => {
-    const q = new ActionQueue(() => 1);
-    q.hint(HintKind.Near, `  ${"x".repeat(200)} `);
-    q.hint(HintKind.Trend, "   ");
-    const [a, b] = q.drain();
-    expect(a?.kind === "Hint" && a.text?.length).toBe(HINT_TEXT_MAX);
-    expect(b).toEqual({ kind: "Hint", hint: HintKind.Trend, nonce: 1 });
-    expect(q.size).toBe(0);
   });
 });

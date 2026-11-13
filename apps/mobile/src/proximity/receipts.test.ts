@@ -10,15 +10,8 @@ import {
   verifyPresence,
 } from "@tail/protocol";
 import { fromB64 } from "../lib/b64";
-import type { InclusionProof } from "../relay/client";
-import {
-  checkReceipts,
-  meetings,
-  type ProofSource,
-  presenceJson,
-  type Report,
-  receiptLines,
-} from "./receipts";
+import { checkReceipts, meetings, type ProofSource, presenceJson, type Report } from "./receipts";
+import type { InclusionProof } from "./relay";
 
 const h = (n: number) => new Uint8Array(32).fill(n);
 const ME = 1;
@@ -76,13 +69,9 @@ describe("inclusion receipts", () => {
       refused: [{ seq: 3, code: RejectCode.ClockSkew }],
       missing: [],
     });
-    expect(receiptLines(r)).toEqual({
-      lines: ["3 of 4 reports are in the log anchored on NEAR.", "1 refused by the referee (clock off)."],
-      problems: [],
-    });
   });
 
-  test("a report the referee never logged is listed as a problem", async () => {
+  test("a report the referee never logged is listed as missing", async () => {
     const r = await checkReceipts({
       player: ME,
       reports: [...reports, { seq: 4, hash: h(14) }],
@@ -91,10 +80,9 @@ describe("inclusion receipts", () => {
       proofs: relay(),
     });
     expect(r.missing).toEqual([4]);
-    expect(receiptLines(r).problems[0]).toContain("Missing from the log: report 4.");
   });
 
-  test("a tampered path does not verify against NEAR's root, and is named as the relay's", async () => {
+  test("a tampered path does not verify against NEAR's root, and counts against the relay", async () => {
     const tampered = relay((p) => ({ ...p, path: p.path.map((x, i) => (i === 0 ? h(99) : x)) }));
     const r = await checkReceipts({
       player: ME,
@@ -105,9 +93,6 @@ describe("inclusion receipts", () => {
     });
     expect(r.included).toEqual([]);
     expect(r.badProof).toEqual([0, 1, 2, 3]);
-    expect(receiptLines(r).problems).toEqual([
-      "The relay's proof for reports 0, 1, 2 and 3 doesn't match NEAR.",
-    ]);
   });
 
   test("a path for the wrong size, or against a root the relay made up, does not count", async () => {
@@ -125,13 +110,6 @@ describe("inclusion receipts", () => {
   test("against a checkpoint, reports after it are not anchored yet rather than missing", async () => {
     const r = await checkReceipts({ player: ME, reports, root: rootAt(4), final: false, proofs: relay() });
     expect(r).toMatchObject({ included: [0, 1], missing: [2, 3] });
-    expect(receiptLines(r)).toEqual({
-      lines: [
-        "2 of 4 reports are in the log anchored on NEAR so far.",
-        "2 not anchored yet; checked again once the match ends.",
-      ],
-      problems: [],
-    });
   });
 });
 

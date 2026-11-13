@@ -3,10 +3,10 @@
 // NEAR, and after the end a presence proof for each player you met.
 import { useEffect, useState } from "react";
 import { Animated, Linking, Pressable, StyleSheet, View } from "react-native";
-import { handleOf, howVerified, money, type Outcome, resultOutcome } from "../game/huntModel";
-import { receiptLines } from "../game/receipts";
 import type { RefereeKind } from "../relay/client";
 import { type Receipts, useApp } from "../state/app";
+import { handleOf, howVerified, money, type Outcome, resultOutcome } from "../tail/huntModel";
+import { receiptLines } from "../tail/results";
 import { Icon, Mark } from "../ui/brand";
 import { RollingMoney } from "../ui/game";
 import {

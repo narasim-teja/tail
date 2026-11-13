@@ -1,29 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import {
-  encodeHud,
   HintKind,
   type Hud,
   LOCK_EPOCHS,
   RefuseCode,
   RejectCode,
-  SealContext,
-  seal,
-  sealSignedPlayerKeys,
   sealSignedVoiceLine,
-  signPlayerKeys,
   signVoiceLine,
   TargetStatus,
 } from "@tail/protocol";
 import { hudOf, refereePk, refereeSk, sealedHud } from "../../test/referee";
+import { openHud } from "../proximity/hud";
 import {
   describeHintFact,
   describeRefusal,
   describeRejectCode,
   formatAmount,
   hudView,
-  openHud,
-  openPlayerKeys,
   openVoice,
   rejectReason,
 } from "./hud";
@@ -34,34 +28,7 @@ const seat = { matchId: new Uint8Array(16).fill(4), player: 0 };
 const base: Hud = hudOf({ tick: 7, epoch: 30, lock: 2, heat: 1, head: 5_250_000n });
 const otherSk = ed25519.utils.randomSecretKey();
 
-describe("HUD", () => {
-  test("a signed, sealed HUD opens with the player box key and reads back field for field", () => {
-    const hud: Hud = {
-      ...base,
-      leak: { latE7: 423_550_000, lonE7: -710_650_000 },
-      hintFact: { hintId: 3, hint: HintKind.Near, value: 1 },
-      rejected: { seq: 4, code: RejectCode.ClockSkew },
-    };
-    expect(openHud(sk, sealedHud(pk, hud), refereePk, seat)).toEqual(hud);
-  });
-
-  test("a HUD signed by anyone but the match's referee does not open", () => {
-    expect(() => openHud(sk, sealedHud(pk, base, otherSk), refereePk, seat)).toThrow("not signed");
-  });
-
-  test("a HUD sealed without a signature (what the relay could forge) does not open", () => {
-    expect(() => openHud(sk, seal(pk, encodeHud(base), SealContext.hud), refereePk, seat)).toThrow();
-  });
-
-  test("a signed HUD for another seat or match is refused", () => {
-    expect(() => openHud(sk, sealedHud(pk, { ...base, player: 1 }), refereePk, seat)).toThrow(
-      "another player",
-    );
-    expect(() =>
-      openHud(sk, sealedHud(pk, { ...base, matchId: new Uint8Array(16) }), refereePk, seat),
-    ).toThrow("another match");
-  });
-
+describe("HUD view", () => {
   test("an out player's HUD names who took their head", () => {
     const hud: Hud = { ...base, status: TargetStatus.Out, target: "", taggedBy: "maya.tail.testnet" };
     expect(hudView(openHud(sk, sealedHud(pk, hud), refereePk, seat)).taggedBy).toBe("maya.tail.testnet");
@@ -87,25 +54,7 @@ describe("HUD", () => {
   });
 });
 
-describe("keys and Handler lines", () => {
-  const keys = {
-    matchId: seat.matchId,
-    player: 0,
-    startMs: 1n,
-    endMs: 2n,
-    kTag: new Uint8Array(32),
-    kPlayer: new Uint8Array(32),
-    target: "bob",
-  };
-
-  test("player keys open only when the referee signed them, for the expected match and seat", () => {
-    const sealed = sealSignedPlayerKeys(pk, signPlayerKeys(keys, refereeSk));
-    expect(openPlayerKeys(sk, sealed, refereePk, seat)).toEqual(keys);
-    expect(() => openPlayerKeys(sk, sealed, refereePk, { ...seat, player: 1 })).toThrow("another player");
-    const forged = sealSignedPlayerKeys(pk, signPlayerKeys({ ...keys, target: "mallory" }, otherSk));
-    expect(() => openPlayerKeys(sk, forged, refereePk, seat)).toThrow("not signed");
-  });
-
+describe("Handler lines", () => {
   test("a Handler line opens only when the referee signed it", () => {
     const line = { matchId: seat.matchId, player: 0, hintId: 3, text: "North, darling." };
     expect(openVoice(sk, sealSignedVoiceLine(pk, signVoiceLine(line, refereeSk)), refereePk, seat).text).toBe(

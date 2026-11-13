@@ -1,22 +1,52 @@
-// The HUD socket (GET /hud, apps/server/src/routes/hud.ts). The relay sends a 32-byte challenge;
-// the phone answers with its NEAR key's signature over hudDigest(nonce, match_id, account_id).
-// Only then does it receive this player's messages: the sealed PlayerKeys, the latest sealed
-// HUD, every new HUD, sealed Handler lines, refusals and "over".
+// The HUD socket (GET /hud, apps/server/src/routes/hud.ts) and opening what comes over it. The
+// relay sends a 32-byte challenge; the phone answers with its NEAR key's signature over
+// hudDigest(nonce, match_id, account_id). Only then does it receive this player's messages: the
+// sealed PlayerKeys, the latest sealed HUD, every new HUD, sealed game lines (TAIL's Handler),
+// refusals and "over".
 //
-// What the referee says arrives sealed and signed (game/hud.ts opens it). The relay's own frames
-// are not trusted for anything that matters: a `rejected` frame is dropped, because the signed
-// HUD carries the referee's latest refusal; a Handler line in plain text is dropped, because only
-// a sealed, signed line can be the Handler's.
+// What the referee says arrives sealed to the player's box key and signed by the referee
+// (packages/protocol signed.ts). Sealing alone proves nothing: anyone holding the box public key,
+// the relay included, can seal to it. So each is opened with the referee key the contract pinned
+// for the match, read from NEAR by the phone itself, and anything that does not verify is
+// dropped. The relay's own frames are not trusted for anything that matters: a `rejected` frame is
+// dropped, because the signed HUD carries the referee's latest refusal; a Handler line in plain
+// text is dropped, because only a sealed, signed line can be the referee's.
 
+import { equal, type Hud, openSignedHud, openSignedPlayerKeys, type PlayerKeys } from "@tail/protocol";
 import { fromB64, toB64 } from "../lib/b64";
 import { hudDigest, type Signer } from "./auth";
+
+/** Which match and player a sealed message must be for. */
+export interface Seat {
+  matchId: Uint8Array;
+  player: number;
+}
+
+/** `v` if it names this seat; throws otherwise. */
+export function forSeat<T extends Seat>(v: T, seat: Seat, what: string): T {
+  if (!equal(v.matchId, seat.matchId)) throw new Error(`${what} is for another match`);
+  if (v.player !== seat.player) throw new Error(`${what} is for another player`);
+  return v;
+}
+
+/** Opens a sealed SignedHud for this seat; throws if it does not open, verify or fit. */
+export const openHud = (boxSk: Uint8Array, sealed: Uint8Array, refereePk: Uint8Array, seat: Seat): Hud =>
+  forSeat(openSignedHud(boxSk, sealed, refereePk), seat, "HUD");
+
+/** Opens this player's keys and checks they are signed by the referee, for this match and seat. */
+export const openPlayerKeys = (
+  boxSk: Uint8Array,
+  sealed: Uint8Array,
+  refereePk: Uint8Array,
+  seat: Seat,
+): PlayerKeys => forSeat(openSignedPlayerKeys(boxSk, sealed, refereePk), seat, "keys");
 
 export type HudMessage =
   | { type: "challenge"; nonce: Uint8Array }
   | { type: "ready"; player: number }
   | { type: "keys"; player: number; sealed: Uint8Array }
   | { type: "hud"; tick: number; sealed: Uint8Array }
-  /** A SignedVoiceLine sealed to this player. */
+  /** A game line sealed to this player (TAIL: a SignedVoiceLine from the Handler). */
   | { type: "handler"; sealed: Uint8Array }
   /** `reason` is a protocol RefuseCode (null if the relay sent none). */
   | { type: "refused"; nonce: number | null; action: string; reason: number | null }

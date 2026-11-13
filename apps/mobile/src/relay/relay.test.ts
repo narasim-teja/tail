@@ -15,9 +15,9 @@ import type { Store } from "../../../server/src/db.ts";
 import { HttpError } from "../../../server/src/errors.ts";
 import { RequestAuth } from "../../../server/src/routes/util.ts";
 import { fromB64, toB64 } from "../lib/b64";
-import { hudDigest, type Signer } from "./auth";
-import { joinLink, OpenLobbyError, parseLobbyCode, RelayClient, RelayError, readJoin } from "./client";
-import { hudAuthFrame, parseHudMessage } from "./hud";
+import { hudDigest, type Signer } from "../proximity/auth";
+import { RelayError } from "../proximity/relay";
+import { joinLink, OpenLobbyError, parseLobbyCode, RelayClient, readJoin } from "./client";
 
 const sk = ed25519.utils.randomSecretKey();
 const signer: Signer = { accountId: "alice.tail.testnet", sign: (d) => ed25519.sign(d, sk) };
@@ -128,44 +128,6 @@ describe("relay authentication", () => {
     expect(new RelayClient("https://relay.example").hudUrl("ab".repeat(16), "a.b.testnet")).toBe(
       `wss://relay.example/hud?match_id=${"ab".repeat(16)}&account_id=a.b.testnet`,
     );
-  });
-});
-
-describe("HUD socket messages", () => {
-  test("the auth frame answers the challenge with a signature the relay accepts", () => {
-    const nonce = new Uint8Array(32).fill(9);
-    const matchId = new Uint8Array(16).fill(1);
-    const frame = JSON.parse(hudAuthFrame(signer, nonce, matchId)) as { type: string; sig: string };
-    expect(frame.type).toBe("auth");
-    const digest = relayAuth.hudDigest(nonce, matchId, signer.accountId);
-    expect(relayAuth.verifyEd25519(ed25519.getPublicKey(sk), digest, fromB64(frame.sig))).toBe(true);
-  });
-
-  test("relay frames parse into typed messages and junk is dropped", () => {
-    expect(
-      parseHudMessage(
-        JSON.stringify({ type: "hud", match_id: "x", tick: 4, sealed: toB64(Uint8Array.of(7)) }),
-      ),
-    ).toEqual({
-      type: "hud",
-      tick: 4,
-      sealed: Uint8Array.of(7),
-    });
-    // The relay's own rejection frames and plain-text Handler lines are not the referee's word.
-    expect(
-      parseHudMessage(JSON.stringify({ type: "rejected", detail: { player: 1, seq: 3, reason: 6 } })),
-    ).toBeNull();
-    expect(parseHudMessage(JSON.stringify({ type: "handler", hint_id: 2, text: "Warmer." }))).toBeNull();
-    expect(parseHudMessage(JSON.stringify({ type: "handler", sealed: toB64(Uint8Array.of(9)) }))).toEqual({
-      type: "handler",
-      sealed: Uint8Array.of(9),
-    });
-    expect(
-      parseHudMessage(JSON.stringify({ type: "refused", detail: { nonce: 4, action: "strike", reason: 3 } })),
-    ).toEqual({ type: "refused", nonce: 4, action: "strike", reason: 3 });
-    expect(parseHudMessage("not json")).toBeNull();
-    expect(parseHudMessage(JSON.stringify({ type: "something-new" }))).toBeNull();
-    expect(parseHudMessage(JSON.stringify({ type: "keys", sealed: "%%%" }))).toBeNull();
   });
 });
 
@@ -426,7 +388,7 @@ describe("carry, receipts and the replay log", () => {
     const boxSk = x25519.utils.randomSecretKey();
     const c = new RelayClient("http://relay.test", { now: () => 77, contractId: CONTRACT });
     const req = await c.batchRequest(signer, ID, Uint8Array.of(1, 2));
-    const { carryEnvelope } = await import("../carry/mesh");
+    const { carryEnvelope } = await import("../proximity/carry/mesh");
     const inner = openCarry(boxSk, carryEnvelope(x25519.getPublicKey(boxSk), req));
     expect(inner.account).toBe(signer.accountId);
     const digest = digestFor(inner.method, inner.path, Number(inner.timeMs), inner.body);

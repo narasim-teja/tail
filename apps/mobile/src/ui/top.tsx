@@ -4,8 +4,8 @@
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
-import type { Banner, Dispatch } from "../game/huntModel";
-import type { Note } from "../game/session";
+import type { Note } from "../tail/hunt";
+import type { Banner, Dispatch } from "../tail/huntModel";
 import { Icon } from "./brand";
 import { Caption, Eyebrow, Strong } from "./kit";
 import { ease } from "./motion";

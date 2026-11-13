@@ -15,7 +15,7 @@ import {
 } from "@tail/protocol";
 import { bearingDeg, type Circle, circleCenter, compass8, distanceM, type LatLon } from "./geo";
 
-/** The referee's dark count for you, from its signed HUDs (session.ts). */
+/** The referee's dark count for you, from its signed HUDs (hunt.ts). */
 export interface DarkInfo {
   /** Cumulative dark time at the last HUD (`dark_ms`). */
   totalMs: number;

@@ -9,6 +9,7 @@ import {
 } from "@tail/protocol";
 import { hudOf } from "../../test/referee";
 import { hudView } from "./hud";
+import type { HuntSnapshot } from "./hunt";
 import {
   handleOf,
   howVerified,
@@ -18,7 +19,6 @@ import {
   resultOutcome,
   taggedLines,
 } from "./huntModel";
-import type { SessionSnapshot } from "./session";
 
 const NOW = 1_800_000_000_000;
 const keys: PlayerKeys = {
@@ -30,7 +30,7 @@ const keys: PlayerKeys = {
   kPlayer: new Uint8Array(32),
   target: "maya.tail.testnet",
 };
-const snap = (o: Partial<SessionSnapshot> = {}): SessionSnapshot => ({
+const snap = (o: Partial<HuntSnapshot> = {}): HuntSnapshot => ({
   epoch: 4,
   token: null,
   heard: 0,

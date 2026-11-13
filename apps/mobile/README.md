@@ -16,18 +16,18 @@ Range, pocket and outdoor play are not tested yet.
 
 ## Layout
 
-| Path                      | What                                                                                                                                                                                                                                                          |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `modules/tail-radio`      | Swift: advertise one 128-bit UUID, scan with duplicates (only UUIDs whose first 4 bytes match this match's tags reach JS), location with the `CLLocationSourceInformation` flags, pocket mode, app-state and proximity events                                 |
-| `modules/tail-attest`     | Swift: App Attest over a raw 32-byte clientDataHash (the S3 spike's chosen path)                                                                                                                                                                              |
-| `src/relay/`              | **Every relay call** (`client.ts`), the request and HUD signatures (`auth.ts`), the HUD socket (`hud.ts`), the referee box-key check (`referee.ts`)                                                                                                           |
-| `src/near/`               | NEAR transactions for the player's function-call key (`join_match`, `leave_lobby`, `withdraw`), views, and what the phone reads from NEAR itself (`chain.ts`: the match's referee key, players, anchored roots)                                               |
-| `src/identity/`           | Keys in the Keychain and enrolment (TECHNICAL.md 4.4)                                                                                                                                                                                                         |
-| `src/game/`               | The hunt: epoch timer, sighting aggregation, fixes, actions, batch builder and hash chain, ordered outbox, chain recovery (`chain.ts`), signed HUD and view model, inclusion receipts and presence proofs (`receipts.ts`), and `session.ts`, which wires them |
-| `src/carry/`              | Mesh carry over the Offline Protocol SDK (`mesh.ts`, both roles; `sdk.ts`, the SDK adapter). Behind a Settings switch, off by default                                                                                                                         |
-| `src/state/`              | App model (`app.ts`), device adapters, file persistence                                                                                                                                                                                                       |
-| `src/screens/`, `src/ui/` | Screens; `ui/theme.ts` (every colour, size and font), `ui/brand.tsx` (mark, icons)                                                                                                                                                                            |
-| `test/`                   | Test helpers: fake clock, minimal CBOR, App Attest assertions in Apple's format                                                                                                                                                                               |
+| Path                      | What                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `modules/tail-radio`      | Swift: advertise one 128-bit UUID, scan with duplicates (only UUIDs whose first 4 bytes match this match's tags reach JS), location with the `CLLocationSourceInformation` flags, pocket mode, app-state and proximity events                                                                                                                                                                                                                                                                                                   |
+| `modules/tail-attest`     | Swift: App Attest over a raw 32-byte clientDataHash (the S3 spike's chosen path)                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `src/proximity/`          | Game-agnostic play, reusable by another location game ([README](src/proximity/README.md)): epoch timer, sighting aggregation, fixes, batch builder and hash chain, ordered outbox and chain recovery, the HUD socket and signed-HUD opening, the referee box-key check, mesh carry (`carry/`, behind a Settings switch, off by default), inclusion receipts and presence proofs, request signing (`auth.ts`, `relay.ts`), and `client.ts` (`ProximityClient`), which wires them. Imports nothing from TAIL (`boundary.test.ts`) |
+| `src/relay/`              | TAIL's own relay calls (`client.ts`: enrolment, lobbies and codes, match views, replay log, test relay), on top of `proximity/relay.ts`                                                                                                                                                                                                                                                                                                                                                                                         |
+| `src/near/`               | NEAR transactions for the player's function-call key (`join_match`, `leave_lobby`, `withdraw`), views, and what the phone reads from NEAR itself (`chain.ts`: the match's referee key, players, anchored roots)                                                                                                                                                                                                                                                                                                                 |
+| `src/identity/`           | Keys in the Keychain and enrolment (TECHNICAL.md 4.4)                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `src/tail/`               | TAIL's hunt on top of the proximity layer: `hunt.ts` (`TailHunt`: strikes and hints, the HUD read as lock, heat, target and tags, zone and vehicle warnings, the Handler, notes), the HUD view and words (`hud.ts`), rules, zone, the hunt view model, Results' receipt lines                                                                                                                                                                                                                                                   |
+| `src/state/`              | App model (`app.ts`), device adapters, file persistence                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `src/screens/`, `src/ui/` | Screens; `ui/theme.ts` (every colour, size and font), `ui/brand.tsx` (mark, icons)                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `test/`                   | Test helpers: fake clock, minimal CBOR, App Attest assertions in Apple's format                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## How `@tail/protocol` and `@tail/brand` are wired
 
@@ -116,7 +116,7 @@ bun install
 
 ```sh
 cd apps/mobile
-bun test                                   # 193 tests
+bun test                                   # 204 tests
 bunx tsc -p . && bunx tsc -p tsconfig.test.json
 bunx expo export --platform ios --output-dir /tmp/tail-export
 CI=1 bunx expo prebuild --platform ios --clean
@@ -129,27 +129,27 @@ xcrun swift-format lint --strict --recursive apps/mobile/modules
 
 What the tests prove:
 
-- **Batch path end to end** (`src/game/batch.test.ts`): batches built by the real builder with a
+- **Batch path end to end** (`src/proximity/batch.test.ts`): batches built by the real builder with a
   test P-256 key signing in Apple's assertion format open with the referee's box key
   (`"tail/batch"`), decode as `BatchEnvelope`, chain by `batchHash`, and pass the referee's
   checks from `crates/appattest` (signature over the nonce, rpIdHash, increasing counter). The
   same verifier accepts the two **real iPhone assertions** from the S3 spike
   (`crates/appattest/tests/data/s3-tail-attest.json`).
-- **Session** (`src/game/session.test.ts`): with a fake radio and clock, the token and scan filter
+- **Hunt** (`src/tail/hunt.test.ts`, through `TailHunt` and `ProximityClient`; `src/proximity/client.test.ts` drives the client alone): with a fake radio and clock, the token and scan filter
   rotate each epoch, a batch goes out every 5 s with that window's fixes and sightings, STRIKE goes
-  out at once, a signed HUD drives lock/heat/STRIKE, tags and the dark banner, a HUD or Handler
+  out at once, an action the game queued is carried unread, a signed HUD drives lock/heat/STRIKE, tags and the dark banner, a HUD or Handler
   line not signed by the referee is shown as such and ignored, an older HUD replayed is ignored,
   and being out stops the radio.
-- **Chain recovery** (`src/game/chain.test.ts`, session tests): a report refused for its App
+- **Chain recovery** (`src/proximity/chain.test.ts`, hunt tests): a report refused for its App
   Attest assertion, a report that never reached the referee (resent once, then rebuilt), a phone
   whose chain parted from the referee's, and a relaunch mid-chain or with the match file lost all
   carry on from the HUD's `next_seq` and `chain_tip`; a lost strike or hint is said plainly.
-- **Inclusion receipts and presence proofs** (`src/game/receipts.test.ts`): against a log built
+- **Inclusion receipts and presence proofs** (`src/proximity/receipts.test.ts`): against a log built
   with the protocol's own Merkle helpers, accepted and refused reports are found under the
   anchored root, a missing one is a problem, and a tampered path, a wrong size or a made-up root
   does not count; presence proofs from the log verify with `verifyPresence`, and a tampered log
   yields none.
-- **Mesh carry** (`src/carry/mesh.test.ts`, session tests): envelopes are 4144 bytes of
+- **Mesh carry** (`src/proximity/carry/mesh.test.ts`, hunt tests): envelopes are 4144 bytes of
   ciphertext with no account, path or match id in the clear; a forwarder posts an envelope once
   however often it hears it and sends the relay's answer back; a report counts as delivered only
   when the relay's receipt verifies under its ack key; a report the mesh delivered is not sent

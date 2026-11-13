@@ -7,8 +7,8 @@
 // player owns and says plainly that the choice is permanent.
 import { type ReactNode, useEffect, useState } from "react";
 import { Alert, Linking, Share, StyleSheet, Text, View } from "react-native";
-import { handleOf } from "../game/huntModel";
 import { NEAR_NETWORK, TOP_UP, useApp } from "../state/app";
+import { handleOf } from "../tail/huntModel";
 import { Icon } from "../ui/brand";
 import { ContractMismatch } from "../ui/contract";
 import { RollingMoney } from "../ui/game";

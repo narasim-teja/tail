@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { encodeCarryAck, openCarry, sealCarry, signCarryAck, toHex, utf8 } from "@tail/protocol";
-import type { CarryReply, SignedRequest } from "../relay/client";
+import type { CarryReply, SignedRequest } from "../relay";
 import {
   carryEnvelope,
   decodeMeshMessage,

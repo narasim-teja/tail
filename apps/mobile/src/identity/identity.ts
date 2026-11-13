@@ -6,7 +6,7 @@
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { boxPublicKey } from "@tail/protocol";
 import { fromB64, toB64 } from "../lib/b64";
-import type { Signer } from "../relay/auth";
+import type { Signer } from "../proximity/auth";
 
 /** A small key-value secret store. keychain.ts is the device one; tests use a Map. */
 export interface SecretStore {

@@ -5,7 +5,7 @@
 import { useEffect, useRef } from "react";
 import { Animated, StyleSheet, Text, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
-import { money } from "../game/huntModel";
+import { money } from "../tail/huntModel";
 import { Icon } from "./brand";
 import { heatIntervalMs } from "./cadence";
 import { Eyebrow, inkOn, Num, useTone } from "./kit";

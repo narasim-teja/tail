@@ -2,7 +2,7 @@
 // match log the referee anchored on NEAR, so the referee cannot silently drop one. For each
 // report the phone kept (seq and batch hash, persisted in the match file) it computes the log
 // leaf, asks the relay for an audit path at the size of a root it read from NEAR itself
-// (near/chain.ts), and verifies the path against that root. The relay supplies paths only; a
+// (src/near/chain.ts), and verifies the path against that root. The relay supplies paths only; a
 // path that does not verify counts against it, never for it.
 //
 // A report the referee refused is in the log too, as a Rejected entry carrying the refusal
@@ -20,12 +20,12 @@ import {
   merkleVerify,
   type PresenceProof,
   presenceProof,
+  RejectCode,
   toHex,
   verifyPresence,
 } from "@tail/protocol";
 import { toB64 } from "../lib/b64";
-import type { InclusionProof } from "../relay/client";
-import { REJECT_CODES, rejectReason } from "./hud";
+import type { InclusionProof } from "./relay";
 
 /** One report the relay took from this phone: its seq, batch hash, and the refusal code if the HUD named one. */
 export interface Report {
@@ -50,6 +50,9 @@ export interface ReceiptResult {
   /** Seqs for which the relay sent a path that does not lead to NEAR's root. */
   badProof: number[];
 }
+
+/** Every RejectCode value, for looking a refused report up in the log. */
+export const REJECT_CODES: readonly number[] = Object.values(RejectCode);
 
 /** Checks a few reports at a time, so a whole match does not open hundreds of requests at once. */
 const PARALLEL = 4;
@@ -104,39 +107,6 @@ export async function checkReceipts(i: {
   for (const list of [out.included, out.missing, out.badProof]) list.sort((a, b) => a - b);
   out.refused.sort((a, b) => a.seq - b.seq);
   return out;
-}
-
-/** "3, 4 and 9" style lists for the results screen. */
-export function seqList(seqs: readonly number[]): string {
-  const s = seqs.map(String);
-  if (s.length <= 1) return s.join("");
-  return `${s.slice(0, -1).join(", ")} and ${s.at(-1)}`;
-}
-
-const reports = (n: number) => (n === 1 ? "report" : "reports");
-
-/** What Results says about a receipt check: plain lines, and problems listed apart. */
-export function receiptLines(r: ReceiptResult): { lines: string[]; problems: string[] } {
-  const lines = [
-    `${r.included.length} of ${r.total} ${reports(r.total)} are in the log anchored on NEAR${r.final ? "." : " so far."}`,
-  ];
-  if (r.refused.length > 0) {
-    const why = [...new Set(r.refused.map((x) => rejectReason(x.code)))].join(", ");
-    lines.push(`${r.refused.length} refused by the referee (${why}).`);
-  }
-  const problems: string[] = [];
-  if (r.missing.length > 0) {
-    if (r.final)
-      problems.push(
-        `Missing from the log: ${reports(r.missing.length)} ${seqList(r.missing)}. The referee never logged ${r.missing.length === 1 ? "it" : "them"}.`,
-      );
-    else lines.push(`${r.missing.length} not anchored yet; checked again once the match ends.`);
-  }
-  if (r.badProof.length > 0)
-    problems.push(
-      `The relay's proof for ${reports(r.badProof.length)} ${seqList(r.badProof)} doesn't match NEAR.`,
-    );
-  return { lines, problems };
 }
 
 /** One presence proof this player can hand out: met `other` (an account) in `epoch`. */

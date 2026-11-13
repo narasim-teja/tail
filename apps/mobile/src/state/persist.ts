@@ -1,19 +1,19 @@
 // What the phone must not lose mid-match: the hash chain position, the batches the referee has
 // not confirmed yet (sent or not), and where the referee's chain last stood. Losing them would
 // cost reports; the chain itself is rebuilt from the next signed HUD if it has to be
-// (game/chain.ts). Beside them: every report the relay took (seq and batch hash, for the
+// (proximity/chain.ts). Beside them: every report the relay took (seq and batch hash, for the
 // inclusion receipts after the match), the referee's tag count, the newest fix time (so fixes
 // stay in order after a relaunch) and strikes or hints not yet inside a committed batch. Sealed
 // batches are ciphertext to the enclave and hashes reveal nothing, so a file is fine; secrets
 // stay in the Keychain.
 
 import { type Action, fromHex, toHex } from "@tail/protocol";
-import { genesis, type OutboxItem } from "../game/batch";
-import { unconfirmed } from "../game/chain";
-import type { SessionRecord } from "../game/session";
 import { fromB64, toB64 } from "../lib/b64";
+import { genesis, type OutboxItem } from "../proximity/batch";
+import { unconfirmed } from "../proximity/chain";
+import type { HuntRecord } from "../tail/hunt";
 
-export interface MatchRecord extends SessionRecord {
+export interface MatchRecord extends HuntRecord {
   matchId: string;
 }
 

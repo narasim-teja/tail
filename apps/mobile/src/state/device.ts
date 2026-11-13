@@ -1,9 +1,9 @@
-// Adapters from the native modules to the session's ports.
+// Adapters from the native modules to the proximity client's ports.
 import TailAttest from "../../modules/tail-attest";
 import TailRadio from "../../modules/tail-radio";
-import type { Assert } from "../game/batch";
-import type { RadioPort } from "../game/session";
 import { fromB64, toB64 } from "../lib/b64";
+import type { Assert } from "../proximity/batch";
+import type { RadioPort } from "../proximity/client";
 
 export const radioPort: RadioPort = {
   startBeacon: () => TailRadio.startBeacon(),
