@@ -11,8 +11,9 @@ use crate::host;
 use borsh::{BorshDeserialize, BorshSerialize};
 use tail_protocol::MatchId;
 
-/// Bumped when the layout changes; an old blob is refused rather than misread.
-pub const VERSION: u8 = 6;
+/// Bumped when the layout changes, the engine's `State` included; an old blob is refused rather
+/// than misread. 7: the engine keeps each hint's time (`hint_times`) for demand pricing.
+pub const VERSION: u8 = 7;
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, PartialEq)]
 pub struct MatchState {

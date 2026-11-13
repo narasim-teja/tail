@@ -55,7 +55,7 @@ fn open_hint(i: &Input) -> Result<Opened, String> {
     let match_id: MatchId = id.try_into().expect("16 bytes");
     let st = state::open(&from_b64("state", &i.state)?, domain::STATE, &match_id)?;
     let plain = vault::open(&st.box_sk, Purpose::Hint, &match_id, &[], sealed)?;
-    let hint: HintBlob = borsh::from_slice(&plain).map_err(|e| format!("hint blob: {e}"))?;
+    let hint = HintBlob::decode(&plain)?;
     if hint.match_id != match_id {
         return Err("hint blob names another match".into());
     }

@@ -10,7 +10,7 @@
 use super::{log_out, open_checked, proofs_json, receipts, seal_huds, sign_all};
 use crate::codec::{b64, fixed_b64, from_b64, parse, to_borsh, uuid_string};
 use crate::host;
-use crate::records::HintBlob;
+use crate::records::{HintBlob, HINT_BLOB_VERSION};
 use crate::state;
 use crate::vault::{self, Purpose};
 use referee_core::{ActionKind, Refusal, Rejection};
@@ -114,6 +114,7 @@ pub fn run(input: Value) -> Result<Value, String> {
         .into_iter()
         .map(|h| {
             let blob = HintBlob {
+                version: HINT_BLOB_VERSION,
                 match_id,
                 hint_id: h.hint_id,
                 player: h.from,

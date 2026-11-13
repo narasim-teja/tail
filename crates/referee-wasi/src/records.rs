@@ -20,10 +20,16 @@ pub mod domain {
     pub const BENCH_STATE: &[u8] = b"tail/bench-state/v1";
 }
 
+/// Bumped when `HintBlob`'s layout changes; a blob of another version is refused rather than
+/// misread. 1: the first versioned layout, with `recent`.
+pub const HINT_BLOB_VERSION: u8 = 1;
+
 /// A hint `tick` issued, as `voice` needs it: sealed to the referee (`vault::Purpose::Hint`)
 /// so the relay that carries it learns neither the fact nor the question.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct HintBlob {
+    /// `HINT_BLOB_VERSION`, first so an old layout is named instead of misread.
+    pub version: u8,
     pub match_id: MatchId,
     pub hint_id: u32,
     /// The asker, who gets the Handler's line.
@@ -36,6 +42,21 @@ pub struct HintBlob {
     /// can say why it cost what it did.
     pub recent: u32,
     pub question: Option<String>,
+}
+
+impl HintBlob {
+    pub fn decode(plain: &[u8]) -> Result<HintBlob, String> {
+        match plain.first() {
+            Some(&HINT_BLOB_VERSION) => {}
+            Some(v) => {
+                return Err(format!(
+                    "hint blob version {v} (this referee reads {HINT_BLOB_VERSION})"
+                ))
+            }
+            None => return Err("hint blob is empty".into()),
+        }
+        borsh::from_slice(plain).map_err(|e| format!("hint blob: {e}"))
+    }
 }
 
 /// An enrolled phone. Also the body of the enrolment receipt.
@@ -305,6 +326,26 @@ mod tests {
         ] {
             assert!(StoredDevice::decode(bad).is_err());
         }
+    }
+
+    #[test]
+    fn hint_blobs_carry_their_version() {
+        let h = HintBlob {
+            version: HINT_BLOB_VERSION,
+            match_id: [1; 16],
+            hint_id: 2,
+            player: 3,
+            hint: 1,
+            value: 4,
+            recent: 5,
+            question: Some("where?".into()),
+        };
+        let bytes = crate::codec::to_borsh(&h);
+        assert_eq!(bytes[0], HINT_BLOB_VERSION);
+        assert_eq!(HintBlob::decode(&bytes), Ok(h));
+        let mut old = bytes;
+        old[0] = 0;
+        assert!(HintBlob::decode(&old).unwrap_err().contains("version 0"));
     }
 
     #[test]

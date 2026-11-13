@@ -218,7 +218,9 @@ worker (wasmtime 36) cannot instantiate. Before deploying, check that
   last verdict digest, and the log frontier (the peaks at the last anchored size plus the leaf
   hashes since, so up to one Checkpoint's worth: about 12 KB for 12 players)
 
-`state::VERSION` is 5 (protocol v2 with log salts); a blob of another version is refused.
+`state::VERSION` is 7 (protocol v2 with log salts and each hint's time for demand pricing); a
+blob of another version is refused. A hint blob carries its own version byte
+(`HINT_BLOB_VERSION`, 1) the same way.
 
 One source of truth: the wrapper keeps no copy of anything the engine owns.
 
