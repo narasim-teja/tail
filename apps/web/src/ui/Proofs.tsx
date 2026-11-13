@@ -295,8 +295,8 @@ export function HistoryLines() {
           links === 0
             ? "There's only one anchored root, so there is nothing to compare it with."
             : cs.ok
-              ? `${links} consistency proofs, computed here from the log, show each checkpoint ${cs.source === "near" ? "NEAR holds" : "the referee signed"} extends the one before: nothing was rewritten.${decoded.version === 2 ? " NEAR's contract checks the referee's own proof before it stores a checkpoint, too." : ""}`
-              : `${bad.length} of ${links} links fail: the log at ${bad.map((l) => l.from).join(", ")} entries isn't a prefix of the next checkpoint's. Something was rewritten.${decoded.version === 2 ? " NEAR's contract would have refused that checkpoint." : ""}`
+              ? `Over this bundle's log, each root ${cs.source === "near" ? "NEAR holds" : "the referee signed"} extends the one before it: ${links} consistency proofs, built from the bundle's leaves, fit both roots of every pair, so the log at each checkpoint is a prefix of the next.${decoded.version === 2 ? " NEAR's contract checks the referee's own proof before it stores a checkpoint, too." : ""}`
+              : `${bad.length} of ${links} links fail: over this bundle's log, the root at ${bad.map((l) => l.from).join(", ")} entries doesn't extend into the next. Either the log changed after that checkpoint, or this isn't the log that was anchored.${decoded.version === 2 ? " NEAR's contract would have refused a checkpoint that didn't extend the last." : ""}`
         }
       >
         Each checkpoint extends the previous one

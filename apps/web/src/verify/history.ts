@@ -7,10 +7,11 @@
 // verdicts signed for one seq cannot both be on that chain.
 //
 // Append-only log. For each pair of successive anchored roots (size m, then n), an RFC 9162
-// consistency proof m → n is computed from the bundle's leaves and verified against the two roots
-// (verifyConsistency).
-// It holds only if the log NEAR anchored at m is a prefix of the one it anchored at n: each
-// checkpoint extends the previous one, nothing was rewritten. The contract runs the same check on
+// consistency proof m → n is built from the bundle's leaves and verified against the two roots
+// (verifyConsistency). The proof comes from the bundle, but it has to fit both roots: it holds
+// only if the log anchored at m is a prefix of the one anchored at n, so each checkpoint extends
+// the previous one. A failure means that isn't so over this bundle's log: the log changed after a
+// checkpoint, or the bundle's leaves aren't the anchored log. The contract runs the same check on
 // the referee's proof before it accepts a Checkpoint or End, so a settled match passed it there too.
 
 import {

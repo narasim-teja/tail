@@ -193,3 +193,12 @@ describe("the presence page", () => {
     expect(local).toContain("NEAR's referee key for this match is the local test referee's");
   });
 });
+
+describe("the append-only row", () => {
+  test("says what the consistency proofs show: each anchored root extends the last, over this bundle's log", () => {
+    const h = summary(fx.full);
+    const r = row(h, "Each checkpoint extends the previous one");
+    expect(r.detail).toStartWith("Over this bundle's log, each root NEAR holds extends the one before it");
+    expect(r.detail).not.toContain("computed here");
+  });
+});
