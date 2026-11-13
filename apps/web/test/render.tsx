@@ -71,7 +71,8 @@ export function replayOf(bundle: unknown, o: RenderOptions = {}): Replay {
 export const html = (r: Replay, node: ReactNode) =>
   renderToStaticMarkup(<ReplayProvider value={r}>{node}</ReplayProvider>);
 
-const text = (h: string) =>
+/** Rendered HTML as the text a reader sees: tags stripped, entities decoded. */
+export const text = (h: string) =>
   h
     .replace(/<[^>]+>/g, "")
     .replace(/&#x27;/g, "'")

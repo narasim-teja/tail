@@ -6,7 +6,7 @@ import { forgedFixture, makeFixtures } from "../scripts/fixture.ts";
 import { Finale } from "../src/ui/Finale.tsx";
 import { Header } from "../src/ui/Header.tsx";
 import { Inspector } from "../src/ui/Inspector.tsx";
-import { html, replayOf, row } from "./render.tsx";
+import { html, replayOf, row, text } from "./render.tsx";
 
 const fx = makeFixtures();
 const summary = (bundle: unknown, o: Parameters<typeof replayOf>[1] = {}) =>
@@ -123,5 +123,35 @@ describe("the Handler lines' signatures", () => {
       title: "Handler lines: 0 of 3 carry a NEAR AI signature",
     });
     expect(t.detail).toContain("template line");
+  });
+});
+
+describe("NEAR unreachable is not NEAR saying no", () => {
+  const relay = { kind: "relay" as const, matchId: fx.full.match.id, url: "x" };
+  const tag = (r: ReturnType<typeof replayOf>) => {
+    const ev = r.match.events.find((e) => e.kind === "tag");
+    r.play.set({ selection: { kind: "event", index: ev?.index ?? -1 } });
+    return html(r, <Inspector compact={false} />);
+  };
+
+  test("an unreachable NEAR leaves the referee key unread, and the contact paths unchecked by NEAR", () => {
+    const h = tag(replayOf(fx.full, { source: relay, chain: { kind: "unreachable", reason: "offline" } }));
+    const signed = row(h, "Signed by the referee");
+    expect(signed.detail).toBe(
+      "NEAR couldn't be reached, so this page didn't learn which referee key the match uses.",
+    );
+    expect(text(h)).not.toContain("isn't one this page knows");
+    expect(text(h)).toContain("NEAR couldn't be reached, so it couldn't check the path.");
+    expect(text(h)).not.toContain("NEAR holds no root");
+  });
+
+  test("a NEAR that has no such match says so", () => {
+    const h = tag(replayOf(fx.full, { source: relay, chain: { kind: "absent" } }));
+    expect(row(h, "Signed by the referee").detail).toBe(
+      "NEAR has no match with this id, so there is no referee key to compare.",
+    );
+    expect(text(h)).toContain(
+      "NEAR has no match with this id, so it holds no root to check the path against.",
+    );
   });
 });

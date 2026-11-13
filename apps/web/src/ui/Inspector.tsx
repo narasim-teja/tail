@@ -131,21 +131,25 @@ function SignedAndSettled({ index }: { index: number }) {
         ? "Signed by the local test referee on the relay's computer, not by an enclave."
         : by === "unknown"
           ? "NEAR's referee key for this match isn't one this page knows, so nothing vouches for the code that signed."
-          : by === null
-            ? "Asking NEAR which referee key this match uses…"
-            : att === undefined
-              ? "Looking up the enclave's record…"
-              : att.kind === "found"
-                ? att.check.kind === "published"
-                  ? `The enclave's record for this call shows it ran the published referee build ${short(att.check.wasm, 8)}. ${RECORD_LIMIT}`
-                  : att.check.kind === "other-code"
-                    ? `The enclave's record shows it ran ${short(att.check.wasm, 8)}, which isn't a published referee build.`
-                    : att.check.kind === "other-call"
-                      ? "The record OutLayer returned is for a different call."
-                      : "The record doesn't say which code ran."
-                : att.kind === "missing"
-                  ? "OutLayer has no record for this call."
-                  : "The enclave's record couldn't be read from here, so no enclave is claimed; open it to check.";
+          : by === "unread"
+            ? chain === "unreachable"
+              ? "NEAR couldn't be reached, so this page didn't learn which referee key the match uses."
+              : "NEAR has no match with this id, so there is no referee key to compare."
+            : by === null
+              ? "Asking NEAR which referee key this match uses…"
+              : att === undefined
+                ? "Looking up the enclave's record…"
+                : att.kind === "found"
+                  ? att.check.kind === "published"
+                    ? `The enclave's record for this call shows it ran the published referee build ${short(att.check.wasm, 8)}. ${RECORD_LIMIT}`
+                    : att.check.kind === "other-code"
+                      ? `The enclave's record shows it ran ${short(att.check.wasm, 8)}, which isn't a published referee build.`
+                      : att.check.kind === "other-call"
+                        ? "The record OutLayer returned is for a different call."
+                        : "The record doesn't say which code ran."
+                  : att.kind === "missing"
+                    ? "OutLayer has no record for this call."
+                    : "The enclave's record couldn't be read from here, so no enclave is claimed; open it to check.";
   const attFail = att?.kind === "found" && att.check.kind !== "published";
 
   return (
@@ -861,7 +865,7 @@ function SummaryBody() {
           settlement are checked here as usual, but no enclave vouches for the code that signed.
         </p>
       )}
-      {signer === "unknown" && chain === "found" && (
+      {signer === "unknown" && (
         <p className="mt-5 rounded-2xl bg-surface-2 px-4 py-3 text-[0.875rem] leading-snug text-text-2">
           NEAR's referee key for this match isn't one this page knows, so nothing vouches for the code that
           signed. The signatures and NEAR settlement are still checked.

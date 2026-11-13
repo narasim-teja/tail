@@ -188,7 +188,11 @@ export function ContactProof({
             <span className="mt-1 block text-text-3">
               {chain === "checking"
                 ? "Asking NEAR…"
-                : "NEAR holds no root for this match, so it can't check the path."}
+                : !binding.ok
+                  ? "This replay isn't for the contract and match this page checks, so NEAR wasn't asked."
+                  : chain === "unreachable"
+                    ? "NEAR couldn't be reached, so it couldn't check the path."
+                    : "NEAR has no match with this id, so it holds no root to check the path against."}
             </span>
           )}
           {withPresence && <PresenceMaker logIndex={logIndex} />}

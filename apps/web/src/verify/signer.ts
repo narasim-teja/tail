@@ -6,16 +6,17 @@
 //            attestation record checks out (attestation.ts).
 //   local:   the local test referee: the same code, run on the relay's machine.
 //   fixture: the page's own generated fixture, signed with a public test key.
-//   unknown: a key this page does not know, or NEAR has not answered.
+//   unknown: NEAR named a key this page does not know.
+//   unread:  NEAR has no such match, or couldn't be reached, so no key was read at all.
 
 import type { ChainState } from "./anchor.ts";
 import type { Pins } from "./pins.ts";
 
-export type Signer = "enclave" | "local" | "fixture" | "unknown";
+export type Signer = "enclave" | "local" | "fixture" | "unknown" | "unread";
 
 export function signerOf(fixture: boolean, chain: ChainState | null, pins: Pins): Signer {
   if (fixture) return "fixture";
-  if (chain?.kind !== "found") return "unknown";
+  if (chain?.kind !== "found") return "unread";
   const pk = chain.match.referee_pk.toLowerCase();
   if (pins.enclaveRefereePks.includes(pk)) return "enclave";
   if (pins.localRefereePks.includes(pk)) return "local";

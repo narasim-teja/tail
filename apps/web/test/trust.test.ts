@@ -171,8 +171,10 @@ describe("the enclave label", () => {
     expect(signerOf(false, withKey(ENCLAVE_PK), PINS)).toBe("enclave");
     expect(signerOf(false, withKey(LOCAL_PK.toUpperCase()), PINS)).toBe("local");
     expect(signerOf(false, withKey("ab".repeat(32)), PINS)).toBe("unknown");
-    expect(signerOf(false, { kind: "absent" }, PINS)).toBe("unknown");
-    expect(signerOf(false, null, PINS)).toBe("unknown");
+    // No key read at all is not an unknown key.
+    expect(signerOf(false, { kind: "absent" }, PINS)).toBe("unread");
+    expect(signerOf(false, { kind: "unreachable", reason: "offline" }, PINS)).toBe("unread");
+    expect(signerOf(false, null, PINS)).toBe("unread");
     // The honest fixture is signed with a public test key: never the enclave.
     expect(signerOf(true, withKey(ENCLAVE_PK), PINS)).toBe("fixture");
   });
