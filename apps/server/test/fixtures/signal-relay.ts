@@ -19,6 +19,7 @@ const relay = createRelay({
   appId: "TEAM.app",
   environment: "development",
   token: "usdc.fakes.testnet",
+  vrfSender: "relay.testnet",
   carryKeys: newCarryKeys(),
   replay: {
     contract: "tail.relay.testnet",

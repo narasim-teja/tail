@@ -37,6 +37,8 @@ export interface ContractConfig {
   owner: string;
   referee_pk: string;
   vrf_pk: string;
+  /** The caller new matches require the VRF alpha to name (the referee's OutLayer caller). */
+  vrf_sender: string;
   allowed_tokens: string[];
   match_storage_deposit: string;
   /** Exact deposit `register_for` needs (payout record plus a balance per token). */
@@ -76,8 +78,11 @@ export interface ChainMatch {
   locked_until_ms: number | null;
   sponsor_pot: string;
   seq: number;
+  /** The referee keys and VRF caller copied from the contract at `create_match`. */
   referee_pk: string;
   vrf_pk: string;
+  /** Null for a match created before the contract kept it (it can only settle by `abort`). */
+  vrf_sender: string | null;
   ring_commit: string | null;
   start_ms: number | null;
   end_ms: number | null;
@@ -352,11 +357,12 @@ export class NearChain implements Chain {
     return res.transaction.hash;
   }
 
-  /** Owner only (the relay account owns the contract). Changes the keys new matches pin. */
-  async pinKeys(keys: { refereePk?: string; vrfPk?: string }) {
+  /** Owner only (the relay account owns the contract). Changes what new matches pin. */
+  async pinKeys(keys: { refereePk?: string; vrfPk?: string; vrfSender?: string }) {
     for (const [methodName, arg, value] of [
       ["set_referee_pk", "referee_pk", keys.refereePk],
       ["set_vrf_pk", "vrf_pk", keys.vrfPk],
+      ["set_vrf_sender", "vrf_sender", keys.vrfSender],
     ] as const) {
       if (!value) continue;
       await this.relay.callFunction({

@@ -360,8 +360,9 @@ describe("after the contract pins another referee", () => {
 
   test("Start names the players the new referee does not know, and each refresh brings one back", async () => {
     const old = setup();
-    const l = await lobby(old);
+    // Enrolled under the old referee; the lobby is made after the repin, so it pins the new one.
     const env = repinned(old);
+    const l = await lobby(env, {}, (name) => player(old, name));
     const s = await req(env, "POST", `/matches/${l.id}/start`, {}, l.a);
     expect(s.status).toBe(409);
     expect(s.json["code"]).toBe("refresh");
@@ -405,6 +406,23 @@ describe("after the contract pins another referee", () => {
     expect((await req(env, "GET", "/enroll/status", undefined, l.b)).json["with_referee"]).toBe(false);
     expect((await refresh(env, l.b)).status).toBe(200);
     expect((await req(env, "POST", `/matches/${l.id}/start`, {}, l.a)).status).toBe(200);
+  });
+
+  test("a lobby made under another referee's pins is refused before the lock", async () => {
+    const old = setup();
+    const l = await lobby(old);
+    const env = repinned(old);
+    const s = await req(env, "POST", `/matches/${l.id}/start`, {}, l.a);
+    expect(s.status).toBe(409);
+    expect(s.json["error"]).toContain("another referee");
+    expect(s.json["code"]).toBeUndefined();
+    expect(env.chain.locked).toEqual([]);
+    expect(env.referee.calls).not.toContain("start");
+    expect(env.store.match(l.id)?.phase).toBe("lobby");
+    // The VRF caller counts as much as the keys.
+    const fresh = await lobby(env, {}, (name) => player(env, `${name}2`));
+    (env.chain.matches.get(fresh.id) as { vrf_sender: string | null }).vrf_sender = "someone-else.testnet";
+    expect((await req(env, "POST", `/matches/${fresh.id}/start`, {}, fresh.a)).status).toBe(409);
   });
 
   test("a refresh the referee refuses keeps the old receipt; a refresh needs the account's own key", async () => {

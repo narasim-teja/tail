@@ -699,7 +699,7 @@ export class LocalReferee extends RefereeClient {
 /** The referee this config asks for: OutLayer's enclave by default, the local test referee in local mode. */
 export function makeReferee(c: Config): RefereeClient {
   if (c.refereeMode === "local" && c.localReferee) {
-    return new LocalReferee({ ...c.localReferee, owner: c.relayAccount, allowUnattested: c.allowGhosts });
+    return new LocalReferee({ ...c.localReferee, owner: c.vrfSender, allowUnattested: c.allowGhosts });
   }
   return new OutLayerReferee({
     api: c.outlayerApi,

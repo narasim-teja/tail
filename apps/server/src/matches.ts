@@ -85,6 +85,8 @@ export interface MatchDeps {
    * registers devices in the background; this waits for any still missing).
    */
   ensureWithReferee: (accountIds: string[]) => Promise<void>;
+  /** What a lobby must pin for this relay's referee to start it: its keys (hex) and VRF caller. */
+  pins: () => Promise<{ refereePk: string; vrfPk: string; vrfSender: string }>;
   now?: () => number;
   /** Defaults to TICK_MS; tests shorten it. */
   tickMs?: number;
@@ -262,6 +264,18 @@ export class Matches {
     let chain = await this.d.chain.getMatch(matchId);
     if (!chain) throw new HttpError(404, "match is not on chain");
     if (chain.phase !== "lobby") throw new HttpError(409, `match is ${chain.phase} on chain`);
+    // A lobby keeps the referee keys the contract pinned when it was made. Under any others the
+    // contract would refuse the Start verdict, after the referee had used up the match id.
+    const want = await this.d.pins();
+    if (
+      chain.referee_pk !== want.refereePk ||
+      chain.vrf_pk !== want.vrfPk ||
+      chain.vrf_sender !== want.vrfSender
+    )
+      throw new HttpError(
+        409,
+        "this lobby was made for another referee than the one this relay runs; make a new one",
+      );
     // A lock from an earlier attempt that failed before the referee answered is reused.
     if (chain.locked_until_ms === null) {
       if (chain.players.length < chain.min_players) {

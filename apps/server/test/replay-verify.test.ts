@@ -98,6 +98,7 @@ describe("the relay's replay bundle", () => {
       appId: APP_ID,
       environment: "development",
       token: "usdc.fakes.testnet",
+      vrfSender: PARENT,
       carryKeys: newCarryKeys(),
       replay: {
         contract: CONTRACT,

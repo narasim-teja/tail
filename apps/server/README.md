@@ -356,10 +356,12 @@ nothing attests the code that signed, so:
 
 - it plays on the same `TAIL_CONTRACT`: a player's NEAR key can call only the contract it was
   made for, so a second contract would lock every enrolled player out. Switching referees means
-  pinning the other one's keys on the contract (`scripts/pin-referee.ts`), after which every
-  phone refreshes its enrolment with the new referee ("Refresh" above). Matches keep the keys
-  they were created with;
-- the relay checks at startup that the contract pins the keys of the referee it runs with, in
+  pinning the other one's keys and VRF caller on the contract (`scripts/pin-referee.ts`), after
+  which every phone refreshes its enrolment with the new referee ("Refresh" above). Matches keep
+  the keys they were created with, so a lobby made before the switch cannot start: Start
+  refuses it with a 409 before locking it, and the host makes a new one;
+- the relay checks at startup that the contract pins the keys and the VRF caller (`vrf_sender`:
+  `OUTLAYER_OWNER`, or the relay account for the local referee) of the referee it runs with, in
   either mode, and refuses to start otherwise;
 - every replay bundle it serves says `referee.kind: "local"`, and the replay page labels the
   signatures as the test referee's;

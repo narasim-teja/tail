@@ -41,6 +41,11 @@ export interface Config {
   refereeMode: "outlayer" | "local";
   /** Set in local mode: the native referee binary and the directory holding its keys. */
   localReferee: { bin: string; dir: string } | null;
+  /**
+   * The account the referee's VRF alpha names as its caller, which the contract pins as
+   * `vrf_sender`: the OutLayer project owner, or for the local test referee the relay account.
+   */
+  vrfSender: string;
   /** How long after End a private match's sealed batches and trails are kept (retention.ts). */
   retentionMs: number;
   /** Where the relay's own mesh carry keys live (carry.ts); generated there on first start. */
@@ -147,6 +152,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     dbPath: opt("RELAY_DB", new URL("../data/relay.db", import.meta.url).pathname),
     allowGhosts: network === "testnet" && ghosts === "1",
     refereeMode: mode,
+    vrfSender: mode === "local" ? relayAccount : need("OUTLAYER_OWNER"),
     localReferee:
       mode === "local"
         ? {

@@ -34,7 +34,7 @@ import {
   utf8,
   verdictDigest,
 } from "@tail/protocol";
-import type { ApplyProof, ChainMatch, ContractConfig } from "../src/near.ts";
+import type { ApplyProof, ChainMatch } from "../src/near.ts";
 import { FakeChain } from "./fakes.ts";
 
 /** contracts/tail lib.rs: the k-th Checkpoint needs k × CHECKPOINT_MS / 2 of match time. */
@@ -88,27 +88,13 @@ export class ContractChain extends FakeChain {
   private readonly plays = new Map<string, Play>();
 
   constructor(
-    private readonly pins: Pins,
+    private readonly keys: Pins,
     /** Block time. */
     private readonly now: () => number,
   ) {
     super();
-  }
-
-  override async config(): Promise<ContractConfig> {
-    return {
-      ...(await super.config()),
-      referee_pk: toHex(this.pins.refereePk),
-      vrf_pk: toHex(this.pins.vrfPk),
-    };
-  }
-
-  override async createMatch(cfg: Parameters<FakeChain["createMatch"]>[0]) {
-    const id = await super.createMatch(cfg);
-    const m = this.matches.get(id) as ChainMatch;
-    m.referee_pk = toHex(this.pins.refereePk);
-    m.vrf_pk = toHex(this.pins.vrfPk);
-    return id;
+    // What get_config shows and create_match copies into each match.
+    this.pins = { referee_pk: toHex(keys.refereePk), vrf_pk: toHex(keys.vrfPk), vrf_sender: keys.vrfSender };
   }
 
   /** How the match settled at End; null before. */
@@ -136,7 +122,7 @@ export class ContractChain extends FakeChain {
       if (!m) throw new Error("no such match");
       const d = drafts.get(id) ?? this.draft(id, m);
       drafts.set(id, d);
-      applyOne(m, d, v, now, this.pins);
+      applyOne(m, d, v, now, this.keys);
     }
     // Seq order, `prev` and the consistency proofs; all or nothing, like ours.
     const tx = await super.apply(verdicts, proofs);

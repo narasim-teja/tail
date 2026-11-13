@@ -53,6 +53,11 @@ describe("loadConfig", () => {
     expect(local.dbPath).toBe(outlayer.dbPath);
     expect(local.localReferee?.bin).toEndWith("crates/referee-wasi/target/release/tail-referee");
     expect(describeConfig(local).referee).toBe("local test referee (not an enclave)");
+    // The VRF alpha names the referee's caller: the OutLayer project owner, or the relay itself.
+    expect(outlayer.vrfSender).toBe(good.OUTLAYER_OWNER);
+    expect(loadConfig({ ...good, OUTLAYER_OWNER: "owner-y.testnet", REFEREE_MODE: "local" }).vrfSender).toBe(
+      good.NEAR_RELAY_ACCOUNT,
+    );
     expect(() => loadConfig({ ...good, REFEREE_MODE: "enclave" })).toThrow("REFEREE_MODE");
   });
 

@@ -103,6 +103,11 @@ export class FakeChain implements Chain {
    * dossier_deposit and which has no dossier methods.
    */
   dossierDeposit: string | null = null;
+  /**
+   * What the contract pins now and copies into each match at `create_match`: the referee keys
+   * (hex) and the VRF caller. The harness pins the referee of the relay it sets up.
+   */
+  pins = { referee_pk: "00".repeat(32), vrf_pk: "00".repeat(32), vrf_sender: "relay.testnet" };
   /** Accounts holding their dossier. Registration mints one once the contract has dossiers. */
   dossiers = new Set<string>();
   /** Each mint_dossier call that landed, in order. */
@@ -115,8 +120,7 @@ export class FakeChain implements Chain {
   async config(): Promise<ContractConfig> {
     return {
       owner: "relay.testnet",
-      referee_pk: "00".repeat(32),
-      vrf_pk: "00".repeat(32),
+      ...this.pins,
       allowed_tokens: ["usdc.fakes.testnet"],
       match_storage_deposit: "1",
       registration_deposit: "1",
@@ -174,8 +178,7 @@ export class FakeChain implements Chain {
       locked_until_ms: null,
       sponsor_pot: "0",
       seq: 0,
-      referee_pk: "",
-      vrf_pk: "",
+      ...this.pins,
       ring_commit: null,
       start_ms: null,
       end_ms: null,

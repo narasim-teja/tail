@@ -35,6 +35,7 @@ export function startRelay(config: Config) {
     appId: config.appId,
     environment: config.appAttestEnvironment,
     token: config.token,
+    vrfSender: config.vrfSender,
     replay: {
       contract: config.contract,
       network: config.network,
@@ -97,10 +98,11 @@ if (import.meta.main) {
 }
 
 /**
- * The contract pins one referee's keys at a time, and every verdict is checked against them, so
- * the relay refuses to run beside a referee the contract does not pin: every verdict would be
- * refused mid-match. Checked once, before serving. A referee that does not answer cannot be
- * checked; the relay starts anyway and the guard reports it down.
+ * The contract pins one referee's keys and VRF caller at a time, and every verdict is checked
+ * against them, so the relay refuses to run beside a referee the contract does not pin: every
+ * verdict would be refused mid-match, and End's VRF reveal would name another caller. Checked
+ * once, before serving. A referee that does not answer cannot be checked; the relay starts anyway
+ * and the guard reports it down.
  */
 async function checkPins(config: Config) {
   const pinned = await new NearChain(config, log).config();
@@ -110,10 +112,15 @@ async function checkPins(config: Config) {
       log.warn({ err: (e as Error).message }, "could not check the contract's pinned referee keys");
       return null;
     });
-  if (keys && (pinned.referee_pk !== toHex(keys.refereePk) || pinned.vrf_pk !== toHex(keys.vrfPk))) {
+  if (
+    keys &&
+    (pinned.referee_pk !== toHex(keys.refereePk) ||
+      pinned.vrf_pk !== toHex(keys.vrfPk) ||
+      pinned.vrf_sender !== config.vrfSender)
+  ) {
     log.fatal(
       { contract: config.contract, mode: config.refereeMode },
-      `the contract pins another referee's keys; run REFEREE_MODE=${config.refereeMode} bun apps/server/scripts/pin-referee.ts`,
+      `the contract pins another referee's keys or VRF caller; run REFEREE_MODE=${config.refereeMode} bun apps/server/scripts/pin-referee.ts`,
     );
     process.exit(1);
   }

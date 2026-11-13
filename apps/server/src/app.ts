@@ -3,6 +3,7 @@
 
 import { verifyAttestation as appleVerify, type Environment } from "@tail/appattest";
 import type { Logger } from "@tail/log";
+import { toHex } from "@tail/protocol";
 import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
 import type { CarryKeys } from "./carry.ts";
@@ -36,6 +37,8 @@ export interface RelayDeps {
   appId: string;
   environment: Environment;
   token: string;
+  /** The caller the referee's VRF alpha names (config.ts `vrfSender`); every lobby must pin it. */
+  vrfSender: string;
   /**
    * What the replay bundle names: contract, network, referee project and API. `contract` is also
    * what every signed request names (auth.ts), and what GET /health tells the phone.
@@ -92,6 +95,10 @@ export function createRelay(d: RelayDeps) {
     appId: d.appId,
     token: d.token,
     ensureWithReferee: (accounts) => enrolment.ensureWithReferee(accounts),
+    pins: async () => {
+      const k = await enrolment.refereeKeys();
+      return { refereePk: toHex(k.refereePk), vrfPk: toHex(k.vrfPk), vrfSender: d.vrfSender };
+    },
     ...(d.now ? { now: d.now } : {}),
     ...(d.tickMs !== undefined ? { tickMs: d.tickMs } : {}),
   });

@@ -122,6 +122,7 @@ describe("a match judged by the real (local) referee", () => {
       appId: APP_ID,
       environment: "development",
       token: "usdc.fakes.testnet",
+      vrfSender: PARENT,
       carryKeys: newCarryKeys(),
       replay: {
         contract: CONTRACT,

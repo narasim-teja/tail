@@ -3,6 +3,7 @@
 
 import { expect, onTestFinished } from "bun:test";
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
+import { toHex } from "@tail/protocol";
 import { createRelay, type RelayDeps } from "../src/app.ts";
 import { hudDigest, signRequestHeaders } from "../src/auth.ts";
 import { newCarryKeys } from "../src/carry.ts";
@@ -23,6 +24,10 @@ export function setup(over: Partial<RelayDeps> = {}) {
   const referee = (over.referee as FakeReferee | undefined) ?? new FakeReferee();
   // The real referee has each player's box key from enrolment; the fake reads the relay's record.
   referee.boxPkOf = (account) => store.device(account)?.player_box_pk;
+  // A relay runs only beside a contract that pins its referee (main.ts checks at boot); lobbies
+  // made from here on pin this one. (A wrapped referee leaves the chain's pins as they are.)
+  if (referee instanceof FakeReferee)
+    chain.pins = { referee_pk: toHex(referee.pk), vrf_pk: toHex(referee.pk), vrf_sender: PARENT };
   const carryKeys = over.carryKeys ?? newCarryKeys();
   const relay = createRelay({
     store,
@@ -33,6 +38,7 @@ export function setup(over: Partial<RelayDeps> = {}) {
     appId: "TEAM.app",
     environment: "development",
     token: "usdc.fakes.testnet",
+    vrfSender: PARENT,
     carryKeys,
     replay: {
       contract: CONTRACT,
@@ -114,8 +120,13 @@ export const MATCH = {
   max_players: 3,
 };
 
-export async function lobby(env: Env, extra: Record<string, unknown> = {}) {
-  const [a, b, c] = [player(env, "ana"), player(env, "bo"), player(env, "cy")] as [Player, Player, Player];
+export async function lobby(
+  env: Env,
+  extra: Record<string, unknown> = {},
+  /** How each player is enrolled; by default with `env`'s referee. */
+  enrol: (name: string) => Player = (name) => player(env, name),
+) {
+  const [a, b, c] = [enrol("ana"), enrol("bo"), enrol("cy")] as [Player, Player, Player];
   const r = await req(env, "POST", "/matches", { ...MATCH, start_by_ms: Date.now() + 600_000, ...extra }, a);
   expect(r.status).toBe(200);
   const id = String(r.json["match_id"]);
