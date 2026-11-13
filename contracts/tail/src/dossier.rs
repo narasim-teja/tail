@@ -5,7 +5,8 @@
 //! and `nft_transfer_call` always refuse, and there are no approvals (NEP-178), so no marketplace
 //! can move one. The token is minted by `register_for` (whose deposit pays for the largest record),
 //! and each settlement adds one entry per player (`record_settlement`): End's payout, End's refund
-//! for a broken rule, and the abort of a running match. A lobby that never started adds nothing.
+//! for a broken rule, and the abort of a running match, logging one NEP-171 `nft_metadata_update`
+//! for the tokens it changed. A lobby that never started adds nothing and logs nothing.
 //! The record keeps the last `DOSSIER_ENTRIES` entries and running totals, so it never grows past
 //! what registration paid for. `create_match`'s `requires` reads it: `join_match` refuses a player
 //! whose dossier is below the match's bar.
@@ -266,19 +267,31 @@ fn token(account_id: &AccountId, d: &Dossier) -> Token {
     }
 }
 
-/// NEP-297 `nft_mint`.
-pub fn emit_mint(owner: &AccountId) {
-    let data = json!([{ "owner_id": owner, "token_ids": [owner] }]);
+/// NEP-171 1.2.0 is the version that added `nft_metadata_update` (which `record_settlement`
+/// emits), and it says every NFT event, `nft_mint` included, carries version "1.2.0".
+const NEP171_EVENT_VERSION: &str = "1.2.0";
+
+/// A NEP-297 log of a NEP-171 event.
+fn emit_nep171(event: &str, data: &near_sdk::serde_json::Value) {
     env::log_str(&format!(
         "EVENT_JSON:{}",
-        json!({ "standard": "nep171", "version": "1.2.0", "event": "nft_mint", "data": data })
+        json!({ "standard": "nep171", "version": NEP171_EVENT_VERSION, "event": event, "data": data })
     ));
+}
+
+/// NEP-171 `nft_mint`.
+pub fn emit_mint(owner: &AccountId) {
+    emit_nep171("nft_mint", &json!([{ "owner_id": owner, "token_ids": [owner] }]));
 }
 
 /// The dossier entries a settled match adds: one per player, for players who hold a dossier (an
 /// account registered before dossiers existed has none until `mint_dossier`, and no storage
 /// was paid for one). `refunded` settlements count only as refunds; a payout counts the result,
 /// the tags landed and what was paid.
+///
+/// Each changed dossier is a token whose metadata (computed on read) is now different, so this
+/// logs one NEP-171 `nft_metadata_update` naming them in player order; an indexer that cached
+/// the card at mint refetches it. No dossier changed, no event: nothing is stale.
 pub fn record_settlement(
     dossiers: &mut LookupMap<AccountId, Dossier>,
     id: &MatchId,
@@ -289,10 +302,12 @@ pub fn record_settlement(
 ) {
     let now = env::block_timestamp_ms();
     let events: &[PlayEvent] = play.map_or(&[], |p| p.events.as_slice());
+    let mut changed: Vec<&AccountId> = Vec::with_capacity(m.players.len());
     for (i, p) in m.players.iter().enumerate() {
         let Some(d) = dossiers.get_mut(&p.account_id) else {
             continue;
         };
+        changed.push(&p.account_id);
         let i = i as u16;
         let (result, tags) = if refunded {
             d.refunded = d.refunded.saturating_add(1);
@@ -335,6 +350,9 @@ pub fn record_settlement(
             },
             now,
         );
+    }
+    if !changed.is_empty() {
+        emit_nep171("nft_metadata_update", &json!([{ "token_ids": changed }]));
     }
 }
 

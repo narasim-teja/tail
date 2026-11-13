@@ -4149,7 +4149,7 @@ fn a_match_whose_tag_does_not_follow_the_ring_is_refunded_at_end() {
     let logs = near_sdk::test_utils::get_logs();
     let event = logs
         .iter()
-        .find(|l| l.starts_with("EVENT_JSON:"))
+        .find(|l| l.starts_with(r#"EVENT_JSON:{"standard":"tail""#))
         .expect("a refund event");
     assert!(event.contains(r#""event":"match_refunded""#), "{event}");
     assert!(
@@ -4502,6 +4502,36 @@ fn dossier(fx: &Fx, who: &str) -> DossierView {
     fx.c.get_dossier(acc(who)).unwrap()
 }
 
+/// The NEP-171 events the last call logged, as near-sdk writes them (keys in insertion order).
+fn nep171_logs() -> Vec<String> {
+    near_sdk::test_utils::get_logs()
+        .into_iter()
+        .filter(|l| l.starts_with(r#"EVENT_JSON:{"standard":"nep171""#))
+        .collect()
+}
+
+/// NEP-171 1.2.0's `nft_metadata_update` naming `ids`, written out by hand so a change of name,
+/// version or shape shows up.
+fn metadata_update(ids: &[&str]) -> String {
+    let ids: Vec<String> = ids.iter().map(|i| format!(r#""{i}""#)).collect();
+    format!(
+        r#"EVENT_JSON:{{"standard":"nep171","version":"1.2.0","event":"nft_metadata_update","data":[{{"token_ids":[{}]}}]}}"#,
+        ids.join(",")
+    )
+}
+
+#[test]
+fn registering_logs_nft_mint_at_the_same_version_as_the_metadata_update() {
+    let mut fx = Fx::empty();
+    fx.register("alice.testnet");
+    assert_eq!(
+        near_sdk::test_utils::get_logs(),
+        [
+            r#"EVENT_JSON:{"standard":"nep171","version":"1.2.0","event":"nft_mint","data":[{"owner_id":"alice.testnet","token_ids":["alice.testnet"]}]}"#
+        ]
+    );
+}
+
 /// The card is the same bytes the TypeScript builder draws (`packages/brand`, golden vectors).
 #[test]
 fn the_dossier_card_matches_the_golden_vectors_byte_for_byte() {
@@ -4640,6 +4670,8 @@ fn ended_with_a_tag() -> (Fx, u16, u16, u16) {
 #[test]
 fn a_paid_out_match_adds_an_entry_to_every_players_dossier() {
     let (fx, h, t, o) = ended_with_a_tag();
+    // The End payout logs nothing else.
+    assert_eq!(near_sdk::test_utils::get_logs(), [metadata_update(&PLAYERS)]);
     let view = fx.view();
     let name = |i: u16| view.players[usize::from(i)].account_id.to_string();
     let final_root = fx.c.get_roots(hex::encode(fx.id)).unwrap().final_root.unwrap();
@@ -4688,6 +4720,8 @@ fn a_match_refunded_for_a_broken_rule_counts_only_as_a_refund() {
     // An off-ring Tag: End's replay refunds the match.
     fx.verdict(tag(ring[0], ring[2]));
     fx.end();
+    assert_eq!(nep171_logs(), [metadata_update(&PLAYERS)]);
+    assert_eq!(near_sdk::test_utils::get_logs().len(), 2, "and match_refunded");
     assert_eq!(fx.view().settled_as, Some(SettledAs::RefundedRuleViolation));
     for p in PLAYERS {
         let d = dossier(&fx, p);
@@ -4709,6 +4743,8 @@ fn an_aborted_running_match_is_recorded_as_a_refund_at_its_last_checkpoint() {
     fx.verdict(cp(10));
     fx.now += REFEREE_TIMEOUT_MS;
     fx.abort();
+    assert_eq!(nep171_logs(), [metadata_update(&PLAYERS)]);
+    assert_eq!(near_sdk::test_utils::get_logs().len(), 2, "and match_refunded");
     for p in PLAYERS {
         let d = dossier(&fx, p);
         assert_eq!((d.matches, d.refunded), (0, 1));
@@ -4723,9 +4759,97 @@ fn a_lobby_that_never_started_adds_nothing() {
     let mut fx = Fx::locked();
     fx.now += LOCK_MS;
     fx.abort();
+    assert_eq!(near_sdk::test_utils::get_logs(), Vec::<String>::new());
     for p in PLAYERS {
         assert_eq!(dossier(&fx, p).entries.len(), 0);
     }
+}
+
+/// Only dossiers that changed are named: an account from before dossiers has none until it mints
+/// one, and its settlement changes nothing for it.
+#[test]
+fn the_metadata_update_names_only_the_players_who_hold_a_dossier() {
+    let mut fx = migrated(Fx::running());
+    let deposit = dossier_deposit_attached(&fx);
+    ctx(&acc("bob.testnet"), fx.now, deposit);
+    fx.c.mint_dossier(acc("bob.testnet"));
+    assert_eq!(
+        near_sdk::test_utils::get_logs(),
+        [
+            r#"EVENT_JSON:{"standard":"nep171","version":"1.2.0","event":"nft_mint","data":[{"owner_id":"bob.testnet","token_ids":["bob.testnet"]}]}"#
+        ]
+    );
+    fx.now += REFEREE_TIMEOUT_MS;
+    fx.abort();
+    assert_eq!(nep171_logs(), [metadata_update(&["bob.testnet"])]);
+}
+
+/// The most an End logs: 12 players with 64-character ids, refunded for a broken rule, so it logs
+/// both `nft_metadata_update` and `match_refunded`, the latter counted with the longest violation
+/// text any rule and event index could give. NEAR allows a receipt 100 logs and 16,384 bytes of
+/// them in all.
+#[test]
+fn the_largest_settlement_logs_stay_far_below_the_receipt_log_limits() {
+    use tail_protocol::settle::{Check, Violation};
+    // At most 240 hints and 11 eliminations, so the last event index is 250.
+    let last_event = u32::try_from(MAX_HINTS).unwrap() + u32::from(MAX_PLAYERS) - 2;
+    let longest = [
+        Check::HintCount,
+        Check::HintTarget,
+        Check::TagRing,
+        Check::ForfeitRing,
+        Check::Credit,
+        Check::Pool,
+    ]
+    .into_iter()
+    .flat_map(|check| [None, Some(last_event)].map(|event| Violation { check, event }.describe().len()))
+    .max()
+    .unwrap();
+    let long = |p: &str| format!("{p}{}", "x".repeat(64 - p.len()));
+    let ids: Vec<String> = (0..MAX_PLAYERS).map(|i| long(&format!("p{i:02}"))).collect();
+    let mut fx = Fx::empty();
+    for p in &ids {
+        fx.register(p);
+        fx.top_up(p, &usdc(), STAKE);
+    }
+    fx.id = fx.create(MatchConfig {
+        max_players: MAX_PLAYERS,
+        ..cfg(usdc(), STAKE)
+    });
+    for p in &ids {
+        fx.join(p);
+    }
+    fx.lock();
+    let Verdict::Start {
+        ring_commit,
+        start_ms,
+        end_ms,
+        ..
+    } = fx.start_body()
+    else {
+        unreachable!()
+    };
+    fx.verdict(Verdict::Start {
+        players_hash: players_hash(&ids),
+        ring_commit,
+        start_ms,
+        end_ms,
+    });
+    // One hint target for a match without hints.
+    end_naming(&mut fx, vec![0]);
+    let violation = fx.view().violation.unwrap();
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    assert_eq!(nep171_logs(), [metadata_update(&ids)]);
+    let logs = near_sdk::test_utils::get_logs();
+    assert_eq!(logs.len(), 2);
+    let total = logs.iter().map(String::len).sum::<usize>() - violation.len() + longest;
+    println!(
+        "largest settlement: {} logs, at most {total} bytes ({} of them nft_metadata_update)",
+        logs.len(),
+        logs[0].len()
+    );
+    // Under a tenth of the byte limit: even ten such Ends batched into one `apply` would fit.
+    assert!(total <= 16_384 / 10, "{total} bytes");
 }
 
 #[test]
@@ -4880,9 +5004,11 @@ fn an_account_from_before_migrate_has_no_dossier_until_it_mints_one() {
     let mut fx = migrated(Fx::running());
     assert!(fx.c.get_dossier(acc("alice.testnet")).is_none());
     assert_eq!(fx.c.nft_total_supply(), U128(0));
-    // Its old match settles by abort, which records nothing for an account without a dossier.
+    // Its old match settles by abort, which records nothing for an account without a dossier,
+    // so no token changed and none is announced.
     fx.now += REFEREE_TIMEOUT_MS;
     fx.abort();
+    assert_eq!(nep171_logs(), Vec::<String>::new());
     let deposit = NearToken::from_yoctonear(fx.c.get_config().dossier_deposit.0);
     let why = refusal(|| {
         ctx(&acc("mallory.testnet"), fx.now, deposit);
