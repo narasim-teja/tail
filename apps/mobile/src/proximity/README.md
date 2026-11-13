@@ -17,7 +17,8 @@ It does:
 - **HUD transport**: the authenticated HUD socket, and opening each sealed HUD only if the
   match's pinned referee key signed it, for this seat (`hud.ts`, `referee.ts`).
 - **Mesh carry**: reports reach the relay through nearby phones while this one is offline
-  (`carry/`).
+  (`carry/`). Off by default: on two iPhones it delivered reports, but with it on each phone heard
+  the other's beacon in only 1 epoch of 8 (the app's README has the numbers).
 - **Receipts**: after the match, every report checked against the log root anchored on NEAR, and
   presence proofs ("these two phones met") from the replay log (`receipts.ts`).
 - **Log monitor**: every signed HUD root, and every root anchored on NEAR, checked with consistency
@@ -95,5 +96,9 @@ one leaves it for anywhere but `src/lib`, `modules/`, `test/` or (in tests) the 
 
 ## Status
 
-The same as the app's: these paths pass their tests here (`bun test`); the protocol v2 parts
-(signed HUDs, chain recovery, receipts, the log monitor, mesh carry) have not run on a phone yet.
+The same as the app's: these paths pass their tests here (`bun test`). On 2026-11-13 the beacon
+and scan, batches, signed HUDs, the log monitor's consistency checks and the receipts ran on two
+iPhones in a protocol v2 match, indoors, and mesh carry delivered reports between them in another
+match while crowding out the beacon. Chain recovery (no report was refused), the monitor's fork
+and relay-fault paths, presence proofs shared from a phone, and Leave match's `stopReporting`
+mid-hunt with `resumeReporting` after it have not run on a phone yet.
