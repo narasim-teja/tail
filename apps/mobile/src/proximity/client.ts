@@ -456,7 +456,7 @@ export class ProximityClient {
     }
     this.uploader.kick();
     if (this.uploader.offline()) await this.offerToMesh();
-    if (this.now() >= k.endMs) this.update({ over: true });
+    if (this.now() >= k.endMs) this.finish();
     this.refresh();
   }
 
@@ -577,6 +577,16 @@ export class ProximityClient {
     });
   }
 
+  /**
+   * The match is over, by its clock or the relay's word: nothing more to report, so the beacon,
+   * scan, location and pocket mode (which keeps the screen awake) stop. The outbox still uploads
+   * and the HUD socket stays open for the result.
+   */
+  private finish(): void {
+    this.update({ over: true });
+    this.stopReporting();
+  }
+
   private stopRadio(): void {
     const r = this.d.radio;
     r.stopScan();
@@ -611,7 +621,7 @@ export class ProximityClient {
       [e - 1, e, e + 1].filter((x) => x >= 0).map((x) => toHex(beaconTag(k.kTag, x))),
     );
     this.update({ epoch: e, token });
-    if (this.now() >= Number(k.endMs)) this.update({ over: true });
+    if (this.now() >= Number(k.endMs)) this.finish();
   }
 
   private onSighting(s: RadioSighting): void {
@@ -623,7 +633,7 @@ export class ProximityClient {
   }
 
   private scheduleBatch(): void {
-    if (!this.running) return;
+    if (!this.reporting) return;
     this.batchTimer = this.timers.setTimeout(() => {
       this.batchTimer = null;
       void this.batchNow().finally(() => this.scheduleBatch());
@@ -701,8 +711,7 @@ export class ProximityClient {
         this.onSealedHud(m.sealed);
         return;
       case "over":
-        this.update({ over: true });
-        this.stopReporting();
+        this.finish();
         return;
       default:
         this.on.frame.emit(m);

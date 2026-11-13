@@ -292,6 +292,19 @@ describe("proximity client", () => {
     expect(notices).toEqual([]);
   });
 
+  test("time up stops the radio and the batch loop, and keeps the socket for the result", async () => {
+    const r = rig();
+    r.client.start(keys);
+    r.t.advance(10 * 60_000 + BATCH_MS);
+    await flush();
+    expect(r.client.status().over).toBe(true);
+    expect(r.calls.slice(-4)).toEqual(["stopScan", "stopBeacon", "stopLocation", "pocket:false"]);
+    const sent = r.batches().length;
+    r.t.advance(5 * BATCH_MS);
+    await flush();
+    expect(r.batches()).toHaveLength(sent);
+  });
+
   test("one client is for one match", () => {
     const r = rig();
     r.client.start(keys);
