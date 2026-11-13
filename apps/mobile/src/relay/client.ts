@@ -263,9 +263,21 @@ export class RelayClient extends RelayTransport {
   }
 
   /** Whether the referee the relay runs with now holds this account's device. */
-  async enrolStatus(signer: Signer): Promise<{ accountId: string; withReferee: boolean }> {
+  /**
+   * Whether the relay's referee holds this account's device, and the App Attest keyId the relay
+   * holds for it (standard base64 of SHA256 of the key, Apple's keyId); null from a relay too old
+   * to send it.
+   */
+  async enrolStatus(
+    signer: Signer,
+  ): Promise<{ accountId: string; withReferee: boolean; appAttestKeyId: string | null }> {
     const r = await this.send(await this.sign(signer, "GET", "/enroll/status", ""));
-    return { accountId: read.str(r, "account_id"), withReferee: read.bool(r, "with_referee") };
+    const keyId = r["app_attest_key_id"];
+    return {
+      accountId: read.str(r, "account_id"),
+      withReferee: read.bool(r, "with_referee"),
+      appAttestKeyId: keyId === undefined || keyId === null ? null : read.str(r, "app_attest_key_id"),
+    };
   }
 
   /** A challenge to refresh the signer's own enrolment (a new referee needs a fresh attestation). */

@@ -25,7 +25,16 @@ import {
   refreshEnrolment,
   withRefresh,
 } from "./enrol";
-import { type Identity, loadIdentity, nearSigner, type SecretStore, saveAccount } from "./identity";
+import {
+  attestKeyIds,
+  type Identity,
+  loadIdentity,
+  nearSigner,
+  type SecretStore,
+  saveAccount,
+  savePendingAttestKeyId,
+  settleAttestKeyId,
+} from "./identity";
 
 function memoryStore(): SecretStore & { map: Map<string, string> } {
   const map = new Map<string, string>();
@@ -376,7 +385,9 @@ describe("re-enrolling only when no hunt may be running", () => {
     let reenrols = 0;
     const out = await ensureEnrolled({
       hunt: typeof facts === "function" ? facts : () => facts,
-      withReferee: async () => opts.withReferee ?? false,
+      keys: async () => ({ current: "a2V5", pending: null }),
+      status: async () => ({ withReferee: opts.withReferee ?? false, keyId: null }),
+      settle: async () => undefined,
       reenrol: async () => {
         reenrols++;
         await opts.reenrol?.();
@@ -422,9 +433,96 @@ describe("re-enrolling only when no hunt may be running", () => {
     await expect(run(none, { reenrol: () => Promise.reject(other) })).rejects.toThrow("attestation");
     const down = await ensureEnrolled({
       hunt: () => none,
-      withReferee: () => Promise.reject(new Error("offline")),
+      keys: async () => ({ current: "a2V5", pending: null }),
+      status: () => Promise.reject(new Error("offline")),
+      settle: async () => undefined,
       reenrol: async () => undefined,
     });
     expect(down).toBe("unknown");
+  });
+});
+
+describe("the App Attest key the relay holds", () => {
+  const none: HuntFacts = { session: false, matchId: null, phase: null };
+
+  /** ensureEnrolled against this Keychain and a relay that holds `relayKey` for the account. */
+  const check = async (s: SecretStore, relayKey: string | null, withReferee = true) => {
+    let reenrols = 0;
+    const out = await ensureEnrolled({
+      hunt: () => none,
+      keys: () => attestKeyIds(s),
+      status: async () => ({ withReferee, keyId: relayKey }),
+      settle: (k) => settleAttestKeyId(s, k),
+      reenrol: async () => {
+        reenrols++;
+      },
+    });
+    return { out, reenrols, keys: await attestKeyIds(s) };
+  };
+
+  test("a refresh the relay took but whose answer was lost is kept as pending, then settled by the relay's key id", async () => {
+    const { s } = await enrolled();
+    await settleAttestKeyId(s, "b2xk");
+    const fake = fakeAttestation();
+    const fetchFn = (async (url: string) => {
+      if (new URL(url).pathname === "/enroll/refresh/challenge")
+        return Response.json({
+          challenge: toB64(new Uint8Array(32)),
+          account_id: "alice.tail.testnet",
+          expires_ms: 1,
+        });
+      // The relay committed the new key, then the answer never arrived.
+      throw new TypeError("The network connection was lost.");
+    }) as unknown as typeof fetch;
+    const attest: Attestor = {
+      isSupported: true,
+      generateKey: async () => fake.keyId,
+      attestKey: async () => fake.attestation,
+    };
+    await expect(
+      refreshEnrolment(await loadIdentity(s), {
+        relay: new RelayClient("http://r", { fetch: fetchFn, contractId: "tail.tail.testnet" }),
+        attest,
+        secrets: s,
+      }),
+    ).rejects.toThrow();
+    expect(await attestKeyIds(s)).toEqual({ current: "b2xk", pending: fake.keyId });
+    // The relay says it holds the new key, and its referee has the device: no second refresh.
+    expect(await check(s, fake.keyId)).toEqual({
+      out: "enrolled",
+      reenrols: 0,
+      keys: { current: fake.keyId, pending: null },
+    });
+  });
+
+  test("the relay's status names the key it holds, or nothing when it is too old to say", async () => {
+    const status = (answer: object) =>
+      new RelayClient("http://r", {
+        contractId: "tail.tail.testnet",
+        fetch: (async () => Response.json(answer)) as unknown as typeof fetch,
+      }).enrolStatus({ accountId: "alice.tail.testnet", sign: () => new Uint8Array(64) });
+    const base = { account_id: "alice.tail.testnet", with_referee: true };
+    expect(await status({ ...base, app_attest_key_id: "bmV3" })).toMatchObject({ appAttestKeyId: "bmV3" });
+    expect(await status(base)).toMatchObject({ withReferee: true, appAttestKeyId: null });
+  });
+
+  test("the relay holding the current key drops the pending one; a key the phone doesn't have, or a pending one the relay can't name, refreshes", async () => {
+    const pending = async () => {
+      const { s } = await enrolled();
+      await settleAttestKeyId(s, "b2xk");
+      await savePendingAttestKeyId(s, "bmV3");
+      return s;
+    };
+    expect(await check(await pending(), "b2xk")).toEqual({
+      out: "enrolled",
+      reenrols: 0,
+      keys: { current: "b2xk", pending: null },
+    });
+    expect((await check(await pending(), "b3RoZXI=")).reenrols).toBe(1);
+    // An older relay that does not send its key id: only a fresh key settles which one it holds.
+    expect((await check(await pending(), null)).reenrols).toBe(1);
+    const { s } = await enrolled();
+    await settleAttestKeyId(s, "b2xk");
+    expect((await check(s, null)).out).toBe("enrolled");
   });
 });

@@ -15,7 +15,14 @@ import {
   refreshEnrolment,
   withRefresh,
 } from "../identity/enrol";
-import { forgetAccount, type Identity, loadIdentity, nearSigner } from "../identity/identity";
+import {
+  attestKeyIds,
+  forgetAccount,
+  type Identity,
+  loadIdentity,
+  nearSigner,
+  settleAttestKeyId,
+} from "../identity/identity";
 import { keychain } from "../identity/keychain";
 import { anchoredRoots, matchFacts } from "../near/chain";
 import { NearRpc } from "../near/rpc";
@@ -407,7 +414,16 @@ class AppModel {
     if (!id?.accountId || !this.settings.relayUrl) return;
     await ensureEnrolled({
       hunt: () => this.huntFacts,
-      withReferee: async () => (await this.relay.enrolStatus(nearSigner(id))).withReferee,
+      // From the Keychain, not memory: a refresh that failed after sending left its key there.
+      keys: () => attestKeyIds(keychain),
+      status: async () => {
+        const s = await this.relay.enrolStatus(nearSigner(id));
+        return { withReferee: s.withReferee, keyId: s.appAttestKeyId };
+      },
+      settle: async (keyId) => {
+        await settleAttestKeyId(keychain, keyId);
+        if (this.identity) this.identity = { ...this.identity, attestKeyId: keyId };
+      },
       reenrol: () => this.reenrol(),
     }).catch((e: unknown) => this.fail(e));
   }

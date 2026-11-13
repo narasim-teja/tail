@@ -20,12 +20,19 @@
 // this phone holds; the referee replaces its record for the account only with that signature.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { enrollClientDataHash, rebindDigest } from "@tail/protocol";
+import { enrollClientDataHash, equal, rebindDigest } from "@tail/protocol";
 import { fromB64, toB64 } from "../lib/b64";
 import { RelayError } from "../proximity/relay";
 import { type RelayClient, type RelayPhase, refreshNeeded } from "../relay/client";
 import { attestedPublicKey } from "./attestedKey";
-import { type Identity, nearSigner, type SecretStore, saveAccount, saveAttestKeyId } from "./identity";
+import {
+  type Identity,
+  nearSigner,
+  type SecretStore,
+  saveAccount,
+  savePendingAttestKeyId,
+  settleAttestKeyId,
+} from "./identity";
 
 export interface Attestor {
   readonly isSupported: boolean;
@@ -71,6 +78,7 @@ export async function enrol(
   if (problem) throw new Error(problem);
   // A key is attested once. A fresh one per attempt means a failed enrolment can simply retry.
   const keyId = await deps.attest.generateKey();
+  await savePendingAttestKeyId(deps.secrets, keyId);
   const hash = enrollClientDataHash(ch.challenge, ch.accountId, id.boxPk, id.nearPk);
   const attestation = await deps.attest.attestKey(keyId, toB64(hash));
   deps.onStep?.("Making your account");
@@ -83,7 +91,7 @@ export async function enrol(
     rebindSig: rebindSig(ch.accountId, id, attestation, keyId),
   });
   if (r.accountId !== ch.accountId) throw new Error("The relay enrolled a different account.");
-  await saveAttestKeyId(deps.secrets, keyId);
+  await settleAttestKeyId(deps.secrets, keyId);
   await saveAccount(deps.secrets, r.accountId);
   return { ...id, attestKeyId: keyId, accountId: r.accountId };
 }
@@ -106,6 +114,9 @@ export async function refreshEnrolment(
   const ch = await deps.relay.refreshChallenge(signer);
   if (ch.accountId !== accountId) throw new Error("The relay offered to refresh a different account.");
   const keyId = await deps.attest.generateKey();
+  // Kept before it is sent: the relay may take it and the answer still be lost, and then only
+  // this id says which key the referee holds (ensureEnrolled resolves it).
+  await savePendingAttestKeyId(deps.secrets, keyId);
   const hash = enrollClientDataHash(ch.challenge, accountId, id.boxPk, id.nearPk);
   const attestation = await deps.attest.attestKey(keyId, toB64(hash));
   const r = await deps.relay.refreshEnrolment(signer, {
@@ -116,7 +127,7 @@ export async function refreshEnrolment(
     rebindSig: rebindSig(accountId, id, attestation, keyId),
   });
   if (r.accountId !== accountId) throw new Error("The relay refreshed a different account.");
-  await saveAttestKeyId(deps.secrets, keyId);
+  await settleAttestKeyId(deps.secrets, keyId);
   return { ...id, attestKeyId: keyId };
 }
 
@@ -167,23 +178,61 @@ export const inMatch = (e: unknown): boolean =>
   e instanceof RelayError && e.status === 409 && e.detail["code"] === "in_match";
 
 /**
+ * What the relay says about this phone's enrolment (`GET /enroll/status`): whether the referee it
+ * runs with holds the device, and the App Attest keyId it holds for the account (null from a
+ * relay too old to say).
+ */
+export interface DeviceStatus {
+  withReferee: boolean;
+  keyId: string | null;
+}
+
+/** Two keyIds (base64 of SHA256 of the key) name the same key. */
+function sameKey(a: string, b: string): boolean {
+  try {
+    return equal(fromB64(a), fromB64(b));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Asks the relay whether its referee holds this phone's device, and re-enrols if not, unless a
- * hunt may be running (asked before and after the relay answers, which takes time). "unknown":
- * the relay could not be reached or did not say; the next Start says so if it matters.
+ * hunt may be running (asked before and after the relay answers, which takes time). The relay's
+ * keyId settles a key sent earlier whose answer was lost: the pending key becomes the phone's
+ * when the relay holds it, is dropped when it holds the current one, and a key the phone does
+ * not have at all means a refresh. A relay that does not name its key leaves a pending one
+ * unresolved, so that also refreshes. "unknown": the relay could not be reached; the next Start
+ * says so if it matters.
  */
 export async function ensureEnrolled(deps: {
   hunt: () => HuntFacts;
-  withReferee: () => Promise<boolean>;
+  /** The keyIds the Keychain holds: the settled one and one sent but not answered. */
+  keys: () => Promise<{ current: string | null; pending: string | null }>;
+  status: () => Promise<DeviceStatus>;
+  /** The relay holds this key: make it the phone's key and clear the pending one. */
+  settle: (keyId: string) => Promise<void>;
   reenrol: () => Promise<void>;
 }): Promise<"enrolled" | "refreshed" | "not now" | "unknown"> {
   if (!mayReenrol(deps.hunt())) return "not now";
-  let withReferee: boolean;
+  let status: DeviceStatus;
   try {
-    withReferee = await deps.withReferee();
+    status = await deps.status();
   } catch {
     return "unknown";
   }
-  if (withReferee) return "enrolled";
+  const { current, pending } = await deps.keys();
+  let stale = !status.withReferee;
+  if (status.keyId === null) {
+    if (pending !== null) stale = true;
+  } else if (pending !== null && sameKey(status.keyId, pending)) {
+    await deps.settle(pending);
+  } else if (current !== null && sameKey(status.keyId, current)) {
+    if (pending !== null) await deps.settle(current);
+  } else {
+    stale = true;
+  }
+  if (!stale) return "enrolled";
   if (!mayReenrol(deps.hunt())) return "not now";
   try {
     await deps.reenrol();

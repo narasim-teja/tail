@@ -19,6 +19,7 @@ const K = {
   boxSk: "tail.playerBox.sk",
   nearSk: "tail.near.sk",
   attestKeyId: "tail.appAttest.keyId",
+  pendingAttestKeyId: "tail.appAttest.pendingKeyId",
   account: "tail.account",
 } as const;
 
@@ -27,7 +28,10 @@ export interface Identity {
   boxPk: Uint8Array;
   nearSk: Uint8Array;
   nearPk: Uint8Array;
-  /** App Attest keyId (base64), once generated. */
+  /**
+   * App Attest keyId (base64) the relay holds for this phone, once enrolled. A new key sent for
+   * enrolment or refresh is kept apart as pending until the relay answers (attestKeyIds).
+   */
   attestKeyId: string | null;
   /** Set after enrolment. */
   accountId: string | null;
@@ -57,8 +61,23 @@ export async function loadIdentity(s: SecretStore): Promise<Identity> {
   };
 }
 
-export const saveAttestKeyId = (s: SecretStore, keyId: string | null) =>
-  keyId === null ? s.delete(K.attestKeyId) : s.set(K.attestKeyId, keyId);
+/** The settled and the pending App Attest keyIds, as the Keychain has them now. */
+export const attestKeyIds = async (s: SecretStore) => ({
+  current: await s.get(K.attestKeyId),
+  pending: await s.get(K.pendingAttestKeyId),
+});
+
+/** Kept before the key is sent, so an answer lost on the way back does not lose the key. */
+export const savePendingAttestKeyId = (s: SecretStore, keyId: string) => s.set(K.pendingAttestKeyId, keyId);
+
+/**
+ * The relay holds `keyId` for this phone: it is the key from now on, and nothing is pending. Set
+ * before the pending one is cleared, so a crash between the two leaves both naming the same key.
+ */
+export async function settleAttestKeyId(s: SecretStore, keyId: string): Promise<void> {
+  await s.set(K.attestKeyId, keyId);
+  await s.delete(K.pendingAttestKeyId);
+}
 export const saveAccount = (s: SecretStore, accountId: string) => s.set(K.account, accountId);
 /**
  * Forgets which account this phone plays as, keeping every key: the old account still answers to
