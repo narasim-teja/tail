@@ -280,6 +280,11 @@ The contract stores only `zone_hash` = SHA256("tail/zone/v1" ‖ borsh(zone, saf
 circles as `{lat_e7 i32, lon_e7 i32, radius_m u32}`; the replay bundle carries the zone so the replay can
 check it.
 
+Every NEAR view the relay makes has a 4 s deadline and every `apply` an 8 s one (`near.ts`), so
+a stuck RPC call fails that step and the next step tries again; without them one call could
+hold a match for minutes. An `apply` past its deadline may still land: the next flush reads the
+chain's seq before it sends anything again.
+
 The relay restarts the loop of every running match on boot (state lives in SQLite), and reopens
 the lobby of a Start the last run left unfinished; one whose lease has not run out yet (a
 restart within 120 s of a crash) is reopened as soon as it does. On SIGINT

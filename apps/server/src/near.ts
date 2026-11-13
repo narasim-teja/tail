@@ -32,6 +32,24 @@ export const PLAYER_FUNDING = "0.1";
 export const TOKEN_STORAGE = "0.00125";
 /** Each verdict burns at most ~2.5 Tgas on the contract; 20 per call stays well inside 300 Tgas. */
 export const MAX_VERDICTS_PER_APPLY = 20;
+/**
+ * Deadlines for the calls the tick loop makes, so one stuck RPC fails that step and the next
+ * step (TICK_MS later) tries again. Without them a view on a connection that never answers
+ * waits out Bun's own fetch timeout (360 s measured on Bun 1.4.4, not retried by near-api-js),
+ * and 500, 503 and 408 answers are retried for about 85 s. An `apply` that runs out may still land; the next
+ * flush reads the chain's seq before it sends anything again.
+ */
+export const VIEW_DEADLINE_MS = 4_000;
+export const APPLY_DEADLINE_MS = 8_000;
+
+/** `p`, or a rejection once `ms` have passed; the call itself is left to finish or fail. */
+function deadline<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`NEAR RPC ${what} did not answer within ${ms} ms`)), ms);
+  });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
 
 export interface ContractConfig {
   owner: string;
@@ -200,6 +218,8 @@ export class NearChain implements Chain {
       relayPrivateKey: string;
       contract: string;
       token: string;
+      /** Tests shorten them. */
+      deadlines?: { viewMs: number; applyMs: number };
     },
     private readonly log: Logger,
   ) {
@@ -210,12 +230,16 @@ export class NearChain implements Chain {
   // Optimistic finality: the loop reads get_match().seq right after its own apply, and a
   // `final` read lags a few blocks, which would resend verdicts the chain already has.
   private view<T>(method: string, args: Record<string, unknown>, contractId = this.o.contract): Promise<T> {
-    return this.provider.callFunction({
-      contractId,
+    return deadline(
+      this.provider.callFunction({
+        contractId,
+        method,
+        args,
+        blockQuery: { finality: "optimistic" },
+      }) as Promise<T>,
+      this.o.deadlines?.viewMs ?? VIEW_DEADLINE_MS,
       method,
-      args,
-      blockQuery: { finality: "optimistic" },
-    }) as Promise<T>;
+    );
   }
 
   config() {
@@ -348,12 +372,16 @@ export class NearChain implements Chain {
   }
 
   async apply(verdicts: Uint8Array[], proofs: ApplyProof[]) {
-    const res = await this.relay.callFunctionRaw({
-      contractId: this.o.contract,
-      methodName: "apply",
-      args: { verdicts: verdicts.map((v) => Buffer.from(v).toString("base64")), proofs },
-      gas: teraToGas(Math.min(300, 100 + 10 * verdicts.length)),
-    });
+    const res = await deadline(
+      this.relay.callFunctionRaw({
+        contractId: this.o.contract,
+        methodName: "apply",
+        args: { verdicts: verdicts.map((v) => Buffer.from(v).toString("base64")), proofs },
+        gas: teraToGas(Math.min(300, 100 + 10 * verdicts.length)),
+      }),
+      this.o.deadlines?.applyMs ?? APPLY_DEADLINE_MS,
+      "apply",
+    );
     return res.transaction.hash;
   }
 
