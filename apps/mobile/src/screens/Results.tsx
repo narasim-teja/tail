@@ -5,11 +5,11 @@
 import { useEffect, useState } from "react";
 import { Animated, Linking, Pressable, StyleSheet, View } from "react-native";
 import type { RefereeKind } from "../relay/client";
-import { type Receipts, useApp } from "../state/app";
+import { useApp } from "../state/app";
 import { handlerProblem } from "../tail/handler";
 import { LOG_FORKED } from "../tail/hud";
 import { handleOf, howVerified, money, type Outcome, resultOutcome } from "../tail/huntModel";
-import { type FinalMoney, finalMoney, receiptLines, relayFaultLine } from "../tail/results";
+import { type FinalMoney, finalMoney, type Receipts, receiptLines, relayFaultLine } from "../tail/results";
 import { Icon, Mark } from "../ui/brand";
 import { RollingMoney } from "../ui/game";
 import {
@@ -270,17 +270,15 @@ function VerifiedIcon() {
 export function Results() {
   const app = useApp();
   useEffect(() => {
-    void app.refresh();
     void app.checkRelay();
+    // Checked once on arrival (to the latest checkpoint while the match runs); the watch checks
+    // again once End's root is anchored.
+    void app.checkReceipts();
+    return app.watchResults();
   }, [app]);
   const snap = app.session?.snapshot();
   const mine = app.match?.chain?.players.find((p) => p.accountId === app.me);
   const ended = app.match?.phase === "ended" || app.match?.chain?.phase === "ended";
-  // Checked once on arrival and again at the end, when End's root covers every report.
-  useEffect(() => {
-    void app.checkReceipts();
-    if (ended) void app.findMeetings();
-  }, [app, ended]);
   const outcome = resultOutcome({
     hudStatus: snap?.hud?.status ?? null,
     out: !!mine?.out,

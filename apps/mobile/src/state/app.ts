@@ -35,13 +35,7 @@ import type { CarryPlan } from "../proximity/client";
 import { realTimers } from "../proximity/epoch";
 import { HudSocket, openPlayerKeys } from "../proximity/hud";
 import { forkJson, type LogFork, LogMonitor, type RelayFault } from "../proximity/monitor";
-import {
-  checkReceipts,
-  type Meeting,
-  meetings,
-  presenceJson,
-  type ReceiptResult,
-} from "../proximity/receipts";
+import { checkReceipts, type Meeting, meetings, presenceJson } from "../proximity/receipts";
 import { checkedRefereeBox } from "../proximity/referee";
 import { type CarryKey, isMatchId, matchIdBytes, RelayError } from "../proximity/relay";
 import {
@@ -55,6 +49,7 @@ import {
 } from "../relay/client";
 import { checkHandlerLines, type HandlerCheck } from "../tail/handler";
 import { TailHunt } from "../tail/hunt";
+import { type Receipts, watchResults } from "../tail/results";
 import { checkedZone, type Zone } from "../tail/zone";
 import { assertWith, attestor, radioPort } from "./device";
 import { files } from "./files";
@@ -133,14 +128,6 @@ export interface Briefing {
   /** The relay's keys for carried reports; null when the relay has none (carry stays off). */
   carryKey: CarryKey | null;
 }
-
-/** Results' check that every report is in the log anchored on NEAR (proximity/receipts.ts). */
-export type Receipts =
-  | { kind: "idle" }
-  | { kind: "checking" }
-  | { kind: "none"; why: string }
-  | { kind: "done"; result: ReceiptResult }
-  | { kind: "error"; message: string };
 
 class AppModel {
   settings: Settings = DEFAULTS;
@@ -895,6 +882,17 @@ class AppModel {
 
   // ── Results: receipts and presence proofs ───────────────────────────────────────────────
 
+  /** Results reads the match until End is in and checked (tail/results.ts); returns its stop. */
+  watchResults(): () => void {
+    return watchResults({
+      refresh: () => this.refresh(),
+      ended: () => this.match?.phase === "ended" || this.match?.chain?.phase === "ended",
+      receipts: () => this.receipts,
+      checkReceipts: () => this.checkReceipts(),
+      findMeetings: () => this.findMeetings(),
+    });
+  }
+
   /**
    * Checks every report this phone sent against the newest root NEAR anchored for the match:
    * End's once there is one, else the latest checkpoint. Roots and players come from NEAR
@@ -916,10 +914,16 @@ class AppModel {
       const player = facts?.players.indexOf(me) ?? -1;
       const root = roots.final ?? roots.all.at(-1) ?? null;
       const reports = this.loadRecord(id).reports;
-      if (player < 0) this.receipts = { kind: "none", why: "You are not a player in this match on NEAR." };
-      else if (!root) this.receipts = { kind: "none", why: "No log root is anchored on NEAR yet." };
+      if (player < 0)
+        this.receipts = { kind: "none", why: "You are not a player in this match on NEAR.", final: true };
+      else if (!root)
+        this.receipts = { kind: "none", why: "No log root is anchored on NEAR yet.", final: false };
       else if (reports.length === 0)
-        this.receipts = { kind: "none", why: "This phone kept no reports for this match." };
+        this.receipts = {
+          kind: "none",
+          why: "This phone kept no reports for this match.",
+          final: roots.final !== null,
+        };
       else {
         const relay = this.relay;
         const result = await checkReceipts({

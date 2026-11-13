@@ -19,9 +19,9 @@ import { PrimerView } from "../screens/Primer";
 import { ProfileView } from "../screens/Profile";
 import { ResultsView } from "../screens/Results";
 import { ScanView } from "../screens/Scan";
-import type { Receipts } from "../state/app";
 import type { HuntModel } from "../tail/huntModel";
 import { hintOptions } from "../tail/huntModel";
+import type { Receipts } from "../tail/results";
 import { color, space, text } from "../ui/theme";
 
 const NOW = 1_800_000_000_000;

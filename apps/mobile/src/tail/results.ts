@@ -1,9 +1,64 @@
 // What Results says about a receipt check (proximity/receipts.ts), in TAIL's words.
 
 import type { Settlement } from "../near/chain";
+import { realTimers, type Timers } from "../proximity/epoch";
 import type { RelayFault } from "../proximity/monitor";
 import type { ReceiptResult } from "../proximity/receipts";
 import { RELAY_BAD_PROOF, rejectReason } from "./hud";
+
+/**
+ * Results' check that every report is in the log anchored on NEAR (proximity/receipts.ts).
+ * `none.final`: nothing more can change it (not a player, or End's root is in and there was
+ * nothing to check); false while no root is anchored yet.
+ */
+export type Receipts =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "none"; why: string; final: boolean }
+  | { kind: "done"; result: ReceiptResult }
+  | { kind: "error"; message: string };
+
+/** The receipts were checked against End's root, or there is nothing left to check. */
+export const receiptsFinal = (r: Receipts): boolean =>
+  (r.kind === "done" && r.result.final) || (r.kind === "none" && r.final);
+
+/** How often Results reads the match again while it waits for End. */
+export const RESULTS_POLL_MS = 5_000;
+
+/**
+ * Keeps Results reading until it has all it will get. The lobby poll stops once a hunt runs, and
+ * Results can open long before End (a tagged player): without this, End would never be seen, so
+ * no replay link, no presence proofs, and receipts checked only to the last checkpoint. Each
+ * round reads the match; once it has ended, the receipts are checked again until End's root
+ * covers them, and the presence proofs are looked for. Returns a function that stops it.
+ */
+export function watchResults(d: {
+  refresh: () => Promise<void>;
+  ended: () => boolean;
+  receipts: () => Receipts;
+  checkReceipts: () => Promise<void>;
+  findMeetings: () => Promise<void>;
+  timers?: Timers;
+}): () => void {
+  const timers = d.timers ?? realTimers;
+  let stopped = false;
+  let timer: unknown = null;
+  const round = async () => {
+    timer = null;
+    await d.refresh();
+    if (d.ended()) {
+      if (!receiptsFinal(d.receipts())) await d.checkReceipts();
+      await d.findMeetings();
+    }
+    if (stopped || (d.ended() && receiptsFinal(d.receipts()))) return;
+    timer = timers.setTimeout(() => void round(), RESULTS_POLL_MS);
+  };
+  void round();
+  return () => {
+    stopped = true;
+    if (timer !== null) timers.clearTimeout(timer);
+  };
+}
 
 /**
  * Results' quiet line about the relay's bad log proofs. It blames the relay, not the referee, so

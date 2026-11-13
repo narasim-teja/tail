@@ -1,8 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { RejectCode } from "@tail/protocol";
+import { fakeTime } from "../../test/fake-time";
 import type { RelayFault } from "../proximity/monitor";
 import type { ReceiptResult } from "../proximity/receipts";
-import { finalMoney, receiptLines, relayFaultLine } from "./results";
+import {
+  finalMoney,
+  RESULTS_POLL_MS,
+  type Receipts,
+  receiptLines,
+  receiptsFinal,
+  relayFaultLine,
+  watchResults,
+} from "./results";
 
 const result = (o: Partial<ReceiptResult>): ReceiptResult => ({
   size: 8,
@@ -110,5 +119,55 @@ describe("final money", () => {
     expect(relayFaultLine({ ...fault, count: 3, outstanding: false }, false)).toBe(
       "The relay sent a log proof that didn't check out 3 times. A later check passed.",
     );
+  });
+});
+
+describe("Results keeps reading until the match is over and checked", () => {
+  test("it polls while the match runs, re-checks the receipts once End's root is anchored, then stops", async () => {
+    const t = fakeTime(0);
+    let ended = false;
+    let receipts: Receipts = { kind: "done", result: result({ final: false }) };
+    const calls: string[] = [];
+    const flush = async () => {
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+    };
+    const stop = watchResults({
+      refresh: async () => {
+        calls.push("refresh");
+      },
+      ended: () => ended,
+      receipts: () => receipts,
+      checkReceipts: async () => {
+        calls.push("receipts");
+        receipts = { kind: "done", result: result({ final: ended }) };
+      },
+      findMeetings: async () => {
+        calls.push("meetings");
+      },
+      timers: t.timers,
+    });
+    await flush();
+    t.advance(RESULTS_POLL_MS);
+    await flush();
+    // While the match runs: only the match is read again; the checkpoint check stands.
+    expect(calls).toEqual(["refresh", "refresh"]);
+    ended = true;
+    t.advance(RESULTS_POLL_MS);
+    await flush();
+    expect(calls.slice(2)).toEqual(["refresh", "receipts", "meetings"]);
+    t.advance(10 * RESULTS_POLL_MS);
+    await flush();
+    expect(calls).toHaveLength(5);
+    stop();
+  });
+
+  test("receipts are final once checked against End's root, or when there is nothing to check", () => {
+    expect(receiptsFinal({ kind: "done", result: result({ final: true }) })).toBe(true);
+    expect(receiptsFinal({ kind: "done", result: result({ final: false }) })).toBe(false);
+    expect(receiptsFinal({ kind: "none", why: "x", final: true })).toBe(true);
+    expect(receiptsFinal({ kind: "none", why: "No log root is anchored on NEAR yet.", final: false })).toBe(
+      false,
+    );
+    expect(receiptsFinal({ kind: "error", message: "offline" })).toBe(false);
   });
 });
