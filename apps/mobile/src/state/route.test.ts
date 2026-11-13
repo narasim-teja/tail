@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type RouteFacts, routeFor } from "./route";
+import { autoBrief, type RouteFacts, routeFor } from "./route";
 
 const base: RouteFacts = {
   ready: true,
@@ -43,5 +43,17 @@ describe("which screen shows", () => {
     expect(routeFor({ ...base, phase: undefined })).toBe("lobby");
     expect(routeFor({ ...base, phase: "ended" })).toBe("results");
     expect(routeFor({ ...base, resultsNow: true, session: { over: false, shown: true } })).toBe("results");
+  });
+});
+
+describe("the briefing reads the orders by itself", () => {
+  test("when nothing is in flight and its own last try did not fail; another action's error does not stop it", () => {
+    const idle = { briefed: false, busy: null, briefError: null };
+    expect(autoBrief(idle)).toBe(true);
+    expect(autoBrief({ ...idle, briefed: true })).toBe(false);
+    // The host's own Start may still run when the match goes live: wait for it.
+    expect(autoBrief({ ...idle, busy: "Starting" })).toBe(false);
+    // Its own failure waits for Try again, so it does not loop.
+    expect(autoBrief({ ...idle, briefError: "The match is not on chain yet." })).toBe(false);
   });
 });

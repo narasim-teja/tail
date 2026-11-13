@@ -47,3 +47,13 @@ export function routeFor(f: RouteFacts): Route {
   if (f.phase === "running" || f.phase === "ending") return "briefing";
   return "lobby";
 }
+
+/**
+ * Whether Briefing reads the orders by itself now: not read yet, nothing in flight (the host's
+ * own Start can still be running as the match goes live), and its own last try did not fail,
+ * which waits for Try again. Only the briefing's own error counts: an unrelated one elsewhere in
+ * the app must not leave the orders unread while the clock runs.
+ */
+export function autoBrief(f: { briefed: boolean; busy: string | null; briefError: string | null }): boolean {
+  return !f.briefed && f.busy === null && f.briefError === null;
+}

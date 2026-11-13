@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { Animated, StyleSheet, View } from "react-native";
 import { useApp } from "../state/app";
+import { autoBrief } from "../state/route";
 import { handleOf, isTestPlayer, money } from "../tail/huntModel";
 import { clock } from "../tail/rules";
 import { Mark } from "../ui/brand";
@@ -151,10 +152,10 @@ export function Briefing() {
   const [now, setNow] = useState(Date.now());
   // Re-checked whenever the app stops being busy: the host's own Start can still be running when
   // the match goes live and this screen opens, and the orders must not wait for a manual retry.
-  const { busy, error } = app;
+  const { busy, briefError } = app;
   useEffect(() => {
-    if (!b && !busy && !error) void app.brief();
-  }, [b, busy, error, app]);
+    if (autoBrief({ briefed: b !== null, busy, briefError })) void app.brief();
+  }, [b, busy, briefError, app]);
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1_000);
     return () => clearInterval(t);
@@ -166,7 +167,7 @@ export function Briefing() {
         head: app.match?.chain?.stake ?? null,
         startsInMs: b ? Math.max(0, Number(b.keys.startMs) - now) : 0,
         busy: app.busy,
-        error: app.error,
+        error: app.briefError,
       }}
       onHunt={() => app.showHunt()}
       onRetry={() => void app.brief()}

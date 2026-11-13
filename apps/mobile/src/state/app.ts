@@ -141,6 +141,8 @@ class AppModel {
   openLobby: string | null = null;
   balance: bigint | null = null;
   briefing: Briefing | null = null;
+  /** Why the last try to read this player's orders failed; Briefing shows it and waits for Try again. */
+  briefError: string | null = null;
   session: TailHunt | null = null;
   here: { lat: number; lon: number; acc: number } | null = null;
   showSettings = false;
@@ -659,6 +661,7 @@ class AppModel {
     this.matchZone = null;
     this.openLobby = null;
     this.briefing = null;
+    this.briefError = null;
     this.receipts = { kind: "idle" };
     this.meetings = null;
     this.handlerCheck = null;
@@ -684,6 +687,7 @@ class AppModel {
     this.session?.stop();
     this.session = null;
     this.briefing = null;
+    this.briefError = null;
     this.matchId = null;
     this.match = null;
     this.matchZone = null;
@@ -777,29 +781,39 @@ class AppModel {
    */
   brief() {
     return this.act("Reading your orders", async () => {
-      const id = this.need();
-      const m = this.match;
-      if (!m?.chain) throw new Error("The match is not on chain yet.");
-      const facts = await matchFacts(this.rpc, this.settings.contractId, m.matchId);
-      if (!facts) throw new Error("The match is not on chain yet.");
-      // The poll may not have read the keys yet (they arrive with Start); ask for them now.
-      if (!this.matchZone?.keys.length) this.matchZone = await this.loadZone(m.matchId);
-      const seat = this.matchZone?.keys.find((k) => k.accountId === id.accountId);
-      if (!seat) throw new Error("You are not in this match.");
-      let keys: PlayerKeys;
+      this.briefError = null;
       try {
-        keys = openPlayerKeys(id.boxSk, seat.sealed, facts.refereePk, {
-          matchId: matchIdBytes(m.matchId),
-          player: seat.player,
-        });
-      } catch {
-        throw new Error("Your orders were not signed by the referee. Try again, or ask the host.");
+        await this.readOrders();
+      } catch (e) {
+        this.briefError = message(e);
+        throw e;
       }
-      const refereeBoxPk = checkedRefereeBox(await this.relay.refereeKeys(), facts.refereePk);
-      const carryKey = this.settings.meshCarry ? await this.relay.carryKey().catch(() => null) : null;
-      this.briefing = { keys, refereeBoxPk, refereePk: facts.refereePk, carryKey };
-      this.beginHunt();
     });
+  }
+
+  private async readOrders(): Promise<void> {
+    const id = this.need();
+    const m = this.match;
+    if (!m?.chain) throw new Error("The match is not on chain yet.");
+    const facts = await matchFacts(this.rpc, this.settings.contractId, m.matchId);
+    if (!facts) throw new Error("The match is not on chain yet.");
+    // The poll may not have read the keys yet (they arrive with Start); ask for them now.
+    if (!this.matchZone?.keys.length) this.matchZone = await this.loadZone(m.matchId);
+    const seat = this.matchZone?.keys.find((k) => k.accountId === id.accountId);
+    if (!seat) throw new Error("You are not in this match.");
+    let keys: PlayerKeys;
+    try {
+      keys = openPlayerKeys(id.boxSk, seat.sealed, facts.refereePk, {
+        matchId: matchIdBytes(m.matchId),
+        player: seat.player,
+      });
+    } catch {
+      throw new Error("Your orders were not signed by the referee. Try again, or ask the host.");
+    }
+    const refereeBoxPk = checkedRefereeBox(await this.relay.refereeKeys(), facts.refereePk);
+    const carryKey = this.settings.meshCarry ? await this.relay.carryKey().catch(() => null) : null;
+    this.briefing = { keys, refereeBoxPk, refereePk: facts.refereePk, carryKey };
+    this.beginHunt();
   }
 
   /** Hunt on the briefing: reporting already runs (brief), so this only opens the hunt screen. */
