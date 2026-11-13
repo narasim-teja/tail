@@ -41,7 +41,7 @@ export function Caption({ compact }: { compact: boolean }) {
             </span>
             <Mark status={statuses[ev.index] ?? "pending"} className={compact ? "size-5" : "size-6"} />
           </span>
-          {ev.kind === "hint" && ev.handler && (
+          {ev.kind === "hint" && ev.handler?.text && (
             <q
               className={cn(
                 "over-map mt-1.5 text-text-2 text-balance [quotes:'“'_'”'_'‘'_'’']",

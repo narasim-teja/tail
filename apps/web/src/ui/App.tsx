@@ -11,6 +11,7 @@ import { BundleError, type DecodedBundle, decodeBundle } from "../verify/bundle.
 import { nearReader } from "../verify/chain.ts";
 import { type BatchCheck, checkBatches, checkHandler } from "../verify/checks.ts";
 import { PINS } from "../verify/pins.ts";
+import { PresencePage } from "./Presence.tsx";
 import { Stage } from "./Stage.tsx";
 import { Loading, PageState, ProgressLine, Retry } from "./States.tsx";
 
@@ -23,6 +24,18 @@ type Phase =
   | { kind: "error"; message: string };
 
 export function App() {
+  // `?presence=<proof>` (or a bare `?presence` to paste one) is the presence proof page.
+  const presence = new URLSearchParams(location.search).get("presence");
+  if (presence !== null)
+    return (
+      <TooltipProvider>
+        <PresencePage initial={presence} />
+      </TooltipProvider>
+    );
+  return <ReplayApp />;
+}
+
+function ReplayApp() {
   const [request, setRequest] = useState<{ source: Source; n: number }>(() => ({
     source: sourceFromUrl(location.search),
     n: 0,

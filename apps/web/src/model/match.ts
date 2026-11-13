@@ -7,13 +7,18 @@
 
 import { buildRing, EPOCH_MS, type SignedVerdict, WINDOW_EPOCHS } from "@tail/protocol";
 import type { DecodedBundle } from "../verify/bundle.ts";
-import { batchKey, type HandlerCheck } from "../verify/checks.ts";
+import { batchKey, enrolments, type HandlerCheck } from "../verify/checks.ts";
 
 export interface PlayerInfo {
   index: number;
   account: string;
   name: string;
   initials: string;
+  /**
+   * From the log's Enrolled entry: whether the referee checked this phone's Apple attestation.
+   * false: a test player taken without one; null: not recorded (before protocol v2).
+   */
+  attested: boolean | null;
 }
 
 export type EventKind = "start" | "hint" | "tag" | "forfeit" | "checkpoint" | "end";
@@ -33,8 +38,16 @@ export interface MatchEvent {
   hintId?: number;
   hintKind?: number;
   question?: string;
-  /** verified: the quote is the line the log committed to; signature: see HandlerCheck. */
-  handler?: { text: string; model: string; verified: boolean; signature: HandlerCheck | null };
+  /**
+   * text: the quoted words, null when sealed to the asker (protocol v2); verified: the quote is
+   * the line the log committed to (null without a quote); signature: see HandlerCheck.
+   */
+  handler?: {
+    text: string | null;
+    model: string | null;
+    verified: boolean | null;
+    signature: HandlerCheck | null;
+  };
   /** forfeit: whether the last fix was outside the zone. */
   leftZone?: boolean;
   callId: Uint8Array;
@@ -136,11 +149,13 @@ export function buildMatch(
   const durationMs = m.endMs - m.startMs;
   const names = d.players.map(displayName);
   const initials = initialsFor(names);
+  const enrolled = enrolments(d);
   const players = d.players.map((account, index) => ({
     index,
     account,
     name: names[index] as string,
     initials: initials[index] as string,
+    attested: enrolled[index]?.attested ?? null,
   }));
 
   // Tracks only from batches whose hash the log holds.
@@ -263,7 +278,12 @@ export function buildMatch(
       const line = d.handler.find((h) => h.hintId === b.hintId);
       if (line) {
         const check = handlerChecks.get(b.hintId) ?? null;
-        ev.handler = { text: line.text, model: line.model, verified: check?.text === true, signature: check };
+        ev.handler = {
+          text: line.text,
+          model: line.model ?? check?.model ?? null,
+          verified: line.text === null ? null : check?.text === true,
+          signature: check,
+        };
       }
       const s = next();
       s.heads[b.from] = (s.heads[b.from] ?? 0n) - b.amount;

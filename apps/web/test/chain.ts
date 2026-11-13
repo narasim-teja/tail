@@ -1,4 +1,5 @@
-// What the contract would hold had a bundle's verdicts been applied on NEAR, for the tests.
+// What the contract would hold had a bundle's verdicts been applied on NEAR, for the tests,
+// verdict head included.
 
 import { toHex } from "@tail/protocol";
 import type { ChainState } from "../src/verify/anchor.ts";
@@ -57,5 +58,6 @@ export function chainFor(d: DecodedBundle): Extract<ChainState, { kind: "found" 
         }),
       final_root: { log_size: Number(end.body.logSize), root: toHex(end.body.root) },
     },
+    head: { kind: "found", digest: d.verdicts.at(-1)?.digest as Uint8Array, seq: end.seq },
   };
 }

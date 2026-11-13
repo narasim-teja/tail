@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { encodeSignedVerdict, merkleLeaf, merkleRoot, type ReplayBundle, toHex } from "@tail/protocol";
+import {
+  encodeSignedVerdict,
+  merkleLeaf,
+  merkleRoot,
+  type ReplayBundle,
+  type ReplayBundleV2,
+  toHex,
+} from "@tail/protocol";
 import { makeFixtures } from "../scripts/fixture.ts";
 import type { Expect } from "../src/verify/anchor.ts";
 import { BundleError, decodeBundle } from "../src/verify/bundle.ts";
@@ -10,7 +17,7 @@ import { chainFor } from "./chain.ts";
 
 // Built in memory, through JSON as the relay would send it: no generated files needed.
 const fixture = JSON.stringify(makeFixtures().full);
-const clone = () => JSON.parse(fixture) as ReplayBundle;
+const clone = () => JSON.parse(fixture) as ReplayBundleV2;
 /** The verdict and log checks do not read batches; leaving them out keeps the byte sweeps fast. */
 const lean = () => ({ ...clone(), batches: [] });
 const SWEEP_MS = 120_000;
@@ -49,7 +56,7 @@ describe("the fixture verifies", () => {
     const r = verifyAll(good, { kind: "absent" }, EXPECT);
     expect(r.batches.failed).toEqual([]);
     expect(r.batches.verified.size).toBe(good.batches.length);
-    expect([...r.handler.values()].every((h) => h.text)).toBe(true);
+    expect([...r.handler.values()].every((h) => h.text === null && h.signature === "signed")).toBe(true);
     expect(r.handler.size).toBe(2);
   });
 
@@ -60,7 +67,7 @@ describe("the fixture verifies", () => {
       f.push(leaves[i] as Uint8Array);
       expect(toHex(f.root())).toBe(toHex(merkleRoot(leaves.slice(0, i + 1))));
     }
-    const roots = prefixRoots(good.log.slice(0, 70), [0, 1, 33, 70]);
+    const roots = prefixRoots(good.leaves.slice(0, 70), [0, 1, 33, 70]);
     expect(toHex(roots.get(33) as Uint8Array)).toBe(toHex(merkleRoot(leaves.slice(0, 33))));
   });
 });
@@ -130,8 +137,9 @@ describe("one changed byte fails", () => {
     SWEEP_MS,
   );
 
-  test("in a Handler line: the quote no longer matches its receipt", () => {
-    const b = clone();
+  test("in a Handler line of a v1 replay: the quote no longer matches its receipt", () => {
+    const b = JSON.parse(JSON.stringify(makeFixtures().v1)) as ReplayBundle;
+    expect(verifyAll(decodeBundle(b), { kind: "absent" }, EXPECT).handler.get(0)?.text).toBe(true);
     const h = b.handler[0] as { text: string };
     h.text = `${h.text.slice(0, -1)}!`;
     expect(verifyAll(decodeBundle(b), onChain, EXPECT).handler.get(0)?.text).toBe(false);

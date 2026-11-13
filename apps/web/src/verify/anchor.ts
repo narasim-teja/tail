@@ -45,8 +45,20 @@ export interface ChainRoots {
   final_root: { log_size: number; root: string } | null;
 }
 
+/**
+ * The contract's verdict chain head (`get_verdict_head`): the digest of the last verdict it
+ * applied for the match, which the next verdict's `prev` must name.
+ */
+export type ChainHead =
+  | { kind: "found"; digest: Uint8Array; seq: number | null }
+  /** The view answered that the match has no verdicts. */
+  | { kind: "none" }
+  /** The contract has no such view (deployed before protocol v2). */
+  | { kind: "no-view" }
+  | { kind: "unreadable"; reason: string };
+
 export type ChainState =
-  | { kind: "found"; match: ChainMatch; roots: ChainRoots }
+  | { kind: "found"; match: ChainMatch; roots: ChainRoots; head: ChainHead }
   /** NEAR answered: no such match (a fixture, or the wrong network). */
   | { kind: "absent" }
   /** NEAR could not be reached; nothing was checked. */

@@ -17,11 +17,20 @@ import {
   checkBatches,
   checkHandler,
   checkVerdict,
+  type Enrolment,
+  enrolments,
   type HandlerCheck,
   type LocalContext,
   type LocalVerdictCheck,
   localContext,
 } from "./checks.ts";
+import {
+  anchoredRoots,
+  type ConsistencyCheck,
+  checkConsistency,
+  checkVerdictChain,
+  type VerdictChainCheck,
+} from "./history.ts";
 import { statusOf, type VerdictStatus } from "./report.ts";
 
 export interface Verification {
@@ -33,6 +42,18 @@ export interface Verification {
   batches: BatchCheck;
   handler: Map<number, HandlerCheck>;
   level: MatchLevel | null;
+  verdictChain: VerdictChainCheck;
+  consistency: ConsistencyCheck;
+  enrolled: Enrolment[];
+}
+
+/** The history checks against NEAR's view, which counts only for the pinned contract and match. */
+export function historyFor(d: DecodedBundle, chain: ChainState, binding: Binding) {
+  const usable = binding.ok ? chain : null;
+  return {
+    verdictChain: checkVerdictChain(d, usable),
+    consistency: checkConsistency(d.leaves, anchoredRoots(d, usable)),
+  };
 }
 
 export function anchorsFor(
@@ -77,5 +98,7 @@ export function verifyAll(d: DecodedBundle, chain: ChainState, expect: Expect): 
     batches: checkBatches(d),
     handler: checkHandler(d),
     level: levelFor(d, chain, binding),
+    ...historyFor(d, chain, binding),
+    enrolled: enrolments(d),
   };
 }

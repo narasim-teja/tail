@@ -37,6 +37,9 @@ export function list(names: string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
 
+/** How a player the referee enrolled without an Apple attestation is named everywhere. */
+export const TEST_PLAYER = "test player (no Apple attestation)";
+
 export const statusLabel: Record<VerdictStatus, string> = {
   pending: "Checking",
   verified: "Matches NEAR",

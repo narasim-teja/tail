@@ -3,6 +3,7 @@
 
 import type { Anchor, Binding, MatchLevel } from "./anchor.ts";
 import { type LocalVerdictCheck, localOk } from "./checks.ts";
+import type { ConsistencyCheck, VerdictChainCheck } from "./history.ts";
 
 /**
  * verified: every check passed and NEAR holds the same root.
@@ -49,7 +50,11 @@ export interface MatchProblem {
   detail: string;
 }
 
-export function matchProblem(binding: Binding, level: MatchLevel | null): MatchProblem | null {
+export function matchProblem(
+  binding: Binding,
+  level: MatchLevel | null,
+  history: { verdictChain: VerdictChainCheck; consistency: ConsistencyCheck } | null = null,
+): MatchProblem | null {
   if (!binding.ok) {
     if (binding.why === "contract")
       return {
@@ -75,6 +80,22 @@ export function matchProblem(binding: Binding, level: MatchLevel | null): MatchP
     return {
       line: "Leaves out verdicts NEAR holds",
       detail: "NEAR holds checkpoints or verdicts for this match that this replay doesn't include.",
+    };
+  const vc = history?.verdictChain;
+  if (vc?.kind === "checked" && vc.breakAt !== null)
+    return {
+      line: "Verdict history is broken",
+      detail: `Verdict #${vc.breakAt + 1} doesn't link to the one before it, so this isn't one unbroken history.`,
+    };
+  if (vc?.kind === "checked" && vc.onNear === "mismatch")
+    return {
+      line: "Doesn't end where NEAR does",
+      detail: "NEAR's contract holds a different last verdict for this match than this replay.",
+    };
+  if (history && !history.consistency.ok)
+    return {
+      line: "The log was rewritten",
+      detail: "A checkpoint isn't a prefix of the next one: the match log changed after it was anchored.",
     };
   if (level && level.payouts === false)
     return {

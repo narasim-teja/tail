@@ -9,6 +9,10 @@
 // or NEAR AI. The bundles name no transactions, and the page reports them as a fixture that is
 // not on NEAR.
 //
+// Protocol v2: verdicts chained by `prev`, Tick entries opening every tick, Enrolled entries at
+// start, an Evidence entry before each Tag, the leaf hashes beside the log. One variant is built
+// in the v1 format (matches recorded before protocol v2), which the page reads read only.
+//
 // Pure and deterministic: the same bytes on every call. The tests build their bundles from it in
 // memory; scripts/make-fixture.ts writes them to public/fixtures for the page.
 
@@ -38,6 +42,7 @@ import {
   type LogEntry,
   playersHash,
   type ReplayBundle,
+  type ReplayBundleV2,
   ringCommit,
   type Sighting,
   type SignedVerdict,
@@ -50,15 +55,24 @@ import {
   verdictDigest,
   WINDOW_EPOCHS,
 } from "@tail/protocol";
+import { encodeSignedVerdictV1, verdictDigestV1 } from "../src/verify/v1.ts";
 import paths from "./data/common-paths.json" with { type: "json" };
 
 export interface Fixtures {
   /** The match with every released batch (trails). */
-  full: ReplayBundle;
+  full: ReplayBundleV2;
   /** The same match as the relay serves it before batches are declassified. */
-  noTrails: ReplayBundle;
+  noTrails: ReplayBundleV2;
   /** One Tag verdict rewritten after signing. */
-  tampered: ReplayBundle;
+  tampered: ReplayBundleV2;
+  /**
+   * The log rewritten after a checkpoint: an entry logged between the 4th and 5th checkpoints was
+   * changed after the 5th was signed and every later checkpoint signed over the new log, so the
+   * 4th is no longer a prefix of the 5th, nor the 5th of the 6th.
+   */
+  tamperedLog: ReplayBundleV2;
+  /** The same match in the v1 format, as recorded before protocol v2. */
+  v1: ReplayBundle;
   /** A few lines describing what was built. */
   summary: string[];
 }
@@ -68,9 +82,35 @@ export const FIXTURE_FILES: Record<Exclude<keyof Fixtures, "summary">, string> =
   full: "boston-common.json",
   noTrails: "boston-common-no-trails.json",
   tampered: "boston-common-tampered.json",
+  tamperedLog: "boston-common-tampered-log.json",
+  v1: "boston-common-v1.json",
 };
 
+/** Which checkpoint (1-based) the tampered-log variant rewrites history behind. */
+export const REWRITTEN_CHECKPOINT = 5;
+
 export function makeFixtures(): Fixtures {
+  const v2 = generate({ version: 2 });
+  const rewritten = generate({ version: 2, rewriteBefore: REWRITTEN_CHECKPOINT });
+  const v1 = generate({ version: 1 });
+  return {
+    full: v2.bundle,
+    noTrails: { ...v2.bundle, batches: [] },
+    tampered: v2.tampered,
+    tamperedLog: rewritten.bundle,
+    v1: v1.v1 as ReplayBundle,
+    summary: [...v2.summary, `tampered log: ${rewritten.rewrite}`],
+  };
+}
+
+interface Options {
+  version: 1 | 2;
+  /** Rewrite one Contact entry logged before this checkpoint, right after it is signed. */
+  rewriteBefore?: number;
+}
+
+function generate(opts: Options) {
+  const V2 = opts.version === 2;
   // ── Fixture constants ────────────────────────────────────────────────────────────
 
   const REFEREE_SK = sha256(utf8("TAIL replay fixture referee key. Test only, public, never on NEAR."));
@@ -504,12 +544,15 @@ export function makeFixtures(): Fixtures {
   const signed: SignedVerdict[] = [];
   const handler: ReplayBundle["handler"] = [];
   let nextSeq = 1;
+  let prevDigest = new Uint8Array(32);
   function verdict(body: Verdict, call: Uint8Array) {
-    const payload = { matchId: MATCH_ID, seq: nextSeq++, callId: call, body };
-    const digest = verdictDigest(payload);
+    const payload = { matchId: MATCH_ID, seq: nextSeq++, prev: prevDigest, callId: call, body };
+    const digest = V2 ? verdictDigest(payload) : verdictDigestV1(payload);
+    prevDigest = digest;
     log.push({ kind: "Verdict", seq: payload.seq, digest });
     signed.push({ ...payload, sig: ed25519.sign(digest, REFEREE_SK) });
   }
+  const encodeVerdict = (v: SignedVerdict) => (V2 ? encodeSignedVerdict(v) : encodeSignedVerdictV1(v));
   const leaves = () => log.map((e) => sha256(Uint8Array.of(0, ...encodeLogEntry(e))));
   function root(): Uint8Array {
     const merkle = (l: Uint8Array[]): Uint8Array => {
@@ -522,6 +565,16 @@ export function makeFixtures(): Fixtures {
     return merkle(leaves());
   }
 
+  // Each phone's enrolment, checked by the referee against Apple's App Attest root.
+  if (V2)
+    for (const [player, account] of sorted.entries())
+      log.push({
+        kind: "Enrolled",
+        player,
+        account,
+        keyHash: sha256(utf8(`TAIL replay fixture device key ${account}`)),
+        attested: true,
+      });
   verdict(
     {
       kind: "Start",
@@ -540,6 +593,8 @@ export function makeFixtures(): Fixtures {
     target[sorted.indexOf(acc)] = sorted.indexOf(ring[(k + 1) % N] as string);
   });
   const present = new Array<number>(N).fill(0);
+  // First epoch that counts toward each hunter's lock on their current target.
+  const lockFrom = new Array<number>(N).fill(0);
   const ingestedTo = new Array<number>(N).fill(0); // latest batch time seen, ms after start
   const contacts = new Set<string>();
   let pendingReceipts: { hintId: number; text: string }[] = [];
@@ -567,24 +622,46 @@ export function makeFixtures(): Fixtures {
   let nextHintId = 0;
   let nextCheckpoint = CHECKPOINT_MS;
   const hunterOf = (p: number) => target.findIndex((t, h) => alive[h] && t === p);
-  const lockOn = (h: number, t: number, e: number) => {
-    let n = 0;
+  const lockEpochs = (h: number, t: number, e: number) => {
+    const out: number[] = [];
     const [a, b] = h < t ? [h, t] : [t, h];
-    for (let w = Math.max(0, e - WINDOW_EPOCHS + 1); w <= e; w++) if (contacts.has(`${a}:${b}:${w}`)) n++;
-    return n;
+    for (let w = Math.max(0, e - WINDOW_EPOCHS + 1, lockFrom[h] as number); w <= e; w++)
+      if (contacts.has(`${a}:${b}:${w}`)) out.push(w);
+    return out;
   };
   const pos = (i: number, s: number) => planOf(i).at(s);
 
+  /**
+   * The tampered-log variant: after a checkpoint is signed, change the last Contact entry logged
+   * since the checkpoint before it whose pair never tagged, and carry on. Every later root covers
+   * the rewritten log; every earlier one stays a prefix of it.
+   */
+  const tagPairs = new Set(strikes.map((s) => [s.hunter, s.target].sort((x, y) => x - y).join(":")));
+  function rewriteHistory(since: number, size: number): string {
+    for (let i = size - 1; i > since; i--) {
+      const e = log[i] as LogEntry;
+      if (e.kind !== "Contact" || tagPairs.has(`${e.a}:${e.b}`)) continue;
+      log[i] = { ...e, epoch: e.epoch + 1 };
+      return `entry ${i} (contact ${sorted[e.a]?.split(".")[0]}–${sorted[e.b]?.split(".")[0]}, epoch ${e.epoch} → ${e.epoch + 1}) rewritten after checkpoint ${checkpoints} at size ${size}`;
+    }
+    throw new Error("no contact to rewrite");
+  }
+
   const used = new Set<Made>();
+  let checkpoints = 0;
+  let lastCheckpointSize = 0;
+  let rewrite = "";
   for (let k = 1; ; k++) {
     const now = k * TICK_MS + TICK_LATENCY_MS;
     const call = callId();
+    const cur = Math.floor(now / EPOCH_MS);
+    if (V2) log.push({ kind: "Tick", tickNo: k, nowMs: BigInt(START_MS + now), callId: call });
     for (const r of pendingReceipts) log.push(chatReceipt(r));
     pendingReceipts = [];
     const tickBatches = batches
       .filter((m) => !used.has(m) && m.arrive <= now && alive[m.batch.player])
       .sort((x, y) => x.batch.player - y.batch.player || x.batch.seq - y.batch.seq);
-    const acts: { t: number; player: number; action: Action }[] = [];
+    const acts: { t: number; player: number; seq: number; action: Action }[] = [];
     for (const m of tickBatches) {
       used.add(m);
       const b = m.batch;
@@ -592,7 +669,7 @@ export function makeFixtures(): Fixtures {
       const t = Number(b.tMs) - START_MS;
       ingestedTo[b.player] = t;
       if (dist(pos(b.player, t / 1000), { x: 0, y: 0 }) <= ZONE.radiusM) present[b.player] = now;
-      for (const a of b.actions) acts.push({ t, player: b.player, action: a });
+      for (const a of b.actions) acts.push({ t, player: b.player, seq: b.seq, action: a });
     }
     // Contacts for epochs both players have reported past, in (a, b, epoch) order.
     const found: [number, number, number][] = [];
@@ -609,20 +686,22 @@ export function makeFixtures(): Fixtures {
       log.push({ kind: "Contact", a, b, epoch: e });
     }
     acts.sort((x, y) => x.t - y.t || x.player - y.player);
-    for (const { t, player: p, action } of acts) {
+    for (const { t, player: p, seq, action } of acts) {
       const tg = target[p] as number;
       if (!alive[p] || tg < 0) continue;
       if (action.kind === "Strike") {
         const e = Math.floor(t / EPOCH_MS);
-        const [a, b] = p < tg ? [p, tg] : [tg, p];
-        const touching = contacts.has(`${a}:${b}:${e}`) || contacts.has(`${a}:${b}:${e - 1}`);
-        if (lockOn(p, tg, e) < LOCK_EPOCHS || !touching)
+        const epochs = lockEpochs(p, tg, e);
+        const touching = epochs.includes(e) || epochs.includes(e - 1);
+        if (epochs.length < LOCK_EPOCHS || !touching)
           throw new Error(`strike by ${sorted[p]} at ${t} would be refused`);
         heads[p] = (heads[p] as bigint) + (heads[tg] as bigint);
         heads[tg] = 0n;
         alive[tg] = false;
         target[p] = target[tg] === p ? -1 : (target[tg] as number);
         target[tg] = -1;
+        lockFrom[p] = cur + 1;
+        if (V2) log.push({ kind: "Evidence", hunter: p, target: tg, strikeSeq: seq, strikeEpoch: e, epochs });
         verdict({ kind: "Tag", hunter: p, target: tg }, call);
       } else {
         const price = hintPrice(STAKE, action.hint as HintKind);
@@ -632,7 +711,7 @@ export function makeFixtures(): Fixtures {
         heads[p] = (heads[p] as bigint) - price;
         heads[tg] = (heads[tg] as bigint) + price;
         const hintId = nextHintId++;
-        verdict({ kind: "Hint", from: p, to: tg, amount: price, hintId }, call);
+        verdict({ kind: "Hint", from: p, to: tg, amount: price, hintId, hint: action.hint }, call);
         const text = handlerLine(action.hint, value);
         pendingReceipts.push({ hintId, text });
         handler.push({
@@ -654,14 +733,18 @@ export function makeFixtures(): Fixtures {
         alive[i] = false;
         target[to] = target[i] === to ? -1 : (target[i] as number);
         target[i] = -1;
+        lockFrom[to] = cur + 1;
         verdict({ kind: "Forfeit", player: i, to }, call);
       }
     }
     const over = now >= DURATION_MS || alive.filter(Boolean).length <= 1;
     if (over) break;
     if (now >= nextCheckpoint) {
+      const from = log.length;
       verdict({ kind: "Checkpoint", logSize: BigInt(log.length), root: root() }, call);
       nextCheckpoint = (Math.floor(now / CHECKPOINT_MS) + 1) * CHECKPOINT_MS;
+      if (++checkpoints === opts.rewriteBefore) rewrite = rewriteHistory(lastCheckpointSize, from);
+      lastCheckpointSize = from;
     }
   }
   const endCall = callId();
@@ -671,8 +754,8 @@ export function makeFixtures(): Fixtures {
   // ── Bundle ───────────────────────────────────────────────────────────────────────
 
   const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
-  const bundle: ReplayBundle = {
-    version: 1,
+  const bundle: ReplayBundleV2 = {
+    version: 2,
     match: {
       id: MATCH_HEX,
       contract: "tail.tail-dev-a38d13.testnet",
@@ -692,13 +775,21 @@ export function makeFixtures(): Fixtures {
       refereePk: toHex(refereePk),
       vrfPk: toHex(vrfPk),
     },
-    verdicts: signed.map((v) => ({ signed: b64(encodeSignedVerdict(v)), txHash: null })),
+    verdicts: signed.map((v) => ({ signed: b64(encodeVerdict(v)), txHash: null })),
+    leaves: leaves().map(toHex),
     log: log.map((e) => b64(encodeLogEntry(e))),
     batches: batches.filter((m) => used.has(m)).map((m) => b64(encodeBatch(m.batch))),
     reveal: { vrfAlpha: alpha, vrfSignature: toHex(vrfSignature), ring },
-    // The relay's bundle type has no `signedText` yet; the page reads it when present.
-    handler: handler.map((h) => ({ ...h, signedText: signedTexts.get(h.hintId) ?? "" })),
+    devices: sorted.map((accountId) => ({ accountId, kind: "phone", attested: true })),
+    // The Handler's words were sealed to the asker; the bundle has only what the model signed.
+    handler: handler.map((h) => ({ hintId: h.hintId, signedText: signedTexts.get(h.hintId) ?? null })),
   };
+  if (!V2) {
+    // The v1 shape: the relay held the quotes, and had no leaves, devices or signed text.
+    const { leaves: _l, devices: _d, ...rest } = bundle;
+    const v1: ReplayBundle = { ...rest, version: 1, handler };
+    return { bundle, v1, tampered: bundle, rewrite, summary: [] };
+  }
 
   // Tampered: someone rewrote the second tag to credit Dee, keeping the referee's old signature.
   const tags = signed.filter((v) => v.body.kind === "Tag");
@@ -708,7 +799,7 @@ export function makeFixtures(): Fixtures {
     hunter: idx("dee"),
     target: (forged.body as { target: number }).target,
   };
-  const tampered: ReplayBundle = {
+  const tampered: ReplayBundleV2 = {
     ...bundle,
     verdicts: bundle.verdicts.map((v, i) =>
       signed[i] === forged ? { ...v, signed: b64(encodeSignedVerdict({ ...forged, body: forgedBody })) } : v,
@@ -717,9 +808,10 @@ export function makeFixtures(): Fixtures {
 
   const fmt = (n: bigint) => (Number(n) / 1e6).toFixed(2);
   return {
-    full: bundle,
-    noTrails: { ...bundle, batches: [] },
+    bundle,
+    v1: null,
     tampered,
+    rewrite,
     summary: [
       `ring: ${ring.map((a) => a.split(".")[0]).join(" → ")}`,
       `verdicts: ${signed.length} (${signed.map((v) => v.body.kind[0]).join("")}), log: ${log.length}, batches: ${used.size}`,

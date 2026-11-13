@@ -7,6 +7,7 @@ import {
   EPOCH_MS,
   encodeLogEntry,
   type ReplayBundle,
+  type ReplayBundleV2,
   toHex,
   WINDOW_EPOCHS,
 } from "@tail/protocol";
@@ -29,7 +30,7 @@ import { chainFor } from "./chain.ts";
 
 const fx = makeFixtures();
 const json = JSON.stringify(fx.full);
-const clone = () => JSON.parse(json) as ReplayBundle;
+const clone = () => JSON.parse(json) as ReplayBundleV2;
 const good = decodeBundle(clone());
 const onChain = chainFor(good);
 const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
@@ -97,6 +98,7 @@ describe("the chain anchor comes from the page, not the bundle", () => {
         return new Promise<ChainState>(() => {});
       },
       token: () => Promise.resolve(null),
+      verifyInclusion: () => Promise.resolve({ kind: "no-view" }),
     };
     const store = createVerifyStore(d.verdicts.length, { symbol: "USDC", decimals: 6 });
     const stop = runVerification(d, store, reader, { kind: "relay", matchId: MATCH_ID, url: "x" }, PINS);
@@ -302,7 +304,7 @@ describe("the Handler's NEAR AI signature", () => {
     for (const c of r.values()) {
       expect(c.signature).toBe("signed");
       expect(c.signer).toMatch(/^0x[0-9a-f]{40}$/);
-      expect(c.model).toBe(good.handler[0]?.model ?? "");
+      expect(c.model).toBe("fixture (written by hand, not a model)");
     }
   });
 
@@ -319,16 +321,24 @@ describe("the Handler's NEAR AI signature", () => {
     c.log[at] = b64(encodeLogEntry({ ...entry, signingAddress: `0x${"11".repeat(20)}` }));
     expect(checkHandler(decodeBundle(c)).get(entry.hintId)?.signature).toBe("bad");
 
-    const m = clone();
+    // A v1 replay names the model it quotes: the signed text must be for that one.
+    const signedText = good.handler[0]?.signedText as string;
+    const v1 = () => {
+      const x = JSON.parse(JSON.stringify(fx.v1)) as ReplayBundle;
+      (x.handler[0] as unknown as { signedText: string }).signedText = signedText;
+      return x;
+    };
+    expect(checkHandler(decodeBundle(v1())).get(0)?.signature).toBe("signed");
+    const m = v1();
     (m.handler[0] as { model: string }).model = "deepseek-ai/DeepSeek-V4.1-Flash-1017";
     expect(checkHandler(decodeBundle(m)).get(0)?.signature).toBe("bad");
   });
 
   test("without the signed text, or with no signature logged, nothing is claimed", () => {
     const b = clone();
-    for (const h of b.handler) delete (h as { signedText?: string }).signedText;
+    for (const h of b.handler) (h as { signedText: string | null }).signedText = null;
     expect(checkHandler(decodeBundle(b)).get(0)).toMatchObject({
-      text: true,
+      text: null,
       signature: "unchecked",
       signer: null,
     });

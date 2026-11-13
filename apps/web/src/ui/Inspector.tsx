@@ -2,24 +2,26 @@
 // line, or the verification summary. Not a modal: the film keeps playing behind it, Esc closes.
 
 import { EPOCH_MS, LOCK_EPOCHS, toHex, WINDOW_EPOCHS } from "@tail/protocol";
-import { ExternalLink, X } from "lucide-react";
-import { type ReactNode, useEffect, useRef } from "react";
+import { X } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "../components/ui/button.tsx";
 import { clock, money, short } from "../lib/format.ts";
 import { useStore } from "../lib/store.ts";
 import { lockAt, type MatchEvent, snapshotAt, snapshotBefore, walked } from "../model/match.ts";
-import { drawSource, eventLine, list, statusLabel } from "../replay/copy.ts";
+import { drawSource, eventLine, list, statusLabel, TEST_PLAYER } from "../replay/copy.ts";
 import type { Selection } from "../replay/state.ts";
 import { attestationUrl, isEnclave } from "../verify/attestation.ts";
 import { explorerTx } from "../verify/chain.ts";
-import { type HandlerCheck, localOk, ringOk } from "../verify/checks.ts";
+import { enrolments, type HandlerCheck, localOk, ringOk } from "../verify/checks.ts";
 import { tagEvidence } from "../verify/evidence.ts";
 import { PINS } from "../verify/pins.ts";
 import { matchProblem, summarize } from "../verify/report.ts";
 import { useReplay } from "./context.tsx";
-import { GameIcon, GlyphIcon, Mark } from "./icons.tsx";
-import { type Check, overall, proofGlyph } from "./marks.ts";
+import { GameIcon, Mark } from "./icons.tsx";
+import { type Check, overall } from "./marks.ts";
+import { ContactProof, EvidenceContacts, EvidenceLines, HistoryLines, PresenceMaker } from "./Proofs.tsx";
+import { Details, Meta, ProofLine, Section, Title } from "./sheet.tsx";
 import { leadIn } from "./Timeline.tsx";
 
 export function Inspector({ compact }: { compact: boolean }) {
@@ -79,123 +81,6 @@ function Body({ sel }: { sel: Selection }) {
     case "summary":
       return <SummaryBody />;
   }
-}
-
-// ── Pieces ────────────────────────────────────────────────────────────────────────
-
-function Title({ icon, children, hot }: { icon?: ReactNode; children: ReactNode; hot?: boolean }) {
-  return (
-    <h2
-      className={cn(
-        "flex items-start gap-2.5 pr-6 text-[1.5rem] font-bold leading-[1.15] tracking-[-0.01em] text-balance [font-stretch:104%]",
-        hot && "text-persimmon",
-      )}
-    >
-      {icon && <span className="mt-1 shrink-0">{icon}</span>}
-      <span>{children}</span>
-    </h2>
-  );
-}
-
-function Meta({ children }: { children: ReactNode }) {
-  return <p className="numeral mt-1.5 text-[0.875rem] text-text-2">{children}</p>;
-}
-
-function Section({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <section className="mt-7">
-      <h3 className="mb-2.5 text-[0.6875rem] font-semibold uppercase tracking-[0.09em] text-text-3">
-        {label}
-      </h3>
-      {children}
-    </section>
-  );
-}
-
-function ProofLine({
-  check,
-  near = false,
-  children,
-  detail,
-  href,
-  linkLabel,
-}: {
-  check: Check;
-  /** This row compares with NEAR: only it may show the ringed check. */
-  near?: boolean;
-  children: ReactNode;
-  detail?: ReactNode;
-  href?: string | null;
-  linkLabel?: string;
-}) {
-  const glyph = (
-    <GlyphIcon
-      glyph={proofGlyph(check, near)}
-      label={
-        check === "pass"
-          ? near
-            ? "Matches NEAR"
-            : "Checked"
-          : check === "fail"
-            ? "Failed"
-            : check === "pending"
-              ? "Checking"
-              : "Not checked"
-      }
-      className="size-[1.125rem]"
-    />
-  );
-  return (
-    <li className="grid grid-cols-[auto_1fr] gap-x-3 py-2.5 [&+&]:border-t [&+&]:border-hairline">
-      <span className="pt-px">{glyph}</span>
-      <span>
-        <span
-          className={cn(
-            "block text-[0.9375rem] font-semibold leading-snug",
-            check === "info" && "text-text-2",
-          )}
-        >
-          {children}
-        </span>
-        {detail && <span className="mt-0.5 block text-[0.8125rem] leading-snug text-text-2">{detail}</span>}
-        {href && (
-          <a
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-1 inline-flex min-h-8 items-center gap-1 text-[0.8125rem] font-semibold text-text underline decoration-text-3 underline-offset-4 hover:decoration-text focus-visible:outline-2 focus-visible:outline-text"
-          >
-            {linkLabel}
-            <ExternalLink className="size-3.5" aria-hidden="true" />
-          </a>
-        )}
-      </span>
-    </li>
-  );
-}
-
-function Details({ rows }: { rows: [string, string][] }) {
-  return (
-    <details className="group mt-7 text-[0.8125rem]">
-      <summary className="inline-flex min-h-9 cursor-pointer list-none items-center gap-1.5 rounded-md font-semibold text-text-2 outline-none hover:text-text focus-visible:outline-2 focus-visible:outline-text [&::-webkit-details-marker]:hidden">
-        <span
-          className="inline-block transition-transform duration-200 group-open:rotate-90"
-          aria-hidden="true"
-        >
-          ›
-        </span>
-        Technical details
-      </summary>
-      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5">
-        {rows.map(([k, v]) => (
-          <div key={k} className="contents">
-            <dt className="text-text-3">{k}</dt>
-            <dd className="numeral min-w-0 break-all text-text-2">{v}</dd>
-          </div>
-        ))}
-      </dl>
-    </details>
-  );
 }
 
 // ── Shared proof: referee signature + attestation, NEAR anchor ────────────────────
@@ -317,6 +202,10 @@ function EventBody({ index }: { index: number }) {
   if (!ev) return null;
   const v = decoded.verdicts[index]?.v;
   const name = (i: number | undefined) => (i === undefined ? "?" : (match.players[i]?.name ?? "?"));
+  const testPlayers = [ev.a, ev.b].filter(
+    (i, k, all): i is number =>
+      i !== undefined && all.indexOf(i) === k && match.players[i]?.attested === false,
+  );
 
   const icon =
     ev.kind === "tag" ? (
@@ -352,6 +241,13 @@ function EventBody({ index }: { index: number }) {
           {statusLabel[status]}
         </span>
       </Meta>
+      {testPlayers.length > 0 && (
+        <p className="mt-3 rounded-2xl bg-surface-2 px-4 py-3 text-[0.875rem] leading-snug text-text-2">
+          Involves a {TEST_PLAYER}: {list(testPlayers.map((i) => name(i)))}. The referee took{" "}
+          {testPlayers.length === 1 ? "this phone" : "these phones"} without checking an Apple attestation, so
+          nothing shows {testPlayers.length === 1 ? "it was" : "they were"} a real iPhone running the app.
+        </p>
+      )}
 
       {ev.kind === "tag" && <TagStory ev={ev} />}
       {ev.kind === "hint" && (
@@ -361,11 +257,16 @@ function EventBody({ index }: { index: number }) {
               {name(ev.a)} asked: <q className="text-text">{ev.question}</q>
             </p>
           )}
-          {ev.handler && (
+          {ev.handler?.text && (
             <blockquote className="mt-4 text-[1.1875rem] leading-snug font-medium text-balance">
               <q>{ev.handler.text}</q>
               <footer className="mt-1.5 text-[0.8125rem] font-normal text-text-3">The Handler</footer>
             </blockquote>
+          )}
+          {ev.handler && ev.handler.text === null && (
+            <p className="mt-4 text-[0.9375rem] text-text-2">
+              The Handler's answer was sealed to {name(ev.a)}'s phone, so only {name(ev.a)} read it.
+            </p>
           )}
           <p className="numeral mt-5 text-[0.9375rem] text-text-2">
             {name(ev.a)} paid {money(ev.amount ?? 0n, decimals)} USDC to {name(ev.b)}, the target.
@@ -389,19 +290,21 @@ function EventBody({ index }: { index: number }) {
 
       <Section label="Proof">
         <ul>
-          {ev.kind === "tag" && <HeardLine ev={ev} />}
+          {ev.kind === "tag" && (decoded.version === 2 ? <EvidenceLines ev={ev} /> : <HeardLine ev={ev} />)}
           {ev.kind === "hint" && ev.handler && (
             <>
-              <ProofLine
-                check={ev.handler.verified ? "pass" : "fail"}
-                detail={
-                  ev.handler.verified
-                    ? "The quote is the exact line the match log committed to."
-                    : "This quote isn't the line the match log committed to."
-                }
-              >
-                The Handler's line, word for word
-              </ProofLine>
+              {ev.handler.verified !== null && (
+                <ProofLine
+                  check={ev.handler.verified ? "pass" : "fail"}
+                  detail={
+                    ev.handler.verified
+                      ? "The quote is the exact line the match log committed to."
+                      : "This quote isn't the line the match log committed to."
+                  }
+                >
+                  The Handler's line, word for word
+                </ProofLine>
+              )}
               <ModelSignatureLine check={ev.handler.signature} />
             </>
           )}
@@ -436,6 +339,7 @@ function EventBody({ index }: { index: number }) {
           <SignedAndSettled index={index} />
         </ul>
       </Section>
+      {ev.kind === "tag" && decoded.version === 2 && <EvidenceContacts ev={ev} />}
 
       {(ev.kind === "tag" || ev.kind === "forfeit" || ev.kind === "hint") && (
         <Button
@@ -632,7 +536,10 @@ function PlayerBody({ index }: { index: number }) {
       >
         {p.name}
       </Title>
-      <Meta>{p.account}</Meta>
+      <Meta>
+        {p.account}
+        {p.attested === false && ` · ${TEST_PLAYER}`}
+      </Meta>
       <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-4">
         <div>
           <dt className="text-[0.75rem] text-text-3">Head now</dt>
@@ -705,7 +612,7 @@ function PlayerBody({ index }: { index: number }) {
 // ── Lock line ─────────────────────────────────────────────────────────────────────
 
 function ContactBody({ hunter, target }: { hunter: number; target: number }) {
-  const { match, play } = useReplay();
+  const { match, play, decoded } = useReplay();
   const t = useStore(play, (s) => Math.floor(s.t / 1000) * 1000);
   const lock = lockAt(match, hunter, target, t);
   const [a, b] = hunter < target ? [hunter, target] : [target, hunter];
@@ -728,14 +635,22 @@ function ContactBody({ hunter, target }: { hunter: number; target: number }) {
         windows in two minutes, {h} can tag.
       </p>
       <Section label="Windows in the last two minutes">
+        <p className="mb-2 text-[0.8125rem] leading-snug text-text-2">
+          A presence proof shows two phones were near each other in a window, and anyone can check it against
+          NEAR alone.
+        </p>
         <ul>
-          {windows.map((c) => (
-            <ProofLine key={c.epoch} check="pass">
-              <span className="numeral">
-                {clock(c.epoch * EPOCH_MS)} to {clock((c.epoch + 1) * EPOCH_MS)}
-              </span>
-            </ProofLine>
-          ))}
+          {windows.map((c) =>
+            decoded.version === 2 ? (
+              <ContactProof key={c.epoch} logIndex={c.logIndex} epoch={c.epoch} withPresence />
+            ) : (
+              <ProofLine key={c.epoch} check="pass" detail={<PresenceMaker logIndex={c.logIndex} />}>
+                <span className="numeral">
+                  {clock(c.epoch * EPOCH_MS)} to {clock((c.epoch + 1) * EPOCH_MS)}
+                </span>
+              </ProofLine>
+            ),
+          )}
           {windows.length === 0 && <ProofLine check="info">None yet</ProofLine>}
         </ul>
       </Section>
@@ -756,14 +671,16 @@ function SummaryBody() {
   const attestations = useStore(verify, (s) => s.attestations);
   const endInEnclave = useEndInEnclave();
   const sum = summarize(statuses);
-  const problem = matchProblem(binding, level);
+  const history = useStore(verify, (s) => s.history);
+  const problem = matchProblem(binding, level, history);
   const n = decoded.verdicts.length;
   const done = local.filter(Boolean).length;
   const signed = local.filter((l) => l?.decodes && l.signature && l.order).length;
   const logged = local.filter((l) => l?.inLog && l.rootClaim !== false).length;
   const allLocal = local.every((l) => l && localOk(l));
   const lines = match.events.flatMap((e) => (e.handler ? [e.handler] : []));
-  const handlerOk = lines.filter((h) => h.verified).length;
+  const quoted = lines.filter((h) => h.verified !== null);
+  const handlerOk = quoted.filter((h) => h.verified).length;
   const modelSigned = lines.filter((h) => h.signature?.signature === "signed").length;
   const modelBad = lines.filter((h) => h.signature?.signature === "bad").length;
   const modelUnchecked = lines.filter((h) => h.signature?.signature === "unchecked").length;
@@ -775,6 +692,8 @@ function SummaryBody() {
   const records = attestations.filter(Boolean).length;
   const inEnclave = attestations.filter(isEnclave).length;
   const recordsBad = attestations.filter((a) => a?.kind === "found" && a.check.kind !== "published").length;
+  const testPlayers = match.players.filter((p) => p.attested === false);
+  const enrolledOk = enrolments(decoded).every((e) => e.attested !== null && e.sameAccount === true);
 
   return (
     <>
@@ -800,6 +719,13 @@ function SummaryBody() {
           signed. The signatures and NEAR settlement are still checked.
         </p>
       )}
+      {decoded.version === 1 && (
+        <p className="mt-5 rounded-2xl bg-surface-2 px-4 py-3 text-[0.875rem] leading-snug text-text-2">
+          Recorded before protocol v2. Its verdicts aren't chained, its tags carry no evidence entry and its
+          players' enrolments aren't in the log, so those checks don't apply. Everything else is checked as
+          usual.
+        </p>
+      )}
       {source.kind === "fixture" && (
         <p className="mt-5 rounded-2xl bg-surface-2 px-4 py-3 text-[0.875rem] leading-snug text-text-2">
           This is a fixture: a generated match on real Boston Common paths, signed with public test keys. It
@@ -814,6 +740,7 @@ function SummaryBody() {
           >
             Signed by the referee
           </ProofLine>
+          <HistoryLines />
           {signer === "enclave" && binding.ok && (
             <ProofLine
               check={
@@ -888,10 +815,26 @@ function SummaryBody() {
           >
             Trails come from the log
           </ProofLine>
-          {lines.length > 0 && (
+          {decoded.version === 2 && (
             <ProofLine
-              check={handlerOk === lines.length ? "pass" : "fail"}
-              detail={`${handlerOk} of ${lines.length} quotes are the exact lines the log committed to.`}
+              check={!enrolledOk ? "fail" : testPlayers.length === 0 ? "pass" : "info"}
+              detail={
+                !enrolledOk
+                  ? "The log's enrolments don't name every player once, under the account the match lists."
+                  : testPlayers.length === 0
+                    ? "The referee checked every phone's Apple App Attest attestation when it enrolled."
+                    : `${list(testPlayers.map((p) => p.name))} ${testPlayers.length === 1 ? "is a" : "are"} ${TEST_PLAYER}${testPlayers.length === 1 ? "" : "s"}: the referee enrolled ${testPlayers.length === 1 ? "this phone" : "them"} without one. The others' attestations were checked.`
+              }
+            >
+              {testPlayers.length === 0
+                ? "Every phone enrolled with Apple's attestation"
+                : "Not every phone has Apple's attestation"}
+            </ProofLine>
+          )}
+          {quoted.length > 0 && (
+            <ProofLine
+              check={handlerOk === quoted.length ? "pass" : "fail"}
+              detail={`${handlerOk} of ${quoted.length} quotes are the exact lines the log committed to.`}
             >
               Handler lines are word for word
             </ProofLine>

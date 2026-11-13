@@ -54,10 +54,17 @@ describe("the match model", () => {
       expect(lockAt(m, e.a ?? 0, e.b ?? 0, e.t)).toBeGreaterThanOrEqual(LOCK_EPOCHS);
   });
 
-  test("hints carry the Handler's verified line and the asker's question", () => {
+  test("hints carry the asker's question and the Handler's signed chat; the words stay sealed", () => {
     const hints = m.events.filter((e) => e.kind === "hint");
     expect(hints[0]?.question).toBe("Is Ana anywhere near me?");
-    expect(hints.every((h) => h.handler?.verified)).toBe(true);
+    expect(hints.every((h) => h.handler?.text === null && h.handler.verified === null)).toBe(true);
+    expect(hints.every((h) => h.handler?.signature?.signature === "signed")).toBe(true);
+  });
+
+  test("a v1 replay quotes the Handler's verified line", () => {
+    const hints = build(JSON.parse(JSON.stringify(fx.v1))).events.filter((e) => e.kind === "hint");
+    expect(hints.length).toBe(2);
+    expect(hints.every((h) => h.handler?.text && h.handler.verified === true)).toBe(true);
   });
 
   test("tracks come from verified batches and stop when a player goes dark", () => {

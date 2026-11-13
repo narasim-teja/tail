@@ -6,6 +6,7 @@ import type { Anchor, Binding, ChainState, MatchLevel } from "../verify/anchor.t
 import type { Attestation } from "../verify/attestation.ts";
 import type { TokenMeta } from "../verify/chain.ts";
 import type { LocalVerdictCheck } from "../verify/checks.ts";
+import type { AnchoredRoot, ConsistencyCheck, VerdictChainCheck } from "../verify/history.ts";
 import type { ChainSummary, VerdictStatus } from "../verify/report.ts";
 import type { Signer } from "../verify/signer.ts";
 
@@ -61,6 +62,10 @@ export interface VerifyState {
   signer: Signer | null;
   /** Each verdict's OutLayer record, fetched only when the signer is the enclave project. */
   attestations: (Attestation | undefined)[];
+  /** Verdict chain and append-only log, once NEAR has answered (or not). */
+  history: { verdictChain: VerdictChainCheck; consistency: ConsistencyCheck } | null;
+  /** The roots proofs are shown against: NEAR's when it answered for this match, else the signed ones. */
+  anchored: { source: "near" | "signed"; roots: AnchoredRoot[] } | null;
   token: TokenMeta;
   /** 0..1 progress of loading and checking, for the slim line at the top. */
   progress: number;
@@ -78,6 +83,8 @@ export const createVerifyStore = (n: number, token: TokenMeta, binding: Binding 
     level: null,
     signer: null,
     attestations: new Array(n).fill(undefined),
+    history: null,
+    anchored: null,
     token,
     progress: 0.4,
   });

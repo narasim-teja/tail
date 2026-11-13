@@ -13,7 +13,8 @@ import { type Attestation, fetchAttestation } from "../verify/attestation.ts";
 import type { DecodedBundle } from "../verify/bundle.ts";
 import type { ChainReader } from "../verify/chain.ts";
 import { checkVerdict, type LocalVerdictCheck, localContext } from "../verify/checks.ts";
-import { anchorsFor, levelFor } from "../verify/index.ts";
+import { anchoredRoots } from "../verify/history.ts";
+import { anchorsFor, historyFor, levelFor } from "../verify/index.ts";
 import { PINS, type Pins } from "../verify/pins.ts";
 import { statusOf } from "../verify/report.ts";
 import { signerOf } from "../verify/signer.ts";
@@ -51,7 +52,14 @@ export function runVerification(
     if (stopped) return;
     chain = c;
     const signer = signerOf(source.kind === "fixture", c, pins);
-    store.set({ chain: c, chainSummary: c.kind, level: levelFor(d, c, binding), signer });
+    store.set({
+      chain: c,
+      chainSummary: c.kind,
+      level: levelFor(d, c, binding),
+      signer,
+      history: historyFor(d, c, binding),
+      anchored: anchoredRoots(d, binding.ok ? c : null),
+    });
     if (signer === "enclave" && binding.ok) fetchRecords();
   });
   void reader.token(d.raw.match.token).then((meta) => {

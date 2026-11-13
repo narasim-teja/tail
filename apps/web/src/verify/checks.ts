@@ -17,7 +17,6 @@ import {
   toHex,
   utf8,
   type Verdict,
-  verdictDigest,
 } from "@tail/protocol";
 import type { DecodedBundle } from "./bundle.ts";
 
@@ -39,6 +38,11 @@ export class Frontier {
     this.size++;
   }
 
+  /** Roots of the perfect subtrees the log is made of, largest first (merklePeaks order). */
+  peaksNow(): Uint8Array[] {
+    return [...this.peaks];
+  }
+
   root(): Uint8Array {
     if (this.peaks.length === 0) return sha256(new Uint8Array(0));
     let acc = this.peaks[this.peaks.length - 1] as Uint8Array;
@@ -49,16 +53,13 @@ export class Frontier {
 }
 
 /** Roots of the log at each requested size (sizes past the end are left out). */
-export function prefixRoots(log: DecodedBundle["log"], sizes: Iterable<number>): Map<number, Uint8Array> {
-  const want = new Set([...sizes].filter((s) => s >= 0 && s <= log.length));
+export function prefixRoots(leaves: readonly Uint8Array[], sizes: Iterable<number>): Map<number, Uint8Array> {
+  const want = new Set([...sizes].filter((s) => s >= 0 && s <= leaves.length));
   const out = new Map<number, Uint8Array>();
   const f = new Frontier();
   if (want.has(0)) out.set(0, f.root());
-  for (let i = 0; i < log.length; i++) {
-    const e = log[i];
-    // The leaf is over the bytes as sent, never a re-encoding: two encodings that decode alike
-    // must not share a root, and an undecodable entry still has bytes the referee hashed.
-    f.push(sha256(concat(Uint8Array.of(0), e?.bytes ?? new Uint8Array(0))));
+  for (let i = 0; i < leaves.length; i++) {
+    f.push(leaves[i] as Uint8Array);
     if (want.has(i + 1)) out.set(i + 1, f.root());
   }
   return out;
@@ -72,14 +73,17 @@ export interface LocalVerdictCheck {
   kind: Verdict["kind"] | null;
   /** The bytes decode as a SignedVerdict for this match. */
   decodes: boolean;
-  /** ed25519 over verdictDigest(payload) with the bundle's referee key. */
+  /** ed25519 over the verdict digest (v2, or v1 for an old bundle) with the bundle's referee key. */
   signature: boolean;
   /** seq = position + 1: no gaps, no repeats. */
   order: boolean;
   /** The log holds Verdict{seq, digest} with this digest; index of that entry. */
   logIndex: number | null;
   inLog: boolean;
-  /** Checkpoint/End: the root they claim is the log's root at that size. */
+  /**
+   * Checkpoint/End: the root they claim is the log's root at that size, and every leaf hash the
+   * bundle sent below that size is the hash of the entry it sent.
+   */
   rootClaim: boolean | null;
   /** Start: players hash; End: ring commit, VRF signature, alpha seed, rebuilt ring. */
   ring: RingCheck | null;
@@ -121,6 +125,8 @@ export interface LocalContext {
   entries: Map<number, { index: number; digest: Uint8Array }>;
   roots: Map<number, Uint8Array>;
   start: SignedVerdict | null;
+  /** The first position where the bundle's leaf hash disagrees with its entry, or Infinity. */
+  firstConflict: number;
 }
 
 export function localContext(d: DecodedBundle): LocalContext {
@@ -131,14 +137,16 @@ export function localContext(d: DecodedBundle): LocalContext {
   }
   return {
     entries: verdictEntries(d.log),
-    roots: prefixRoots(d.log, sizes),
+    roots: prefixRoots(d.leaves, sizes),
     start: d.verdicts.find((x) => x.v?.body.kind === "Start")?.v ?? null,
+    firstConflict: d.leafConflicts[0] ?? Number.POSITIVE_INFINITY,
   };
 }
 
 export function checkVerdict(d: DecodedBundle, ctx: LocalContext, index: number): LocalVerdictCheck {
   const x = d.verdicts[index];
   const v = x?.v ?? null;
+  const digest = x?.digest ?? null;
   const base: LocalVerdictCheck = {
     index,
     seq: v?.seq ?? null,
@@ -151,8 +159,7 @@ export function checkVerdict(d: DecodedBundle, ctx: LocalContext, index: number)
     rootClaim: null,
     ring: null,
   };
-  if (!v || !equal(v.matchId, d.matchId)) return base;
-  const digest = verdictDigest(v);
+  if (!v || !digest || !equal(v.matchId, d.matchId)) return base;
   const entry = ctx.entries.get(v.seq);
   let signature = false;
   try {
@@ -171,7 +178,11 @@ export function checkVerdict(d: DecodedBundle, ctx: LocalContext, index: number)
   const b = v.body;
   if (b.kind === "Checkpoint" || b.kind === "End") {
     const r = ctx.roots.get(Number(b.logSize));
-    out.rootClaim = !!r && equal(r, b.root) && (entry ? entry.index >= Number(b.logSize) : false);
+    out.rootClaim =
+      !!r &&
+      equal(r, b.root) &&
+      ctx.firstConflict >= Number(b.logSize) &&
+      (entry ? entry.index >= Number(b.logSize) : false);
   }
   if (b.kind === "Start") out.ring = { playersHash: equal(b.playersHash, playersHash(d.players)) };
   if (b.kind === "End") out.ring = checkEnd(d, ctx.start, b);
@@ -271,18 +282,20 @@ export function checkBatches(d: DecodedBundle): BatchCheck {
 // ── Handler lines ───────────────────────────────────────────────────────────────────
 
 /**
- * text: SHA-256 of the quote equals the HintReceipt's text hash (the log committed to the line).
+ * text: SHA-256 of the quote equals the HintReceipt's text hash (the log committed to the line);
+ * null when the bundle has no quote (protocol v2: the words were sealed to the asker).
  * signature, from the receipt's NEAR AI chat signature:
  *   signed: it recovers to the logged signing address over the signed text `model:req:resp`;
- *   bad: it does not, or the signed text is not of that shape or names another model;
+ *   bad: it does not, or the signed text is not of that shape or names another model than the
+ *        one the bundle quotes (v1);
  *   unsigned: the receipt carries no signature (a template line, or the lookup failed);
  *   unchecked: the bundle does not carry the signed text, so there is nothing to verify against.
  * A good signature shows that the logged address signed hashes of this chat's request and
  * response for that model. It does not show the address is a TEE key (NEAR AI's attestation
- * report does), and the response hash is not matched to the quote here.
+ * report does), and the response hash is not matched to the words here.
  */
 export interface HandlerCheck {
-  text: boolean;
+  text: boolean | null;
   signature: "signed" | "bad" | "unsigned" | "unchecked";
   signer: string | null;
   model: string | null;
@@ -315,7 +328,7 @@ export function checkHandler(d: DecodedBundle): Map<number, HandlerCheck> {
   const out = new Map<number, HandlerCheck>();
   for (const h of d.handler) {
     const r = receipts.get(h.hintId);
-    const text = !!r && equal(r.textHash, sha256(utf8(h.text)));
+    const text = h.text === null ? null : !!r && equal(r.textHash, sha256(utf8(h.text)));
     let signature: HandlerCheck["signature"] = "unchecked";
     let model: string | null = null;
     if (r && r.signature.length === 0) signature = "unsigned";
@@ -324,7 +337,12 @@ export function checkHandler(d: DecodedBundle): Map<number, HandlerCheck> {
       model = m?.[1] ?? null;
       const signer = m ? personalSignSigner(h.signedText, r.signature) : null;
       signature =
-        signer !== null && model === h.model && signer === r.signingAddress.toLowerCase() ? "signed" : "bad";
+        signer !== null &&
+        model !== null &&
+        (h.model === null || model === h.model) &&
+        signer === r.signingAddress.toLowerCase()
+          ? "signed"
+          : "bad";
     }
     out.set(h.hintId, {
       text,
@@ -335,3 +353,30 @@ export function checkHandler(d: DecodedBundle): Map<number, HandlerCheck> {
   }
   return out;
 }
+
+// ── Devices: who enrolled with an Apple attestation ──────────────────────────────────
+
+/**
+ * Per player, from the log's Enrolled entries (protocol v2; the referee writes one per player at
+ * start, under the anchored roots): whether the referee checked the phone's Apple App Attest
+ * attestation. `attested: false` is a test player the referee took without one (testnet only).
+ * null: no Enrolled entry for that player (a bundle from before v2, or the entry is missing).
+ * `sameAccount` is false when the entry names another account than the player list.
+ */
+export interface Enrolment {
+  attested: boolean | null;
+  sameAccount: boolean | null;
+}
+
+export function enrolments(d: DecodedBundle): Enrolment[] {
+  const out: Enrolment[] = d.players.map(() => ({ attested: null, sameAccount: null }));
+  for (const e of d.log) {
+    const x = e.entry;
+    if (x?.kind !== "Enrolled" || out[x.player] === undefined) continue;
+    out[x.player] = { attested: x.attested, sameAccount: d.players[x.player] === x.account };
+  }
+  return out;
+}
+
+/** A player the referee enrolled without an Apple attestation. */
+export const isTestPlayer = (e: Enrolment | undefined) => e?.attested === false;
