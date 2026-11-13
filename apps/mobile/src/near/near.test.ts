@@ -105,10 +105,10 @@ describe("withdraw", () => {
     expect(withdrawRefusal(true, "maya.testnet")).toBeNull();
     expect(withdrawRefusal(undefined, undefined)).toBeNull();
     expect(withdrawRefusal(false, "maya.testnet")).toBe(
-      "The token didn't take the transfer: maya.testnet must be registered with the token first. Nothing was moved, and your payout wallet was not set.",
+      "Nothing moved, and no wallet was set: maya.testnet isn't registered with the token yet. Register it, then try again.",
     );
     expect(withdrawRefusal(false, undefined)).toBe(
-      "The token didn't take the transfer: your payout wallet must be registered with the token first. Nothing was moved.",
+      "Nothing moved: your wallet isn't registered with the token yet. Register it, then try again.",
     );
   });
 

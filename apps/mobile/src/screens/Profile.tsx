@@ -1,33 +1,21 @@
 // Profile, from your name on Home: who you are on NEAR and what you hold. The account id can be
 // selected (long-press to copy), shared, or opened in the explorer. Under it, the player's
-// Dossier, their soulbound record on NEAR. The balance tops up on testnet and withdraws. Three
-// facts close it: this iPhone, the network, the contract.
+// Dossier, their soulbound record on NEAR. The balance tops up on testnet and withdraws. Facts
+// close it: this iPhone, where withdrawals go, the network. The contract is in Settings >
+// Advanced: a player never needs it here.
 //
 // The relay creates each account with only this phone's game key, so its payout starts as the
 // account itself, where tokens could never leave. The first withdraw then asks for a wallet the
-// player owns and says plainly that the choice is permanent.
+// player owns, and says before the field, not after it, that the choice is permanent.
 import { type ReactNode, useEffect, useState } from "react";
 import { Alert, Linking, Share, StyleSheet, Text, View } from "react-native";
 import { CONTRACT_ID, NEAR_NETWORK, TOP_UP, useApp } from "../state/app";
-import { handleOf } from "../tail/huntModel";
+import { handleOf, money } from "../tail/huntModel";
 import { Icon } from "../ui/brand";
 import { ContractMismatch } from "../ui/contract";
 import { DossierCard } from "../ui/dossier";
 import { RollingMoney } from "../ui/game";
-import {
-  Avatar,
-  Body,
-  Button,
-  Display,
-  Eyebrow,
-  Field,
-  Label,
-  Notice,
-  Num,
-  Row,
-  Rule,
-  Screen,
-} from "../ui/kit";
+import { Avatar, Button, Display, Eyebrow, Field, Label, Notice, Num, Row, Rule, Screen } from "../ui/kit";
 import { useReduceMotion } from "../ui/motion";
 import { color, HIT, maxScale, space, text } from "../ui/theme";
 
@@ -75,8 +63,8 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
       return;
     }
     Alert.alert(
-      "Withdraw to this wallet for good?",
-      `${typed} becomes where every withdrawal from ${handleOf(m.accountId)} goes. This is permanent.`,
+      "Make this your wallet for good?",
+      `Everything ${handleOf(m.accountId)} withdraws goes to ${typed}, now and later. You can't change it.`,
       [
         { text: "Cancel", style: "cancel" },
         { text: "Withdraw", onPress: () => actions.onWithdraw(typed) },
@@ -122,7 +110,14 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
       ) : null}
 
       <Rule />
-      <View accessible accessibilityLabel={m.balance === null ? "Balance loading" : "Balance"}>
+      <View
+        accessible
+        accessibilityLabel={
+          m.balance === null
+            ? "Balance loading"
+            : `${testnet ? "Test balance" : "Balance"} ${money(m.balance)}`
+        }
+      >
         <Eyebrow muted>{testnet ? "Test balance" : "Balance"}</Eyebrow>
         {m.balance === null ? <Num>-</Num> : <RollingMoney units={m.balance} reduceMotion={reduceMotion} />}
       </View>
@@ -133,7 +128,7 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
             symbol="plus.circle"
             title={m.busy === "Topping up" ? "Topping up" : "Top up 10"}
             busy={m.busy === "Topping up"}
-            hint="Test USDC from the relay"
+            hint="Adds 10 test USDC"
             onPress={actions.onTopUp}
             style={styles.grow}
           />
@@ -147,7 +142,7 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
           hint={
             needsPayout
               ? "Sends your balance to the wallet below"
-              : `Sends your balance to ${m.payout ?? "your payout account"}`
+              : `Sends your balance to ${m.payout ?? "your wallet"}`
           }
           onPress={withdraw}
           style={styles.grow}
@@ -155,6 +150,10 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
       </Row>
       {needsPayout && m.balance ? (
         <View style={styles.payout}>
+          <Notice
+            title="Your first withdrawal picks your wallet for good"
+            detail="Every withdrawal after it goes there too. Use a NEAR wallet you own: this game account can only play."
+          />
           <Field
             label="Withdraw to"
             value={to}
@@ -162,10 +161,6 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
             placeholder={testnet ? "your-wallet.testnet" : "your-wallet.near"}
             error={problem}
           />
-          <Body muted>
-            This account holds only this phone's game key, so withdrawals go to a NEAR wallet you own. The
-            first withdrawal sets it. This is permanent: every later withdrawal goes there too.
-          </Body>
         </View>
       ) : null}
       {m.contractMismatch ? <ContractMismatch relay={m.contractMismatch} /> : null}
@@ -188,21 +183,16 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
       <Fact label="Network">
         <Label>{testnet ? "Testnet" : m.network}</Label>
       </Fact>
-      <Fact label="Contract">
-        <Text selectable numberOfLines={1} maxFontSizeMultiplier={maxScale.text} style={styles.value}>
-          {m.contractId || "Not set"}
-        </Text>
-      </Fact>
       {m.testRelay ? (
         <Button
           kind="quiet"
           symbol="arrow.counterclockwise"
           title="Start over with a new handle"
-          hint="Test relay only. This phone keeps its keys; this account stays on NEAR."
+          hint="Test relay only. This account and its balance stay on NEAR."
           onPress={() =>
             Alert.alert(
               "Start over?",
-              `You'll pick a new handle. ${handleOf(m.accountId)} stays on NEAR with its balance.`,
+              `You'll pick a new handle. ${handleOf(m.accountId)} keeps its balance on NEAR.`,
               [
                 { text: "Cancel", style: "cancel" },
                 { text: "Start over", style: "destructive", onPress: actions.onStartOver },

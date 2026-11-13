@@ -66,6 +66,6 @@ export function withdrawCall(o: { token: string; amount: bigint; gas: bigint; to
 export function withdrawRefusal(value: unknown, to: string | undefined): string | null {
   if (value !== false) return null;
   return to === undefined
-    ? "The token didn't take the transfer: your payout wallet must be registered with the token first. Nothing was moved."
-    : `The token didn't take the transfer: ${to} must be registered with the token first. Nothing was moved, and your payout wallet was not set.`;
+    ? "Nothing moved: your wallet isn't registered with the token yet. Register it, then try again."
+    : `Nothing moved, and no wallet was set: ${to} isn't registered with the token yet. Register it, then try again.`;
 }

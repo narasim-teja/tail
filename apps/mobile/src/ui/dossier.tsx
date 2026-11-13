@@ -42,7 +42,7 @@ export function DossierCard({ accountId, contractId, rpcUrl, replayUrl }: Dossie
   if (!view) return null;
   const page = replayUrl ? `${replayUrl}/dossier/${accountId}` : null;
   const label =
-    `${handleOf(accountId)}'s dossier: ${view.matches} settled matches, ` +
+    `${handleOf(accountId)}'s dossier: ${view.matches} matches, ` +
     `${view.survived} survived, ${view.tags} tags`;
   return (
     <View style={styles.wrap}>
@@ -60,7 +60,7 @@ export function DossierCard({ accountId, contractId, rpcUrl, replayUrl }: Dossie
         </Animated.View>
       </Pressable>
       <Caption style={styles.note}>
-        Your record on NEAR, bound to this account. Hosts can open a match only to players with one.
+        Your record on NEAR. A host can ask for matches played or survived before you join.
       </Caption>
     </View>
   );
