@@ -151,6 +151,8 @@ describe("a match judged by the real (local) referee", () => {
     const boxDigest = sha256(concat(utf8("tail/referee-box/v1"), pins.refereeBoxPk));
     expect(toHex(unb64(served["referee_box_pk"] as string))).toBe(toHex(pins.refereeBoxPk));
     expect(ed25519.verify(pins.boxPkSig, boxDigest, pins.refereePk)).toBe(true);
+    // The VRF key in hex, as get_config and the replay bundle write it.
+    expect(served["vrf_pk"]).toBe(toHex(pins.vrfPk));
 
     // ── enrol, lobby, start ──────────────────────────────────────────────────────
     const trust = { contract: CONTRACT, refereePk: pins.refereePk };

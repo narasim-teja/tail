@@ -166,13 +166,14 @@ export function createRelay(d: RelayDeps) {
   });
   // The referee's public keys. Phones seal batches to referee_box_pk after checking box_pk_sig
   // against the referee_pk the contract pins (get_config), so the relay cannot swap the box key.
+  // vrf_pk is hex, as the referee, the contract and the replay write it.
   app.get("/referee", async (c) => {
     const k = await enrolment.refereeKeys();
     return c.json({
       referee_pk: Buffer.from(k.refereePk).toString("base64"),
       referee_box_pk: Buffer.from(k.refereeBoxPk).toString("base64"),
       box_pk_sig: Buffer.from(k.boxPkSig).toString("base64"),
-      vrf_pk: Buffer.from(k.vrfPk).toString("base64"),
+      vrf_pk: toHex(k.vrfPk),
     });
   });
   enrollRoutes(app, {
