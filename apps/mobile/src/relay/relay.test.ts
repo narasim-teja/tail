@@ -17,7 +17,7 @@ import { RequestAuth } from "../../../server/src/routes/util.ts";
 import { fromB64, toB64 } from "../lib/b64";
 import { hudDigest, type Signer } from "../proximity/auth";
 import { RelayError } from "../proximity/relay";
-import { joinLink, OpenLobbyError, parseLobbyCode, RelayClient, readJoin } from "./client";
+import { joinLink, OpenLobbyError, parseLobbyCode, RelayClient, readJoin, replayLink } from "./client";
 
 const sk = ed25519.utils.randomSecretKey();
 const signer: Signer = { accountId: "alice.tail.testnet", sign: (d) => ed25519.sign(d, sk) };
@@ -116,12 +116,41 @@ describe("relay authentication", () => {
       contract: "tail.testnet",
       testPlayers: true,
       referee: "local",
+      replayUrl: null,
     });
     expect((await health({ ...base, referee: { kind: "outlayer", status: "down" } })).referee).toBe(
       "outlayer",
     );
     expect((await health(base)).referee).toBeNull();
     expect((await health({ ...base, referee: { kind: "tee-ish" } })).referee).toBeNull();
+  });
+
+  test("/health's replay site is kept only as a plain http(s) address", async () => {
+    const site = async (replay_url: unknown) =>
+      (
+        await new RelayClient("http://relay.test", {
+          fetch: (async () =>
+            new Response(JSON.stringify({ ok: true, replay_url }), {
+              status: 200,
+            })) as unknown as typeof fetch,
+        }).info()
+      ).replayUrl;
+    expect(await site("https://replay.example")).toBe("https://replay.example");
+    expect(await site("http://192.168.1.20:5173/tail/")).toBe("http://192.168.1.20:5173/tail");
+    for (const bad of [
+      null,
+      42,
+      "",
+      "javascript:alert(1)",
+      "tail://join/x",
+      "https://replay.example/?match=x",
+      "https://replay.example#x",
+      "https://user@replay.example",
+    ])
+      expect(await site(bad)).toBeNull();
+    expect(replayLink("https://replay.example", "ab".repeat(16))).toBe(
+      `https://replay.example/?match=${"ab".repeat(16)}`,
+    );
   });
 
   test("the HUD URL is a WebSocket URL with the match and account", () => {

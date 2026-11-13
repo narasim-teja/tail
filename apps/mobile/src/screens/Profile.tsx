@@ -45,7 +45,7 @@ export interface ProfileModel {
   /** Where withdrawals go; equal to accountId until a wallet is named; null while unknown. */
   payout: string | null;
   /** Where the Dossier card reads from and links to; without it there is no card. */
-  dossier?: { rpcUrl: string; replayUrl: string };
+  dossier?: { rpcUrl: string; replayUrl: string | null };
 }
 
 export interface ProfileActions {
@@ -244,7 +244,7 @@ export function Profile() {
         contractMismatch: app.contractMismatch,
         testRelay: app.testPlayers,
         payout: app.wallet?.payout ?? null,
-        dossier: { rpcUrl: app.settings.rpcUrl, replayUrl: app.settings.replayUrl },
+        dossier: { rpcUrl: app.settings.rpcUrl, replayUrl: app.replaySite },
       }}
       actions={{
         onTopUp: () => void app.topUp(TOP_UP),

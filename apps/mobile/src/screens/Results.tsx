@@ -4,7 +4,7 @@
 // if the referee's log roots did not fit together (proximity/monitor.ts), with its evidence.
 import { useEffect, useState } from "react";
 import { Animated, Linking, Pressable, StyleSheet, View } from "react-native";
-import type { RefereeKind } from "../relay/client";
+import { type RefereeKind, replayLink } from "../relay/client";
 import { useApp } from "../state/app";
 import { handlerProblem } from "../tail/handler";
 import { LOG_FORKED } from "../tail/hud";
@@ -35,7 +35,7 @@ export interface ResultsModel {
   /** The money line: the head before settlement, what NEAR paid after, and how it was settled. */
   money: FinalMoney;
   tags: number;
-  /** Null until the replay site is set or the match has ended. */
+  /** Null until the match has ended, and when the relay names no replay site. */
   replayUrl: string | null;
   /** Picks the Handler's sign-off, so a rematch hears a different line. */
   seed: number;
@@ -253,7 +253,6 @@ export function ResultsView({
           ))}
         </View>
       ) : null}
-      {m.replayUrl ? null : <Caption muted>The replay link appears here once the match has ended.</Caption>}
     </Screen>
   );
 }
@@ -285,10 +284,7 @@ export function Results() {
     ended,
     standing: app.match?.chain?.players.filter((p) => !p.out).length ?? 0,
   });
-  const replay =
-    ended && app.matchId && app.settings.replayUrl
-      ? `${app.settings.replayUrl.replace(/\/+$/, "")}/?match=${app.matchId}`
-      : null;
+  const replay = ended && app.matchId && app.replaySite ? replayLink(app.replaySite, app.matchId) : null;
   return (
     <ResultsView
       m={{

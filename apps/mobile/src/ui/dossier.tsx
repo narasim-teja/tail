@@ -16,8 +16,8 @@ export interface DossierSource {
   accountId: string;
   contractId: string;
   rpcUrl: string;
-  /** The web replay; empty when this build has none, and the card then opens nothing. */
-  replayUrl: string;
+  /** The web replay the relay names; null when it names none, and the card then opens nothing. */
+  replayUrl: string | null;
 }
 
 export function DossierCard({ accountId, contractId, rpcUrl, replayUrl }: DossierSource) {
@@ -40,7 +40,7 @@ export function DossierCard({ accountId, contractId, rpcUrl, replayUrl }: Dossie
   }, [accountId, contractId, rpcUrl]);
 
   if (!view) return null;
-  const page = replayUrl ? `${replayUrl.replace(/\/$/, "")}/dossier/${accountId}` : null;
+  const page = replayUrl ? `${replayUrl}/dossier/${accountId}` : null;
   const label =
     `${handleOf(accountId)}'s dossier: ${view.matches} settled matches, ` +
     `${view.survived} survived, ${view.tags} tags`;

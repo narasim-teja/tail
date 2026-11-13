@@ -63,8 +63,6 @@ export const FINDING_LOBBY = "Finding the lobby";
 
 export interface Settings {
   relayUrl: string;
-  /** The web replay (apps/web); the results screen opens `<replayUrl>/?match=<id>`. */
-  replayUrl: string;
   rpcUrl: string;
   contractId: string;
   /**
@@ -95,18 +93,19 @@ const DEFAULTS: Settings = {
   relayUrl: "",
   rpcUrl: "https://test.rpc.fastnear.com",
   contractId: extra.contractId ?? "",
-  replayUrl: "",
   meshCarry: false,
 };
 
-/** Settings from the file; anything it does not hold (or holds from an older build) is the default. */
+/**
+ * Settings from the file; anything it does not hold is the default. A `replayUrl` an older build
+ * kept is ignored: the relay names the replay site now (relayInfo).
+ */
 function readSettings(text: string): Settings {
   const o = JSON.parse(text) as Partial<Record<keyof Settings, unknown>>;
-  const str = (k: "relayUrl" | "replayUrl" | "rpcUrl" | "contractId") =>
+  const str = (k: "relayUrl" | "rpcUrl" | "contractId") =>
     typeof o[k] === "string" ? (o[k] as string) : DEFAULTS[k];
   return {
     relayUrl: str("relayUrl"),
-    replayUrl: str("replayUrl"),
     rpcUrl: str("rpcUrl"),
     contractId: str("contractId"),
     meshCarry: o.meshCarry === true,
@@ -573,6 +572,11 @@ class AppModel {
   /** Which referee the relay says it runs; null when it does not say (Results words it). */
   get refereeKind(): RelayInfo["referee"] {
     return this.relayInfo?.referee ?? null;
+  }
+
+  /** The web replay the relay names (relay/client.ts replaySite): a link target, nothing more. */
+  get replaySite(): string | null {
+    return this.relayInfo?.replayUrl ?? null;
   }
 
   /** A test relay may fill a lobby seat with a test player; the lobby shows its button only then. */

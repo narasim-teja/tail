@@ -238,7 +238,9 @@ All served by `apps/server` (shapes in its README):
 
 - `GET /health`: the contract the relay serves. Every signed request names it (request auth v2:
   `requestDigest({contractId, accountId, method, path, timeMs, body})`); the app also compares it
-  with its own contract setting and says so when they differ.
+  with its own contract setting and says so when they differ. `replay_url` is the web replay that
+  Watch the replay and the Dossier card open; the app keeps it only if it is a plain http(s)
+  address and uses it for nothing but that link.
 - `GET /referee`: the referee's keys. The app checks `box_pk_sig` (ed25519 over
   `SHA256("tail/referee-box/v1" ‖ box_pk)`) under the `referee_pk` the match pinned, read from
   the contract's `get_match` through the phone's own NEAR RPC (not the relay's chain view), and

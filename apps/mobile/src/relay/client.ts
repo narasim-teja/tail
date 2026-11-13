@@ -215,7 +215,26 @@ export interface RelayInfo {
   contract: string | null;
   testPlayers: boolean;
   referee: RefereeKind | null;
+  /** The web replay the relay names (`replaySite`); null when it names none, or none usable. */
+  replayUrl: string | null;
 }
+
+// An http(s) host, optional port, and a plain path: no query, fragment or credentials, since the
+// app appends its own path and query (apps/server config.ts checks the same shape).
+const SITE = /^https?:\/\/[A-Za-z0-9.-]+(:[0-9]{1,5})?(\/[A-Za-z0-9._~%-]+)*$/;
+
+/**
+ * The replay site from /health `replay_url`, or null. The relay is not trusted, so the value is
+ * only ever a link the player opens in Safari: anything but a plain http(s) address is dropped.
+ */
+export function replaySite(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const site = v.trim().replace(/\/+$/, "");
+  return SITE.test(site) ? site : null;
+}
+
+/** The web replay of one match, as Results opens it. */
+export const replayLink = (site: string, matchId: string) => `${site}/?match=${matchId}`;
 
 /**
  * Calls the relay answers only after a referee call (its own deadline is 60 s) and NEAR
@@ -421,16 +440,12 @@ export class RelayClient extends RelayTransport {
     });
   }
 
-  replayUrl(matchId: string): string {
-    return `${this.baseUrl}/replay/${matchId}`;
-  }
-
   // ── The relay itself ─────────────────────────────────────────────────────────────────────
 
   /**
-   * What the relay says about itself: the contract it plays on (compared with the app's own
-   * setting, never adopted silently: the contract is what anchors the referee's keys) and whether
-   * it is a test relay that may fill a seat with a test player.
+   * What the relay says about itself: the contract it plays on (compared with the contract this
+   * build names, never adopted: the contract is what anchors the referee's keys), whether it is a
+   * test relay that may fill a seat with a test player, and where the web replay is.
    */
   async info(): Promise<RelayInfo> {
     const r = await this.json("GET", "/health");
@@ -438,6 +453,7 @@ export class RelayClient extends RelayTransport {
       contract: typeof r["contract"] === "string" ? r["contract"] : null,
       testPlayers: r["test_players"] === true,
       referee: refereeKind(r["referee"]),
+      replayUrl: replaySite(r["replay_url"]),
     };
   }
 

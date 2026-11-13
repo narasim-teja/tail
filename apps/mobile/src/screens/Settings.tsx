@@ -6,8 +6,7 @@ import { Body, Button, Field, Gap, Screen, Title, ToggleRow } from "../ui/kit";
 export function Settings() {
   const app = useApp();
   const [v, setV] = useState<S>(app.settings);
-  const set = (k: "relayUrl" | "rpcUrl" | "contractId" | "replayUrl") => (t: string) =>
-    setV({ ...v, [k]: t });
+  const set = (k: "relayUrl" | "rpcUrl" | "contractId") => (t: string) => setV({ ...v, [k]: t });
   return (
     <Screen
       footer={
@@ -31,13 +30,6 @@ export function Settings() {
         value={v.contractId}
         onChangeText={set("contractId")}
         placeholder="tail.example.testnet"
-      />
-      <Field
-        label="Replay site"
-        value={v.replayUrl}
-        onChangeText={set("replayUrl")}
-        placeholder="https://replay.example"
-        keyboardType="url"
       />
       <Gap />
       <Title>Mesh carry</Title>
