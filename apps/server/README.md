@@ -291,7 +291,7 @@ bun apps/server/scripts/pin-referee.ts                      # back to the enclav
 
 ```sh
 bun apps/server/src/main.ts                   # reads the repo-root .env.local; listens on RELAY_PORT
-bun test apps/server                          # unit tests (fakes for the chain and the referee)
+bun test apps/server                          # tests; one plays a match against the real local referee
 bun apps/server/scripts/pin-referee.ts        # testnet: pin the deployed referee's keys in the contract
 ALLOW_GHOSTS=1 bun apps/server/scripts/ghost-match.ts   # testnet: a full 3-ghost match, end to end
 ```
@@ -302,6 +302,15 @@ Environment (placeholders in `.env.example`): `NEAR_NETWORK` (testnet only), `NE
 `IOS_BUNDLE_ID`, `APP_ATTEST_ENV`, `TAIL_TOKEN`, `NEAR_RPC_URL`, `RELAY_PORT`, `RELAY_DB`,
 `ALLOW_GHOSTS`, `RELAY_KEYS_DIR` (mesh carry keys, default `.keys/relay`), `REFEREE_MODE` (`outlayer` or `local`), and for local mode `LOCAL_REFEREE_BIN` and
 `LOCAL_REFEREE_DIR` (both optional). A missing value or a leftover placeholder stops the relay at startup.
+
+Most tests run on fakes of the chain and the referee (`test/fakes.ts`). `test/local-referee.test.ts`
+builds the native referee (`cargo build --release`, a no-op when current, about 15 s cold) and
+plays a whole ghost match through the relay against it, with its keys in a temp directory and a
+fake chain that applies verdicts by the contract's rules (`test/contract-chain.ts`): enrolment,
+a refused early strike, a template Handler line, a carried batch, a resent batch and a batch with
+a simulated fix rejected, a Tag, Checkpoints, End and declassify. The replay must then pass the web
+verifier (`apps/web/src/verify`) against that chain, and every leaf's inclusion proof and every
+pair of anchored roots' consistency proof from the relay must verify. No network.
 
 `scripts/ghost-match.ts` runs the relay in-process with a fresh database, enrols three ghosts,
 opens a 5-minute lobby, tops them up, has them join, starts, and plays `CLEAN_TAG`: the hunter
