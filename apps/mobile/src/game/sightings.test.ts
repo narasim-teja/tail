@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { beaconToken, derivePlayerKey, deriveTagKey, sha256, tokenToUuid } from "@tail/protocol";
+import {
+  beaconTag,
+  beaconToken,
+  derivePlayerKey,
+  deriveTagKey,
+  sha256,
+  tagMatches,
+  tokenToUuid,
+  uuidToToken,
+} from "@tail/protocol";
 import { median, SightingAggregator } from "./sightings";
 
 const km = sha256(new TextEncoder().encode("sightings K_m"));
@@ -28,6 +37,25 @@ describe("sighting aggregation", () => {
     expect(a.add(5, tok(1, 3), -60)).toBe(false);
     expect(a.add(5, "0000180F-0000-1000-8000-00805F9B34FB", -40)).toBe(false);
     expect(a.add(5, "not a uuid", -40)).toBe(false);
+  });
+
+  test("the tag filter costs three HMACs per epoch, not per packet, and agrees with tagMatches", () => {
+    let hmacs = 0;
+    const a = new SightingAggregator(kTag, (k, e) => {
+      hmacs++;
+      return beaconTag(k, e);
+    });
+    for (let i = 0; i < 100; i++) a.add(5, tok(i % 3, 5), -60);
+    expect(hmacs).toBe(3);
+    a.add(6, tok(1, 6), -60);
+    expect(hmacs).toBe(6);
+    for (const [e, t] of [
+      [0, tok(1, 0)],
+      [0, tok(1, 1)],
+      [7, tok(1, 5)],
+      [7, tok(1, 8)],
+    ] as const)
+      expect(new SightingAggregator(kTag).add(e, t, -60)).toBe(tagMatches(kTag, uuidToToken(t), e));
   });
 
   test("packets without an RSSI reading are not counted", () => {

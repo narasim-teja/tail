@@ -5,7 +5,7 @@
 // the referee adds up n across batches for the same epoch.
 
 import type { Sighting } from "@tail/protocol";
-import { tagMatches, toHex, uuidToToken } from "@tail/protocol";
+import { beaconTag, toHex, uuidToToken } from "@tail/protocol";
 
 /** CoreBluetooth reports 127 when it has no RSSI for a packet. */
 export const RSSI_UNAVAILABLE = 127;
@@ -28,8 +28,24 @@ interface Row {
 
 export class SightingAggregator {
   private rows = new Map<string, Row>();
+  // The tags of e−1, e and e+1 (hex), worked out once per epoch: scanning with duplicates
+  // reports many packets a second, and each would otherwise cost three HMACs.
+  private window: { epoch: number; tags: Set<string> } | null = null;
 
-  constructor(private readonly kTag: Uint8Array) {}
+  constructor(
+    private readonly kTag: Uint8Array,
+    private readonly tagOf: (kTag: Uint8Array, epoch: number) => Uint8Array = beaconTag,
+  ) {}
+
+  private tagsAround(epoch: number): Set<string> {
+    if (this.window?.epoch !== epoch) {
+      const tags = [epoch - 1, epoch, epoch + 1]
+        .filter((e) => e >= 0)
+        .map((e) => toHex(this.tagOf(this.kTag, e)));
+      this.window = { epoch, tags: new Set(tags) };
+    }
+    return this.window.tags;
+  }
 
   /**
    * Records one packet if it carries a token of this match for epochs e−1..e+1. Returns whether
@@ -42,7 +58,7 @@ export class SightingAggregator {
     } catch {
       return false;
     }
-    if (rssi === RSSI_UNAVAILABLE || !tagMatches(this.kTag, token, epoch)) return false;
+    if (rssi === RSSI_UNAVAILABLE || !this.tagsAround(epoch).has(toHex(token.subarray(0, 4)))) return false;
     const key = `${epoch}:${toHex(token)}`;
     let row = this.rows.get(key);
     if (!row) {

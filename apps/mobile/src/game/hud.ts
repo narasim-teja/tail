@@ -6,6 +6,7 @@ import {
   decodeHud,
   decodePlayerKeys,
   equal,
+  FixFlag,
   type GridCell,
   type HintFact,
   HintKind,
@@ -132,7 +133,14 @@ export function describeRefusal(action: string, reason: string): string {
  * as a short line a player understands.
  */
 export function describeRejection(reason: string): string {
-  if (reason.startsWith("FixFlags")) return "Location looks simulated. Report rejected.";
+  if (reason.startsWith("FixFlags")) {
+    // FixFlags { flags: n }: bit 0 is software simulation, bit 1 an external accessory (4.3).
+    // An accessory is a real receiver, so it is named as one, not as a fake.
+    const flags = Number(/flags:\s*(\d+)/.exec(reason)?.[1] ?? Number.NaN);
+    if (flags === FixFlag.ProducedByAccessory)
+      return "Location came from an accessory, not this iPhone. Disconnect it. Report rejected.";
+    return "Location looks simulated. Report rejected.";
+  }
   if (reason.startsWith("Teleport")) return "Moved impossibly fast. Report rejected.";
   if (reason.startsWith("ClockSkew")) return "Phone clock is off. Set it to automatic.";
   if (reason.startsWith("Assertion")) return "Device check failed. Report rejected.";

@@ -224,6 +224,12 @@ function parseZone(v: unknown): { zone: Circle; safehouses: Circle[] } | null {
   };
 }
 
+function refereeKind(v: unknown): RefereeKind | null {
+  if (typeof v !== "object" || v === null) return null;
+  const kind = (v as Obj)["kind"];
+  return kind === "outlayer" || kind === "local" ? kind : null;
+}
+
 function chainPhase(s: string): ChainPhase {
   const phase = CHAIN_PHASES.find((p) => p === s);
   if (!phase) throw new RelayError(0, `relay answer: unknown match phase ${s}`);
@@ -232,9 +238,18 @@ function chainPhase(s: string): ChainPhase {
 
 const circle = (c: Circle) => ({ lat_e7: c.latE7, lon_e7: c.lonE7, radius_m: c.radiusM });
 
+/**
+ * Which referee the relay runs: the OutLayer enclave, or the local test referee (the same code on
+ * the relay's own machine, not in an enclave). Null when the relay does not say. The relay is not
+ * trusted for this, so the app only ever uses it to say less ("test referee"), and the replay is
+ * where an enclave claim is checked.
+ */
+export type RefereeKind = "outlayer" | "local";
+
 export interface RelayInfo {
   contract: string | null;
   testPlayers: boolean;
+  referee: RefereeKind | null;
 }
 
 /** The part of fetch the clients use; tests pass their own. */
@@ -392,6 +407,7 @@ export class RelayClient {
     return {
       contract: typeof r["contract"] === "string" ? r["contract"] : null,
       testPlayers: r["test_players"] === true,
+      referee: refereeKind(r["referee"]),
     };
   }
 

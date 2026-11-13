@@ -189,8 +189,39 @@ export const STATES: Record<string, () => ReactNode> = {
         error: null,
         contractMismatch: null,
         testRelay: true,
+        payout: "teja.testnet",
       }}
-      actions={{ onTopUp: noop, onWithdraw: noop, onUseRelayContract: noop, onStartOver: noop, onBack: noop }}
+      actions={{
+        onTopUp: noop,
+        onWithdraw: noop,
+        checkPayout: () => null,
+        onUseRelayContract: noop,
+        onStartOver: noop,
+        onBack: noop,
+      }}
+    />
+  ),
+  "profile-payout": () => (
+    <ProfileView
+      m={{
+        accountId: "teja.tail-dev-a38d13.testnet",
+        balance: 12_500_000n,
+        network: "testnet",
+        contractId: "tail.tail-dev-a38d13.testnet",
+        busy: null,
+        error: null,
+        contractMismatch: null,
+        testRelay: true,
+        payout: "teja.tail-dev-a38d13.testnet",
+      }}
+      actions={{
+        onTopUp: noop,
+        onWithdraw: noop,
+        checkPayout: () => null,
+        onUseRelayContract: noop,
+        onStartOver: noop,
+        onBack: noop,
+      }}
     />
   ),
   create: () => (
@@ -269,6 +300,16 @@ export const STATES: Record<string, () => ReactNode> = {
         },
       }),
     ),
+  "hunt-invisible": () =>
+    H(
+      hunt({
+        banner: {
+          kind: "dark",
+          title: "You were invisible 42 s",
+          detail: "Locked or in the background, your phone can't be heard. Keep TAIL open.",
+        },
+      }),
+    ),
   "hunt-vehicle": () => H(hunt({ lock: 2, frozenFor: "1:45" })),
   "hunt-target-dark": () => H(hunt({ lock: 0, leak: { lat: 42.3562, lon: -71.0641 } })),
   "hunt-dispatch": () =>
@@ -282,6 +323,7 @@ export const STATES: Record<string, () => ReactNode> = {
   "hunt-tagged": () => <TaggedView head="$5.40" taggedBy="maya.tail-dev.testnet" onResults={noop} />,
   "hunt-blocked-bt": () => <BlockedView what="bluetooth" onOpenSettings={noop} />,
   "hunt-blocked-loc": () => <BlockedView what="location" onOpenSettings={noop} />,
+  "hunt-blocked-approx": () => <BlockedView what="approximate" onOpenSettings={noop} />,
   "results-survived": () => (
     <ResultsView
       m={{
@@ -290,6 +332,7 @@ export const STATES: Record<string, () => ReactNode> = {
         tags: 1,
         replayUrl: "https://replay.example/?match=x",
         seed: 0,
+        referee: "local",
       }}
       onReplay={noop}
       onDone={noop}
@@ -297,14 +340,21 @@ export const STATES: Record<string, () => ReactNode> = {
   ),
   "results-out": () => (
     <ResultsView
-      m={{ outcome: "out", head: 0n, tags: 0, replayUrl: "https://replay.example/?match=x", seed: 0 }}
+      m={{
+        outcome: "out",
+        head: 0n,
+        tags: 0,
+        replayUrl: "https://replay.example/?match=x",
+        seed: 0,
+        referee: "local",
+      }}
       onReplay={noop}
       onDone={noop}
     />
   ),
   "results-running": () => (
     <ResultsView
-      m={{ outcome: "running", head: 0n, tags: 0, replayUrl: null, seed: 0 }}
+      m={{ outcome: "running", head: 0n, tags: 0, replayUrl: null, seed: 0, referee: null }}
       onReplay={noop}
       onDone={noop}
     />

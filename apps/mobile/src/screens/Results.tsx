@@ -2,7 +2,8 @@
 // it is verified, one tap away for anyone who asks.
 import { useEffect, useState } from "react";
 import { Animated, Linking, Pressable, StyleSheet, View } from "react-native";
-import { money, type Outcome, resultOutcome } from "../game/huntModel";
+import { howVerified, money, type Outcome, resultOutcome } from "../game/huntModel";
+import type { RefereeKind } from "../relay/client";
 import { useApp } from "../state/app";
 import { Icon, Mark } from "../ui/brand";
 import { RollingMoney } from "../ui/game";
@@ -32,6 +33,8 @@ export interface ResultsModel {
   replayUrl: string | null;
   /** Picks the Handler's sign-off, so a rematch hears a different line. */
   seed: number;
+  /** Which referee the relay says ran the match; null when it did not say. */
+  referee: RefereeKind | null;
 }
 
 const HEADLINE = {
@@ -157,11 +160,7 @@ export function ResultsView({
       </Pressable>
       {why ? (
         <View style={styles.whyBody}>
-          <Body muted>
-            Every tag needed both phones to hear each other's one-time codes. A referee in a hardware enclave
-            checked that and signed the tag; the NEAR contract only moves money on that signature. The replay
-            re-checks every signature against the chain.
-          </Body>
+          <Body muted>{howVerified(m.referee)}</Body>
         </View>
       ) : null}
       {m.replayUrl ? null : <Caption muted>The replay link appears here once the match has ended.</Caption>}
@@ -182,6 +181,7 @@ export function Results() {
   const app = useApp();
   useEffect(() => {
     void app.refresh();
+    void app.checkRelay();
   }, [app]);
   const snap = app.session?.snapshot();
   const mine = app.match?.chain?.players.find((p) => p.accountId === app.me);
@@ -201,9 +201,10 @@ export function Results() {
       m={{
         outcome,
         head: mine?.head ?? snap?.hud?.head ?? null,
-        tags: snap?.tags ?? 0,
+        tags: app.tags,
         replayUrl: replay,
         seed: Number.parseInt(app.matchId?.slice(0, 6) ?? "0", 16) || 0,
+        referee: app.refereeKind,
       }}
       onReplay={() => replay && void Linking.openURL(replay)}
       onDone={() => app.finishMatch()}

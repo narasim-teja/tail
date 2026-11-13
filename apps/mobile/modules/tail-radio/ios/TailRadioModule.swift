@@ -10,7 +10,8 @@ import UIKit
 //   setPocketMode(on)
 // Status events so the hunt screen can explain gaps:
 //   onAppState {state, event, tMs}, onProximity {near, tMs},
-//   onRadioState {role, state, advertising?, scanning?, error?, tMs}, onLocationState {status, error?, tMs}
+//   onRadioState {role, state, advertising?, scanning?, error?, tMs},
+//   onLocationState {status, fullAccuracy, error?, tMs}
 public class TailRadioModule: Module {
     private var engine: TailRadioEngine?
 
@@ -108,6 +109,9 @@ private func hexData(_ s: String) -> Data? {
     return out
 }
 
+/// The key under NSLocationTemporaryUsageDescriptionDictionary that explains the precise-location ask.
+private let fullAccuracyPurposeKey = "TailHunt"
+
 private func nowMs() -> Double {
     return (Date().timeIntervalSince1970 * 1000).rounded()
 }
@@ -157,6 +161,9 @@ final class TailRadioEngine: NSObject, CBPeripheralManagerDelegate, CBCentralMan
     // Location and UIKit state are main-thread only.
     private var location: CLLocationManager?
     private var wantLocation = false
+    // Asked at most once per start: iOS shows the one-time precise-location prompt, and asking
+    // again while it is up or after a "no" would only repeat it.
+    private var askedFullAccuracy = false
     private var observers: [NSObjectProtocol] = []
 
     init(emit: @escaping Emit) {
@@ -366,11 +373,28 @@ final class TailRadioEngine: NSObject, CBPeripheralManagerDelegate, CBCentralMan
                 self.location = m
             }
             guard let m = self.location else { return }
+            self.askedFullAccuracy = false
             if m.authorizationStatus == .notDetermined {
                 m.requestWhenInUseAuthorization()
             }
+            self.askFullAccuracyIfReduced(m)
             m.startUpdatingLocation()
             self.emitLocationState(m, error: nil)
+        }
+    }
+
+    // Approximate location is a few kilometres wide; contact is judged in metres (TECHNICAL.md
+    // 4.5), so a player who chose it is asked for precise location for this session. The purpose
+    // key's text is in Info.plist (NSLocationTemporaryUsageDescriptionDictionary, app.config.ts).
+    // A refusal leaves fullAccuracy false and JS blocks the hunt with a clear message.
+    private func askFullAccuracyIfReduced(_ m: CLLocationManager) {
+        let authorized = m.authorizationStatus == .authorizedWhenInUse || m.authorizationStatus == .authorizedAlways
+        guard wantLocation, authorized, m.accuracyAuthorization == .reducedAccuracy, !askedFullAccuracy else {
+            return
+        }
+        askedFullAccuracy = true
+        m.requestTemporaryFullAccuracyAuthorization(withPurposeKey: fullAccuracyPurposeKey) { [weak self] _ in
+            DispatchQueue.main.async { self?.emitLocationState(m, error: nil) }
         }
     }
 
@@ -383,6 +407,7 @@ final class TailRadioEngine: NSObject, CBPeripheralManagerDelegate, CBCentralMan
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         emitLocationState(manager, error: nil)
+        askFullAccuracyIfReduced(manager)
         if wantLocation { manager.startUpdatingLocation() }
     }
 

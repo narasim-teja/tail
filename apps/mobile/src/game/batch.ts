@@ -107,9 +107,25 @@ export class BatchBuilder {
     const batch = buildBatch({ matchId: this.d.matchId, player: this.d.player }, this.chain, tMs, parts);
     const sealed = await sealBatch(batch, this.d.assert, this.d.refereeBoxPk);
     const chain = nextChain(batch);
-    this.d.commit({ seq: batch.seq, sealed }, chain);
-    this.chain = chain;
+    // Cleared before the commit, so what the commit saves as unsent (unsentActions) no longer
+    // holds the actions inside this batch: a relaunch must not send a hint twice. A commit that
+    // throws puts them back for the next build.
     this.carry = { fixes: [], sightings: [], actions: [] };
+    try {
+      this.d.commit({ seq: batch.seq, sealed }, chain);
+    } catch (e) {
+      this.carry = parts;
+      throw e;
+    }
+    this.chain = chain;
     return { seq: batch.seq, sealed };
+  }
+
+  /**
+   * Actions not yet inside a committed batch: what a failed build kept, then the queue. The
+   * session saves these with the match, so a strike or hint survives a failed build and a relaunch.
+   */
+  unsentActions(): Action[] {
+    return [...this.carry.actions, ...this.d.actions.peek()];
   }
 }

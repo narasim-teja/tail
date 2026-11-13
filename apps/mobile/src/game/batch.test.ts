@@ -35,10 +35,10 @@ function enclave() {
   return { pk: p256.getPublicKey(sk, false), assert };
 }
 
-function rig(assert: Assert) {
+function rig(assert: Assert, commit?: (item: OutboxItem, chain: ChainState) => void) {
   const refereeSk = x25519.utils.randomSecretKey();
   let now = START + 20_000;
-  const fixes = new FixCollector();
+  const fixes = new FixCollector(() => now);
   const sightings = new SightingAggregator(kTag);
   const actions = new ActionQueue(() => 7);
   const committed: { item: OutboxItem; chain: ChainState }[] = [];
@@ -51,7 +51,10 @@ function rig(assert: Assert) {
     sightings,
     actions,
     assert,
-    commit: (item, chain) => committed.push({ item, chain }),
+    commit: (item, chain) => {
+      commit?.(item, chain);
+      committed.push({ item, chain });
+    },
     now: () => now,
   });
   const openEnvelope = (sealed: Uint8Array) => decodeBatchEnvelope(open(refereeSk, sealed, "tail/batch"));
@@ -169,6 +172,48 @@ describe("batch path, phone to referee", () => {
     const env = r.openEnvelope((r.committed[0] as { item: OutboxItem }).item.sealed);
     expect(env.batch.seq).toBe(0);
     expect(env.batch.actions.map((a) => a.kind)).toEqual(["Strike", "Hint"]);
+  });
+
+  test("a strike from a failed build stays unsent until a batch holding it is committed", async () => {
+    const dev = enclave();
+    let fail = true;
+    let unsentAtCommit: string[] | undefined;
+    const r = rig(
+      async (cdh) => {
+        if (fail) throw new Error("App Attest busy");
+        return dev.assert(cdh);
+      },
+      () => {
+        unsentAtCommit = r.builder.unsentActions().map((a) => a.kind);
+      },
+    );
+    r.actions.strike();
+    await expect(r.builder.build()).rejects.toThrow();
+    // Taken from the queue by the failed build, but still unsent: the session saves it.
+    expect(r.actions.size).toBe(0);
+    expect(r.builder.unsentActions().map((a) => a.kind)).toEqual(["Strike"]);
+    r.actions.hint(HintKind.Near);
+    fail = false;
+    await r.builder.build();
+    // What the commit saves as unsent no longer holds the actions inside the batch it commits.
+    expect(unsentAtCommit).toEqual([]);
+    expect(r.builder.unsentActions()).toEqual([]);
+  });
+
+  test("a commit that fails keeps the batch's actions for the next build", async () => {
+    let failCommit = true;
+    const r = rig(enclave().assert, () => {
+      if (failCommit) throw new Error("disk full");
+    });
+    r.actions.strike();
+    await expect(r.builder.build()).rejects.toThrow("disk full");
+    expect(r.builder.chain.seq).toBe(0);
+    expect(r.builder.unsentActions().map((a) => a.kind)).toEqual(["Strike"]);
+    failCommit = false;
+    await r.builder.build();
+    const env = r.openEnvelope((r.committed.at(-1) as { item: OutboxItem }).item.sealed);
+    expect(env.batch.seq).toBe(0);
+    expect(env.batch.actions.map((a) => a.kind)).toEqual(["Strike"]);
   });
 
   test("concurrent build calls produce contiguous seqs in call order", async () => {

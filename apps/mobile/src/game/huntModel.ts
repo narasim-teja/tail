@@ -2,15 +2,19 @@
 // the design preview builds it from fixtures. Both render the same HuntView.
 
 import { HintKind, hintPrice, LOCK_EPOCHS, type PlayerKeys } from "@tail/protocol";
+import type { RefereeKind } from "../relay/client";
 import type { LatLon } from "./geo";
 import { formatAmount } from "./hud";
 import { clock, darkState, zoneState } from "./rules";
-import type { Note, SessionSnapshot } from "./session";
+import type { Blocked, Note, SessionSnapshot } from "./session";
 import type { Zone } from "./zone";
 
 export type Banner =
   | { kind: "dark"; title: string; detail: string }
   | { kind: "zone"; title: string; detail: string };
+
+/** How long "You were invisible N s" stays up after you are back. */
+export const INVISIBLE_SHOW_MS = 10_000;
 
 export interface HintOption {
   kind: HintKind;
@@ -52,7 +56,7 @@ export interface HuntModel {
   log: Note[];
   hints: HintOption[];
   status: string;
-  blocked: "bluetooth" | "location" | null;
+  blocked: Blocked | null;
 }
 
 export const money = (units: bigint) => `$${formatAmount(units)}`;
@@ -65,6 +69,25 @@ export const handleOf = (account: string) =>
   isTestPlayer(account) ? "Test player" : (account.split(".")[0] ?? account);
 
 export type Outcome = "survived" | "won" | "out" | "running";
+
+/**
+ * Results' "How it's verified". The relay says which referee it runs; it is not trusted for that,
+ * so its word is only used to say less: a local test referee is named as one, and an enclave is
+ * only ever "the relay says", with the replay as the check.
+ */
+export function howVerified(referee: RefereeKind | null): string {
+  const contact = "Every tag needed both phones to hear each other's one-time codes.";
+  const chain =
+    "The NEAR contract only moves money on the referee's signature, and the replay re-checks every signature against the chain.";
+  switch (referee) {
+    case "local":
+      return `${contact} This match ran on a test referee on the relay's own computer, not in a hardware enclave: it checked the contact and signed each tag. ${chain}`;
+    case "outlayer":
+      return `${contact} The relay says its referee runs in OutLayer's hardware enclave, which checked the contact and signed each tag; the replay shows whether the enclave's attestation backs that. ${chain}`;
+    default:
+      return `${contact} The referee checked the contact and signed each tag. ${chain}`;
+  }
+}
 
 /**
  * How the match went for you. The chain's record decides when the HUD's last word is missing (the
@@ -143,6 +166,18 @@ export function huntModel(
       dark.leakIn > 0
         ? { kind: "dark", title: `Dark ${dark.seconds} s`, detail: `Your area shows in ${dark.leakIn} s` }
         : { kind: "dark", title: `Dark ${dark.seconds} s`, detail: "Your area was shown to your hunter" };
+  } else if (s.invisible && nowMs - s.invisible.atMs < INVISIBLE_SHOW_MS) {
+    banner = {
+      kind: "dark",
+      title: `You were invisible ${s.invisible.seconds} s`,
+      detail: "Locked or in the background, your phone can't be heard. Keep TAIL open.",
+    };
+  } else if (s.noPocketSensor) {
+    banner = {
+      kind: "dark",
+      title: "No pocket sensor",
+      detail: "This phone can't turn its screen off in a pocket. Don't lock it: that hides you.",
+    };
   }
   const handler = s.notes.find((n) => n.kind === "handler") ?? null;
   return {

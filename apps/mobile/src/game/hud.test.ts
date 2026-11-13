@@ -111,6 +111,10 @@ describe("HUD", () => {
 
   test("referee rejection reasons read as plain sentences", () => {
     expect(describeRejection("FixFlags { flags: 1 }")).toBe("Location looks simulated. Report rejected.");
+    expect(describeRejection("FixFlags { flags: 3 }")).toBe("Location looks simulated. Report rejected.");
+    // An accessory fix is a real receiver, not a fake: it is named as what it is.
+    expect(describeRejection("FixFlags { flags: 2 }")).toContain("accessory");
+    expect(describeRejection("FixFlags { flags: 2 }")).not.toContain("simulated");
     expect(describeRejection("ClockSkew { t_ms: 1, median_ms: 2 }")).toContain("clock");
   });
 });

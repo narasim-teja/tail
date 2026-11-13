@@ -19,12 +19,18 @@ import {
   toHex,
   tokenToUuid,
 } from "@tail/protocol";
-import type { RadioFix, RadioSighting } from "../../modules/tail-radio";
+import type {
+  AppStateEvent,
+  LocationStateEvent,
+  ProximityEvent,
+  RadioFix,
+  RadioSighting,
+} from "../../modules/tail-radio";
 import { fakeTime } from "../../test/fake-time";
 import { RelayError, type SignedRequest } from "../relay/client";
 import type { HudMessage } from "../relay/hud";
-import { genesis, type OutboxItem } from "./batch";
-import { HuntSession, type RadioPort } from "./session";
+import { type Assert, genesis, type OutboxItem } from "./batch";
+import { HuntSession, type RadioPort, type SessionRecord } from "./session";
 
 const START = 1_800_000_000_000;
 const km = sha256(new TextEncoder().encode("session K_m"));
@@ -46,6 +52,9 @@ function fakeRadio() {
   let sight: ((s: RadioSighting) => void) | undefined;
   let fix: ((f: RadioFix) => void) | undefined;
   let radioState: ((role: "peripheral" | "central", state: string) => void) | undefined;
+  let locationState: ((e: LocationStateEvent) => void) | undefined;
+  let appState: ((e: AppStateEvent) => void) | undefined;
+  let proximity: ((e: ProximityEvent) => void) | undefined;
   const radio: RadioPort = {
     startBeacon: () => calls.push("startBeacon"),
     setToken: (u) => tokens.push(u),
@@ -70,7 +79,18 @@ function fakeRadio() {
       radioState = fn;
       return () => (radioState = undefined);
     },
-    onLocationState: () => () => {},
+    onLocationState: (fn) => {
+      locationState = fn;
+      return () => (locationState = undefined);
+    },
+    onAppState: (fn) => {
+      appState = fn;
+      return () => (appState = undefined);
+    },
+    onProximity: (fn) => {
+      proximity = fn;
+      return () => (proximity = undefined);
+    },
   };
   return {
     radio,
@@ -80,6 +100,9 @@ function fakeRadio() {
     sight: (s: RadioSighting) => sight?.(s),
     fix: (f: RadioFix) => fix?.(f),
     radioState: (role: "peripheral" | "central", state: string) => radioState?.(role, state),
+    locationState: (e: LocationStateEvent) => locationState?.(e),
+    appState: (e: AppStateEvent) => appState?.(e),
+    proximity: (e: ProximityEvent) => proximity?.(e),
   };
 }
 
@@ -87,13 +110,20 @@ const flush = async () => {
   for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 };
 
-function rig(o: { upload?: (r: SignedRequest) => Promise<unknown> } = {}) {
-  const t = fakeTime(START);
+function rig(
+  o: {
+    upload?: (r: SignedRequest) => Promise<unknown>;
+    record?: SessionRecord;
+    assert?: Assert;
+    startMs?: number;
+  } = {},
+) {
+  const t = fakeTime(o.startMs ?? START);
   const radio = fakeRadio();
   const refereeSk = x25519.utils.randomSecretKey();
   const boxSk = x25519.utils.randomSecretKey();
   const uploaded: OutboxItem[] = [];
-  const saved: number[] = [];
+  const saved: SessionRecord[] = [];
   let hud: ((m: HudMessage) => void) | undefined;
   const carryOffline: boolean[] = [];
   const s = new HuntSession({
@@ -102,10 +132,9 @@ function rig(o: { upload?: (r: SignedRequest) => Promise<unknown> } = {}) {
     stake: 5_000_000n,
     boxSk,
     refereeBoxPk: x25519.getPublicKey(refereeSk),
-    chain: genesis(),
-    outbox: [],
+    record: o.record ?? { chain: genesis(), outbox: [], tags: 0, lastFixMs: null, actions: [] },
     radio: radio.radio,
-    assert: async (cdh) => Uint8Array.from([...cdh.slice(0, 4)]),
+    assert: o.assert ?? (async (cdh) => Uint8Array.from([...cdh.slice(0, 4)])),
     batchRequest: (sealed) => ({
       method: "POST",
       path: "/batch",
@@ -119,7 +148,7 @@ function rig(o: { upload?: (r: SignedRequest) => Promise<unknown> } = {}) {
       (async (r) => {
         uploaded.push({ seq: uploaded.length, sealed: Uint8Array.from(Buffer.from(r.body, "hex")) });
       }),
-    save: (chain) => saved.push(chain.seq),
+    save: (rec) => saved.push(rec),
     hud: (onMessage) => {
       hud = onMessage;
       return { open: () => {}, close: () => {} };
@@ -140,7 +169,17 @@ function rig(o: { upload?: (r: SignedRequest) => Promise<unknown> } = {}) {
     uploaded.map((u) => decodeBatchEnvelope(open(refereeSk, u.sealed, "tail/batch")).batch);
   const sendHud = (h: Parameters<typeof encodeHud>[0]) =>
     hud?.({ type: "hud", tick: h.tick, sealed: seal(x25519.getPublicKey(boxSk), encodeHud(h), "tail/hud") });
-  return { t, radio, s, batches, saved, sendHud, carryOffline, hud: (m: HudMessage) => hud?.(m) };
+  return {
+    t,
+    radio,
+    s,
+    batches,
+    saved,
+    last: () => saved.at(-1) as SessionRecord,
+    sendHud,
+    carryOffline,
+    hud: (m: HudMessage) => hud?.(m),
+  };
 }
 
 describe("hunt session", () => {
@@ -190,7 +229,7 @@ describe("hunt session", () => {
     expect(b?.seq).toBe(1);
     expect(b?.prev).toEqual(batchHash(a as NonNullable<typeof a>));
     // Saved on every commit and every ack; the last save holds the advanced chain.
-    expect(r.saved.at(-1)).toBe(2);
+    expect(r.last().chain.seq).toBe(2);
     expect(r.s.snapshot().queued).toBe(0);
     expect(r.s.snapshot().lastFix).toMatchObject({ lat: 42.355, lon: -71.066, heading: 30 });
   });
@@ -292,5 +331,128 @@ describe("hunt session", () => {
     expect(r.s.snapshot().blocked).toBeNull();
     r.radio.radioState("peripheral", "unauthorized");
     expect(r.s.snapshot().blocked).toBe("bluetooth");
+  });
+
+  const hunting = { epoch: 2, lock: 0, heat: 0, head: 5_000_000n, status: TargetStatus.Hunting };
+
+  test("a target lost to a forfeit is not a tag; a strike that takes the target is, and is saved", () => {
+    const r = rig();
+    r.s.start();
+    r.sendHud({ ...hunting, tick: 3, target: "bob.tail.testnet" });
+    // Bob went dark too long: his head and his target come to you without a strike.
+    r.sendHud({ ...hunting, tick: 4, head: 10_000_000n, target: "carol.tail.testnet" });
+    expect(r.s.snapshot().tags).toBe(0);
+    expect(r.s.snapshot().landed).toBeNull();
+    expect(r.s.snapshot().notes[0]?.text).toContain("forfeited");
+    r.s.strike();
+    r.sendHud({ ...hunting, tick: 5, head: 15_000_000n, target: "dave.tail.testnet" });
+    expect(r.s.snapshot().tags).toBe(1);
+    expect(r.last().tags).toBe(1);
+  });
+
+  test("a refused strike does not make the next target change a tag", () => {
+    const r = rig();
+    r.s.start();
+    r.sendHud({ ...hunting, tick: 3, target: "bob.tail.testnet" });
+    r.s.strike();
+    const nonce = r.last().actions[0]?.nonce ?? null;
+    r.hud({ type: "refused", nonce, action: "strike", reason: "Lock { lock: 2 }" });
+    r.sendHud({ ...hunting, tick: 5, target: "carol.tail.testnet" });
+    expect(r.s.snapshot().tags).toBe(0);
+  });
+
+  test("tags won before a relaunch are still counted after it", () => {
+    const r = rig({ record: { chain: genesis(), outbox: [], tags: 2, lastFixMs: null, actions: [] } });
+    expect(r.s.snapshot().tags).toBe(2);
+  });
+
+  test("locked or backgrounded, then back: it says how long you were invisible", () => {
+    const r = rig();
+    r.s.start();
+    r.radio.appState({ state: "inactive", event: "willResignActive", tMs: START + 1_000 });
+    r.radio.appState({ state: "background", event: "didEnterBackground", tMs: START + 1_500 });
+    r.radio.appState({ state: "background", event: "willEnterForeground", tMs: START + 43_000 });
+    r.radio.appState({ state: "active", event: "didBecomeActive", tMs: START + 43_600 });
+    expect(r.s.snapshot().invisible?.seconds).toBe(42);
+    expect(r.s.snapshot().notes[0]?.text).toContain("You were invisible 42 s");
+    // Pulling down Control Centre only makes the app inactive: the beacon keeps going.
+    r.radio.appState({ state: "inactive", event: "willResignActive", tMs: START + 50_000 });
+    r.radio.appState({ state: "active", event: "didBecomeActive", tMs: START + 52_000 });
+    expect(r.s.snapshot().invisible?.seconds).toBe(42);
+  });
+
+  test("a phone that cannot turn on proximity monitoring is flagged", () => {
+    const r = rig();
+    r.s.start();
+    r.radio.proximity({ near: false, pocketMode: true, proximitySupported: true, tMs: START });
+    expect(r.s.snapshot().noPocketSensor).toBe(false);
+    r.radio.proximity({ near: false, pocketMode: true, proximitySupported: false, tMs: START });
+    expect(r.s.snapshot().noPocketSensor).toBe(true);
+  });
+
+  test("location allowed only as approximate blocks the hunt", () => {
+    const r = rig();
+    r.s.start();
+    r.radio.locationState({ status: "authorizedWhenInUse", fullAccuracy: true, tMs: START });
+    expect(r.s.snapshot().blocked).toBeNull();
+    r.radio.locationState({ status: "authorizedWhenInUse", fullAccuracy: false, tMs: START });
+    expect(r.s.snapshot().blocked).toBe("approximate");
+    // Not asked yet is not blocked: iOS has not said anything about accuracy.
+    r.radio.locationState({ status: "notDetermined", fullAccuracy: false, tMs: START });
+    expect(r.s.snapshot().blocked).toBeNull();
+  });
+
+  const at = (tMs: number): RadioFix => ({
+    tMs,
+    lat: 42.355,
+    lon: -71.066,
+    acc: 5,
+    speed: 0,
+    course: -1,
+    simulated: null,
+    accessory: null,
+  });
+
+  test("after a relaunch the cached first fix and anything already sent stay out of the batch", async () => {
+    const T = START + 60_000;
+    const r = rig({
+      startMs: T,
+      record: { chain: genesis(), outbox: [], tags: 0, lastFixMs: T - 2_000, actions: [] },
+    });
+    r.s.start();
+    r.radio.fix(at(T - 120_000)); // the cached fix iOS hands over first
+    r.radio.fix(at(T - 2_000)); // already sent before the relaunch
+    r.radio.fix(at(T + 500));
+    r.t.advance(BATCH_MS);
+    await flush();
+    expect(r.batches()[0]?.fixes.map((f) => Number(f.tMs))).toEqual([T + 500]);
+    expect(r.last().lastFixMs).toBe(T + 500);
+    expect(r.s.snapshot().fixes).toBe(2);
+  });
+
+  test("a strike from a failed build is saved as unsent and goes out after a relaunch", async () => {
+    let fail = true;
+    const r = rig({
+      assert: async (cdh) => {
+        if (fail) throw new Error("App Attest busy");
+        return cdh.slice(0, 4);
+      },
+    });
+    r.s.start();
+    r.t.advance(1_000);
+    r.s.strike();
+    await flush();
+    expect(r.batches()).toHaveLength(0);
+    expect(r.s.snapshot().pendingActions).toBe(1);
+    const saved = r.last();
+    expect(saved.actions.map((a) => a.kind)).toEqual(["Strike"]);
+    r.s.stop();
+    fail = false;
+    const again = rig({ record: saved, startMs: START + 1_000 });
+    again.s.start();
+    again.t.advance(BATCH_MS);
+    await flush();
+    expect(again.batches()[0]?.actions).toEqual(saved.actions);
+    expect(again.last().actions).toEqual([]);
   });
 });

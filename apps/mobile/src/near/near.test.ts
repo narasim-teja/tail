@@ -5,6 +5,7 @@ import { sha256 } from "@tail/protocol";
 import * as nearApi from "../../../server/node_modules/near-api-js/lib/index.js";
 import { fromBase58, toBase58 } from "../lib/base58";
 import { encodeTransaction, nearPublicKeyString, PLAYER_GAS, signTransaction, type Transaction } from "./tx";
+import { payoutProblem, withdrawCall, withdrawGas } from "./withdraw";
 
 const sk = ed25519.utils.randomSecretKey();
 const pk = ed25519.getPublicKey(sk);
@@ -48,5 +49,49 @@ describe("NEAR transactions", () => {
     expect(fromBase58(toBase58(b))).toEqual(b);
     expect(toBase58(pk)).toBe(nearApi.baseEncode(pk));
     expect(() => fromBase58("0OIl")).toThrow();
+  });
+});
+
+describe("withdraw", () => {
+  const TGAS = 1_000_000_000_000n;
+
+  test("gas is the contract's withdraw_min_gas, in Tgas, or 50 Tgas when the contract does not say", () => {
+    expect(withdrawGas({ withdraw_min_gas: 60 })).toBe(60n * TGAS);
+    expect(withdrawGas({ withdraw_min_gas: "55" })).toBe(55n * TGAS);
+    expect(withdrawGas({})).toBe(50n * TGAS);
+    expect(withdrawGas({ withdraw_min_gas: -1 })).toBe(50n * TGAS);
+    expect(withdrawGas({ withdraw_min_gas: "lots" })).toBe(50n * TGAS);
+    // Never below what the contract refuses today: the old fixed 30 Tgas was refused.
+    expect(withdrawGas({})).toBeGreaterThan(PLAYER_GAS);
+  });
+
+  test("the payout wallet goes in `to` only when given", () => {
+    const base = { token: "usdc.fakes.testnet", amount: 1_500_000n, gas: 50n * TGAS };
+    expect(withdrawCall(base).args).toEqual({ token: "usdc.fakes.testnet", amount: "1500000" });
+    expect(withdrawCall({ ...base, to: " maya.testnet " }).args).toEqual({
+      token: "usdc.fakes.testnet",
+      amount: "1500000",
+      to: "maya.testnet",
+    });
+  });
+
+  test("a payout account must be a valid NEAR account that is neither this account nor the contract", () => {
+    const me = "maya.tail-dev.testnet";
+    const contract = "tail.tail-dev.testnet";
+    const ok = (s: string) => payoutProblem(s, me, contract) === null;
+    expect(ok("maya.testnet")).toBe(true);
+    expect(ok("my_wallet-2.near")).toBe(true);
+    expect(ok("ab".repeat(32))).toBe(true);
+    expect(ok(`0x${"a1".repeat(20)}`)).toBe(true);
+    expect(ok("")).toBe(false);
+    expect(ok("Maya.testnet")).toBe(false);
+    expect(ok("a")).toBe(false);
+    expect(ok("maya..testnet")).toBe(false);
+    expect(ok(".maya")).toBe(false);
+    expect(ok("maya-.testnet")).toBe(false);
+    expect(ok("maya testnet")).toBe(false);
+    expect(ok("x".repeat(65))).toBe(false);
+    expect(ok(me)).toBe(false);
+    expect(ok(contract)).toBe(false);
   });
 });

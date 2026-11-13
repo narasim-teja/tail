@@ -6,7 +6,6 @@ import Constants from "expo-constants";
 import { useSyncExternalStore } from "react";
 import TailRadio from "../../modules/tail-radio";
 import { type CarryConfig, MeshCarry } from "../carry/mesh";
-import { genesis } from "../game/batch";
 import { openPlayerKeys } from "../game/hud";
 import { HuntSession } from "../game/session";
 import { checkedZone, type Zone } from "../game/zone";
@@ -15,6 +14,7 @@ import { forgetAccount, type Identity, loadIdentity, nearSigner } from "../ident
 import { keychain } from "../identity/keychain";
 import { NearRpc } from "../near/rpc";
 import { PLAYER_GAS } from "../near/tx";
+import { payoutProblem, withdrawCall, withdrawGas } from "../near/withdraw";
 import {
   isMatchId,
   type MatchView,
@@ -28,7 +28,7 @@ import { HudSocket } from "../relay/hud";
 import { checkedRefereeBox } from "../relay/referee";
 import { assertWith, attestor, radioPort } from "./device";
 import { files } from "./files";
-import { decodeMatchRecord, encodeMatchRecord, type MatchRecord } from "./persist";
+import { decodeMatchRecord, emptyRecord, encodeMatchRecord, type MatchRecord } from "./persist";
 import { type Page, type Route, routeFor } from "./route";
 
 /** The busy label while a typed lobby code is looked up; Home shows it on its button. */
@@ -90,12 +90,17 @@ class AppModel {
   page: Page | null = null;
   primerSeen = true;
   recent: RecentMatch[] = [];
-  /** Home: this account's contract balance in the match token, and that token. */
-  wallet: { token: string; balance: bigint } | null = null;
+  /**
+   * Home and Profile: this account's contract balance in the match token, that token, the gas
+   * the contract wants for a withdraw, and where withdrawals go (null: not registered yet).
+   */
+  wallet: { token: string; balance: bigint; withdrawGas: bigint; payout: string | null } | null = null;
   /** What the relay says about itself (relay/client.ts `info`); null until read. */
   relayInfo: RelayInfo | null = null;
   /** The player chose to see results while the match still runs (after being tagged). */
   resultsNow = false;
+  /** Tags won in the open match as its file had them when opened (a relaunch has no session). */
+  private savedTags = 0;
   busy: string | null = null;
   error: string | null = null;
   ready = false;
@@ -218,18 +223,19 @@ class AppModel {
     if (!me || !this.settings.contractId) return Promise.resolve();
     return (async () => {
       try {
-        const cfg = await this.rpc.view<{ allowed_tokens: string[] }>(
-          this.settings.contractId,
+        const contract = this.settings.contractId;
+        const cfg = await this.rpc.view<{ allowed_tokens: string[] } & Record<string, unknown>>(
+          contract,
           "get_config",
           {},
         );
         const token = cfg.allowed_tokens[0];
         if (!token) return;
-        const bal = await this.rpc.view<string>(this.settings.contractId, "get_balance", {
-          account_id: me,
-          token,
-        });
-        this.wallet = { token, balance: BigInt(bal) };
+        const [bal, payout] = await Promise.all([
+          this.rpc.view<string>(contract, "get_balance", { account_id: me, token }),
+          this.rpc.view<string | null>(contract, "get_payout", { account_id: me }),
+        ]);
+        this.wallet = { token, balance: BigInt(bal), withdrawGas: withdrawGas(cfg), payout };
         this.emit();
       } catch (e) {
         this.error = message(e);
@@ -238,16 +244,43 @@ class AppModel {
     })();
   }
 
-  /** Sends the whole contract balance to this account (the payout account fixed at enrolment). */
-  withdraw() {
+  /**
+   * Withdrawals would land on this account itself, which holds only this phone's game key, so
+   * the tokens could never leave it. The first withdraw must name a wallet (`to`).
+   */
+  get needsPayout(): boolean {
+    return !!this.me && this.wallet?.payout === this.me;
+  }
+
+  /** Why `to` cannot be the payout wallet, or null when it can (Profile checks as you type). */
+  payoutProblem(to: string): string | null {
+    return payoutProblem(to, this.me ?? "", this.settings.contractId);
+  }
+
+  /**
+   * Sends the whole contract balance to the payout account. While that is still this account,
+   * `to` names the wallet, which becomes the payout for good (the contract sets it once).
+   */
+  withdraw(to?: string) {
     return this.act("Withdrawing", async () => {
       const w = this.wallet;
       if (!w || w.balance === 0n) throw new Error("Nothing to withdraw.");
       const id = this.need();
+      let wallet: string | undefined;
+      if (this.needsPayout) {
+        const problem = this.payoutProblem(to ?? "");
+        if (problem) throw new Error(problem);
+        wallet = (to ?? "").trim();
+      }
       await this.rpc.functionCall(
         { accountId: id.accountId as string, publicKey: id.nearPk, secretKey: id.nearSk },
         this.settings.contractId,
-        { methodName: "withdraw", args: { token: w.token, amount: w.balance.toString() }, gas: PLAYER_GAS },
+        withdrawCall({
+          token: w.token,
+          amount: w.balance,
+          gas: w.withdrawGas,
+          ...(wallet === undefined ? {} : { to: wallet }),
+        }),
       );
       void this.refreshWallet();
     });
@@ -353,6 +386,11 @@ class AppModel {
     });
   }
 
+  /** Which referee the relay says it runs; null when it does not say (Results words it). */
+  get refereeKind(): RelayInfo["referee"] {
+    return this.relayInfo?.referee ?? null;
+  }
+
   /** A test relay may fill a lobby seat with a test player; the lobby shows its button only then. */
   get testPlayers(): boolean {
     return this.relayInfo?.testPlayers ?? false;
@@ -438,6 +476,12 @@ class AppModel {
     files.write(RECENT_FILE, JSON.stringify(this.recent));
     this.match = null;
     this.briefing = null;
+    try {
+      this.savedTags = this.loadRecord(id).tags;
+    } catch {
+      // An unreadable file only costs the tag count here; beginHunt reads it again and stops on it.
+      this.savedTags = 0;
+    }
     files.write(CURRENT_FILE, JSON.stringify({ matchId: id }));
     this.startPolling();
     this.emit();
@@ -526,14 +570,12 @@ class AppModel {
       stake: m.chain.stake,
       boxSk: id.boxSk,
       refereeBoxPk: b.refereeBoxPk,
-      chain: record.chain,
-      outbox: record.outbox,
+      record,
       radio: radioPort,
       assert: assertWith(id.attestKeyId),
       batchRequest: (sealed) => relay.batchRequest(signer, matchId, sealed),
       upload: (req) => relay.uploadBatch(req),
-      save: (chain, outbox) =>
-        files.write(matchFile(matchId), encodeMatchRecord({ matchId, chain, outbox: [...outbox] })),
+      save: (r) => files.write(matchFile(matchId), encodeMatchRecord({ matchId, ...r })),
       hud: (onMessage, onState) =>
         new HudSocket({
           url: relay.hudUrl(matchId, signer.accountId),
@@ -554,7 +596,12 @@ class AppModel {
 
   private loadRecord(matchId: string): MatchRecord {
     const text = files.read(matchFile(matchId));
-    return text ? decodeMatchRecord(text) : { matchId, chain: genesis(), outbox: [] };
+    return text ? decodeMatchRecord(text) : emptyRecord(matchId);
+  }
+
+  /** Tags this player won in the open match: live from the hunt, else from the match file. */
+  get tags(): number {
+    return this.session?.snapshot().tags ?? this.savedTags;
   }
 
   finishMatch(): void {

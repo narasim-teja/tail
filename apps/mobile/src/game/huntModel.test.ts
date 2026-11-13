@@ -1,7 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { DARK_LEAK_MS, HintKind, LOCK_EPOCHS, type PlayerKeys, TargetStatus } from "@tail/protocol";
 import { hudView } from "./hud";
-import { handleOf, huntModel, isTestPlayer, resultOutcome, taggedLines } from "./huntModel";
+import {
+  handleOf,
+  howVerified,
+  huntModel,
+  INVISIBLE_SHOW_MS,
+  isTestPlayer,
+  resultOutcome,
+  taggedLines,
+} from "./huntModel";
 import type { SessionSnapshot } from "./session";
 
 const NOW = 1_800_000_000_000;
@@ -45,6 +53,8 @@ const snap = (o: Partial<SessionSnapshot> = {}): SessionSnapshot => ({
   outSinceMs: null,
   frozenUntilMs: null,
   blocked: null,
+  invisible: null,
+  noPocketSensor: false,
   ...o,
 });
 const zone = { zone: { latE7: 423_550_000, lonE7: -710_656_000, radiusM: 100 }, safehouses: [] };
@@ -108,6 +118,24 @@ describe("hunt model", () => {
     expect(m.dispatch).toEqual({ atMs: NOW - 5_000, text: "North, darling." });
   });
 
+  test("back from the background it says how long you were invisible, for a few seconds", () => {
+    const back = snap({ invisible: { seconds: 42, atMs: NOW - 2_000 } });
+    expect(huntModel(back, ctx, NOW).banner?.title).toBe("You were invisible 42 s");
+    expect(huntModel(back, ctx, NOW - 2_000 + INVISIBLE_SHOW_MS).banner).toBeNull();
+    // Being dark right now matters more than having been invisible.
+    const dark = snap({ invisible: { seconds: 42, atMs: NOW }, darkSinceMs: NOW - 25_000 });
+    expect(huntModel(dark, ctx, NOW).banner?.title).toBe("Dark 25 s");
+  });
+
+  test("a phone without a proximity sensor is warned that the screen won't go off in a pocket", () => {
+    expect(huntModel(snap({ noPocketSensor: true }), ctx, NOW).banner?.title).toBe("No pocket sensor");
+    expect(huntModel(snap(), ctx, NOW).banner).toBeNull();
+  });
+
+  test("approximate location blocks the hunt like location off", () => {
+    expect(huntModel(snap({ blocked: "approximate" }), ctx, NOW).blocked).toBe("approximate");
+  });
+
   test("being out is the tagged state", () => {
     const hud = hudView({
       tick: 2,
@@ -166,5 +194,24 @@ describe("names and outcomes", () => {
     expect(resultOutcome({ ...f, out: true, ended: false })).toBe("running");
     expect(resultOutcome({ ...f, hudStatus: "won", standing: 2 })).toBe("won");
     expect(resultOutcome({ ...f, hudStatus: "out", standing: 1 })).toBe("out");
+  });
+});
+
+describe("how it's verified", () => {
+  test("a local test referee is named as one and never as an enclave", () => {
+    const t = howVerified("local");
+    expect(t).toContain("test referee");
+    expect(t).toContain("not in a hardware enclave");
+  });
+
+  test("an enclave is only what the relay says, with the replay as the check", () => {
+    expect(howVerified("outlayer")).toContain(
+      "The relay says its referee runs in OutLayer's hardware enclave",
+    );
+    expect(howVerified("outlayer")).toContain("replay");
+  });
+
+  test("a relay that does not say gets no enclave claim at all", () => {
+    expect(howVerified(null)).not.toContain("enclave");
   });
 });

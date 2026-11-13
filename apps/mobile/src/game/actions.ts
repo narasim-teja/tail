@@ -6,9 +6,15 @@ import { type Action, HINT_TEXT_MAX, type HintKind } from "@tail/protocol";
 const randomNonce = () => crypto.getRandomValues(new Uint32Array(1))[0] as number;
 
 export class ActionQueue {
-  private pending: Action[] = [];
+  private pending: Action[];
 
-  constructor(private readonly nonce: () => number = randomNonce) {}
+  /** `saved`: actions a relaunch found unsent in the match file (session.ts). */
+  constructor(
+    private readonly nonce: () => number = randomNonce,
+    saved: readonly Action[] = [],
+  ) {
+    this.pending = [...saved];
+  }
 
   hint(kind: HintKind, question?: string): Action {
     const text = question?.trim().slice(0, HINT_TEXT_MAX);
@@ -27,6 +33,11 @@ export class ActionQueue {
 
   get size(): number {
     return this.pending.length;
+  }
+
+  /** The queued actions, oldest first, without taking them. */
+  peek(): readonly Action[] {
+    return this.pending;
   }
 
   drain(): Action[] {

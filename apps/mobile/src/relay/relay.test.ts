@@ -72,6 +72,24 @@ describe("relay authentication", () => {
     await expect(down.getMatch("00".repeat(16))).rejects.toMatchObject({ status: null, unreachable: true });
   });
 
+  test("/health says which referee runs; anything else reads as not said", async () => {
+    const health = (body: unknown) =>
+      new RelayClient("http://relay.test", {
+        fetch: (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch,
+      }).info();
+    const base = { ok: true, contract: "tail.testnet", test_players: true };
+    expect(await health({ ...base, referee: { kind: "local", status: "up" } })).toEqual({
+      contract: "tail.testnet",
+      testPlayers: true,
+      referee: "local",
+    });
+    expect((await health({ ...base, referee: { kind: "outlayer", status: "down" } })).referee).toBe(
+      "outlayer",
+    );
+    expect((await health(base)).referee).toBeNull();
+    expect((await health({ ...base, referee: { kind: "tee-ish" } })).referee).toBeNull();
+  });
+
   test("the HUD URL is a WebSocket URL with the match and account", () => {
     expect(new RelayClient("https://relay.example").hudUrl("ab".repeat(16), "a.b.testnet")).toBe(
       `wss://relay.example/hud?match_id=${"ab".repeat(16)}&account_id=a.b.testnet`,

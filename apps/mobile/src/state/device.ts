@@ -28,7 +28,15 @@ export const radioPort: RadioPort = {
     return () => sub.remove();
   },
   onLocationState: (fn) => {
-    const sub = TailRadio.addListener("onLocationState", (e) => fn(e.status));
+    const sub = TailRadio.addListener("onLocationState", fn);
+    return () => sub.remove();
+  },
+  onAppState: (fn) => {
+    const sub = TailRadio.addListener("onAppState", fn);
+    return () => sub.remove();
+  },
+  onProximity: (fn) => {
+    const sub = TailRadio.addListener("onProximity", fn);
     return () => sub.remove();
   },
 };

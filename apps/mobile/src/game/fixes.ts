@@ -1,12 +1,17 @@
 // Location fixes for the batch (TECHNICAL.md 4.3): about 1 Hz, strictly increasing t_ms (the
 // referee rejects a batch whose fixes go backwards or repeat, `FixOrder`), never later than the
-// batch's own t_ms.
+// batch's own t_ms. The order holds across relaunches: the newest fix time is saved with the
+// match, and fixes at or before it are dropped. iOS also hands a cached fix first after a
+// relaunch, often minutes old; one of those would sit before fixes the referee already has, so
+// fixes older than FIX_MAX_AGE_MS are dropped too.
 
 import { type Fix, FixFlag } from "@tail/protocol";
 import type { RadioFix } from "../../modules/tail-radio";
 
 /** Fixes closer together than this are dropped: ~1 Hz is all the referee needs. */
 export const FIX_MIN_GAP_MS = 900;
+/** A fix older than this when it arrives is a cached one, not where the player is now. */
+export const FIX_MAX_AGE_MS = 10_000;
 
 const u16 = (n: number) => Math.max(0, Math.min(0xffff, Math.round(n)));
 
@@ -28,17 +33,28 @@ export function toWireFix(f: RadioFix): Fix | null {
 
 export class FixCollector {
   private pending: Fix[] = [];
-  private lastT: bigint | null = null;
+  /** The newest fix time taken in, saved with the match (session.ts) so a relaunch keeps order. */
+  lastT: bigint | null;
   /** The newest usable fix, for the map and for zones. */
   latest: Fix | null = null;
 
-  add(f: RadioFix): void {
+  constructor(
+    private readonly now: () => number = Date.now,
+    lastT: bigint | null = null,
+  ) {
+    this.lastT = lastT;
+  }
+
+  /** Whether the fix was kept for the next batch. */
+  add(f: RadioFix): boolean {
     const w = toWireFix(f);
-    if (!w) return;
-    if (this.lastT !== null && w.tMs < this.lastT + BigInt(FIX_MIN_GAP_MS)) return;
+    if (!w) return false;
+    if (w.tMs < BigInt(Math.round(this.now() - FIX_MAX_AGE_MS))) return false;
+    if (this.lastT !== null && w.tMs < this.lastT + BigInt(FIX_MIN_GAP_MS)) return false;
     this.lastT = w.tMs;
     this.pending.push(w);
     this.latest = w;
+    return true;
   }
 
   /** Fixes up to and including `uptoMs`, oldest first; later ones wait for the next batch. */

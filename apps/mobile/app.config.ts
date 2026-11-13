@@ -56,6 +56,11 @@ const config: ExpoConfig = {
       NSBluetoothAlwaysUsageDescription:
         "TAIL trades secret codes with nearby players' phones over Bluetooth.",
       NSLocationWhenInUseUsageDescription: "TAIL sends your position, sealed, to the match referee.",
+      // Shown when a player chose approximate location: tail-radio asks for precise location for
+      // the session under this purpose key (TailRadioModule.swift fullAccuracyPurposeKey).
+      NSLocationTemporaryUsageDescriptionDictionary: {
+        TailHunt: "The referee checks a tag to a few metres, so the hunt needs your precise location.",
+      },
       NSLocalNetworkUsageDescription: "TAIL talks to a relay on your local network during development.",
       // A development relay is plain http on the LAN; everything else must be https.
       NSAppTransportSecurity: { NSAllowsLocalNetworking: true },

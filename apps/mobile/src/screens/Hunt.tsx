@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { Animated, Linking, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { type HuntModel, handleOf, huntModel, isTestPlayer, taggedLines } from "../game/huntModel";
+import type { Blocked } from "../game/session";
 import { useApp } from "../state/app";
 import { Icon } from "../ui/brand";
 import { heatIntervalMs } from "../ui/cadence";
@@ -285,13 +286,25 @@ export function TaggedView({
 }
 
 /** Bluetooth or location is off or denied: the hunt cannot work, so say so in one line. */
-export function BlockedView({
-  what,
-  onOpenSettings,
-}: {
-  what: "bluetooth" | "location";
-  onOpenSettings: () => void;
-}) {
+const BLOCKED: Record<Blocked, { title: string; line: string }> = {
+  bluetooth: {
+    title: "Bluetooth is off",
+    line: "TAIL finds players over Bluetooth. Turn it on for TAIL in Settings.",
+  },
+  location: {
+    title: "Location is off",
+    line: "TAIL needs your location while you play. Allow it in Settings.",
+  },
+  // Approximate location is kilometres wide; the referee judges contact in metres and refuses a
+  // tag on it, so the hunt cannot run until Precise Location is on.
+  approximate: {
+    title: "Precise location is off",
+    line: "TAIL needs your exact position to judge a tag. Turn on Precise Location for TAIL in Settings.",
+  },
+};
+
+export function BlockedView({ what, onOpenSettings }: { what: Blocked; onOpenSettings: () => void }) {
+  const b = BLOCKED[what];
   return (
     <Screen
       scroll={false}
@@ -299,11 +312,9 @@ export function BlockedView({
     >
       <View style={styles.center}>
         <Icon name="dark" size={48} tint={color.ink} />
-        <Display center>{what === "bluetooth" ? "Bluetooth is off" : "Location is off"}</Display>
+        <Display center>{b.title}</Display>
         <Body center muted>
-          {what === "bluetooth"
-            ? "TAIL finds players over Bluetooth. Turn it on for TAIL in Settings."
-            : "TAIL needs your location while you play. Allow it in Settings."}
+          {b.line}
         </Body>
       </View>
     </Screen>
