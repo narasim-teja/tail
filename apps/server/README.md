@@ -280,7 +280,9 @@ The contract stores only `zone_hash` = SHA256("tail/zone/v1" ‖ borsh(zone, saf
 circles as `{lat_e7 i32, lon_e7 i32, radius_m u32}`; the replay bundle carries the zone so the replay can
 check it.
 
-The relay restarts the loop of every running match on boot (state lives in SQLite). On SIGINT
+The relay restarts the loop of every running match on boot (state lives in SQLite), and reopens
+the lobby of a Start the last run left unfinished; one whose lease has not run out yet (a
+restart within 120 s of a crash) is reopened as soon as it does. On SIGINT
 or SIGTERM it takes no new requests or steps, lets the steps and Starts in flight finish (up to
 75 s, a referee call's deadline and a NEAR call or two), hands back every match lease it holds
 and closes the database, so a restarted relay steps its matches at once rather than after the

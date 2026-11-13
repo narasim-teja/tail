@@ -28,6 +28,23 @@ describe("boot", () => {
     expect((await req(next, "POST", `/matches/${l.id}/start`, {}, l.a)).status).toBe(200);
   });
 
+  test("a Start whose lease a dead process still held reopens once that lease runs out", async () => {
+    const store = new Store(":memory:");
+    const chain = new FakeChain();
+    const first = setup({ store, chain });
+    const l = await lobby(first);
+    expect(store.claimPhase(l.id, "lobby", "starting")).toBe(true);
+    // The crashed process's lease has 100 ms left when the relay boots again.
+    expect(store.holdLease(l.id, "dead-process", Date.now() - LEASE_MS + 100, LEASE_MS)).toBe(true);
+    first.matches.stop();
+
+    const next = setup({ store, chain, referee: first.referee });
+    next.matches.resume();
+    expect(store.match(l.id)?.phase).toBe("starting");
+    await until(() => store.match(l.id)?.phase === "lobby", "the lobby to reopen after the lease");
+    expect((await req(next, "POST", `/matches/${l.id}/start`, {}, l.a)).status).toBe(200);
+  });
+
   test("a Start another live process is running is left alone", async () => {
     const store = new Store(":memory:");
     const chain = new FakeChain();

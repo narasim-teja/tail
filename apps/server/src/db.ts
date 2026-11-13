@@ -742,18 +742,31 @@ export class Store {
   /**
    * On boot: a `starting` match with no stored state never got the referee's answer (or the
    * relay died before storing it), so its lobby is open again and the host can press Start.
-   * Skips a match another live process holds the lease of: that one is starting it right now.
+   * Skips a match whose lease has not run out: another live process may be starting it right
+   * now (`interruptedStartLeases` says when to look again). `only` limits it to those matches.
    */
-  reopenInterruptedStarts(nowMs: number): string[] {
+  reopenInterruptedStarts(nowMs: number, only?: string[]): string[] {
     return this.db
-      .query<{ match_id: string }, [number]>(
+      .query<{ match_id: string }, [number, string | null]>(
         `UPDATE matches SET phase = 'lobby', error = 'the relay restarted during Start; press Start again'
          WHERE phase = 'starting' AND state IS NULL
-           AND match_id NOT IN (SELECT match_id FROM leases WHERE expires_ms > ?)
+           AND match_id NOT IN (SELECT match_id FROM leases WHERE expires_ms > ?1)
+           AND (?2 IS NULL OR match_id IN (SELECT value FROM json_each(?2)))
          RETURNING match_id`,
       )
-      .all(nowMs)
+      .all(nowMs, only ? JSON.stringify(only) : null)
       .map((r) => r.match_id);
+  }
+
+  /** The interrupted Starts `reopenInterruptedStarts` skipped, and when each one's lease runs out. */
+  interruptedStartLeases(nowMs: number, only?: string[]): { match_id: string; expires_ms: number }[] {
+    return this.db
+      .query<{ match_id: string; expires_ms: number }, [number, string | null]>(
+        `SELECT m.match_id, l.expires_ms FROM matches m JOIN leases l ON l.match_id = m.match_id
+         WHERE m.phase = 'starting' AND m.state IS NULL AND l.expires_ms > ?1
+           AND (?2 IS NULL OR m.match_id IN (SELECT value FROM json_each(?2)))`,
+      )
+      .all(nowMs, only ? JSON.stringify(only) : null);
   }
 
   codeTaken(code: string): boolean {

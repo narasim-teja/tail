@@ -125,6 +125,8 @@ export class Matches {
   private readonly running = new Set<string>();
   /** Steps and Starts in flight, for `drain`. */
   private readonly busy = new Set<Promise<unknown>>();
+  /** The next look at interrupted Starts another process held the lease of (`reopenStarts`). */
+  private startsTimer: ReturnType<typeof setTimeout> | undefined;
   /** Hosts with a create in flight: one open lobby per host, and the check spans an await. */
   private readonly creating = new Set<string>();
   /** This process's name on lease rows. */
@@ -370,14 +372,36 @@ export class Matches {
    * of every match that was mid-game.
    */
   resume() {
-    const reopened = this.d.store.reopenInterruptedStarts(this.now());
-    if (reopened.length) this.d.log.warn({ matches: reopened }, "Start was interrupted; lobbies open again");
+    this.reopenStarts();
     for (const id of this.d.store.matchesIn(["running", "ending"])) this.schedule(id, 0);
+  }
+
+  /**
+   * An interrupted Start whose lease has not run out (a restart within LEASE_MS of the crash)
+   * may still be another live process's, so it is left alone, and looked at again once the lease
+   * runs out: without that, a lobby a dead process held stays `starting` for good. Only the
+   * matches found at boot are looked at again; this process's own Starts are none of them.
+   */
+  private reopenStarts(only?: string[]) {
+    const now = this.now();
+    const reopened = this.d.store.reopenInterruptedStarts(now, only);
+    if (reopened.length) this.d.log.warn({ matches: reopened }, "Start was interrupted; lobbies open again");
+    const leased = this.d.store.interruptedStartLeases(now, only);
+    if (this.stopped || !leased.length) return;
+    const at = Math.min(...leased.map((l) => l.expires_ms));
+    this.startsTimer = setTimeout(
+      () => {
+        this.startsTimer = undefined;
+        this.reopenStarts(leased.map((l) => l.match_id));
+      },
+      Math.max(0, at - now) + 1,
+    );
   }
 
   /** Stops the loop and hands back this process's leases, so another relay can go on at once. */
   stop() {
     this.stopped = true;
+    clearTimeout(this.startsTimer);
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
     for (const id of this.d.store.matchesIn(["starting", "running", "ending"]))
