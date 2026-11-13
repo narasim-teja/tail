@@ -5,7 +5,7 @@
 import { useEffect, useRef } from "react";
 import { Animated, Share, StyleSheet, View } from "react-native";
 import Svg, { Path, Rect } from "react-native-svg";
-import { money } from "../game/huntModel";
+import { handleOf, money } from "../game/huntModel";
 import { joinLink } from "../relay/client";
 import { TOP_UP, useApp } from "../state/app";
 import { haptic } from "../ui/haptics";
@@ -125,7 +125,7 @@ function PlayerRow({ p, dealing, reduceMotion }: { p: Player; dealing: boolean; 
         </Ripple>
       </View>
       <View style={styles.grow}>
-        <Label>{p.id.split(".")[0] ?? p.id}</Label>
+        <Label>{handleOf(p.id)}</Label>
         {p.host || p.me ? (
           <Caption muted>{[p.host ? "Host" : null, p.me ? "You" : null].filter(Boolean).join(" · ")}</Caption>
         ) : null}

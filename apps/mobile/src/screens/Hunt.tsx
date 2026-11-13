@@ -7,7 +7,7 @@ import type { HintKind } from "@tail/protocol";
 import { useEffect, useRef, useState } from "react";
 import { Animated, Linking, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { type HuntModel, handleOf, huntModel, taggedLines } from "../game/huntModel";
+import { type HuntModel, handleOf, huntModel, isTestPlayer, taggedLines } from "../game/huntModel";
 import { useApp } from "../state/app";
 import { Icon } from "../ui/brand";
 import { heatIntervalMs } from "../ui/cadence";
@@ -202,6 +202,7 @@ export function HuntView({
         />
         <HintSheet
           open={sheet}
+          noLocation={isTestPlayer(m.target)}
           hints={m.hints}
           reduceMotion={reduceMotion}
           onClose={() => setSheet(false)}

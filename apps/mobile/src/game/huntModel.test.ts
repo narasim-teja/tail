@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DARK_LEAK_MS, HintKind, LOCK_EPOCHS, type PlayerKeys, TargetStatus } from "@tail/protocol";
 import { hudView } from "./hud";
-import { huntModel, taggedLines } from "./huntModel";
+import { handleOf, huntModel, isTestPlayer, resultOutcome, taggedLines } from "./huntModel";
 import type { SessionSnapshot } from "./session";
 
 const NOW = 1_800_000_000_000;
@@ -147,5 +147,24 @@ describe("hunt model", () => {
       line: "Your head, $5.40, went to your hunter.",
       more: "The replay shows who, once the match ends.",
     });
+  });
+});
+
+describe("names and outcomes", () => {
+  test("a handle is the first label; a test player is named as one", () => {
+    expect(handleOf("maya.tail-dev.testnet")).toBe("maya");
+    expect(handleOf("ghost-10rytjmq.tail-dev.testnet")).toBe("Test player");
+    expect(isTestPlayer("ghost-a.r.testnet")).toBe(true);
+    expect(isTestPlayer("ghostly.r.testnet")).toBe(false);
+  });
+
+  test("the chain decides the outcome when the HUD's last word is missing", () => {
+    const f = { hudStatus: null, out: false, ended: true, standing: 1 } as const;
+    expect(resultOutcome(f)).toBe("won");
+    expect(resultOutcome({ ...f, standing: 2 })).toBe("survived");
+    expect(resultOutcome({ ...f, out: true })).toBe("out");
+    expect(resultOutcome({ ...f, out: true, ended: false })).toBe("running");
+    expect(resultOutcome({ ...f, hudStatus: "won", standing: 2 })).toBe("won");
+    expect(resultOutcome({ ...f, hudStatus: "out", standing: 1 })).toBe("out");
   });
 });

@@ -20,6 +20,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { handleOf } from "../game/huntModel";
 import { Icon, SystemIcon, type SystemSymbol } from "./brand";
 import { haptic } from "./haptics";
 import { ease } from "./motion";
@@ -464,7 +465,7 @@ export function ToggleRow({
 
 /** A player as initials in a soft circle, Find My style. */
 export function Avatar({ name, size = 40, mark }: { name: string; size?: number; mark?: boolean }) {
-  const handle = name.split(".")[0] ?? name;
+  const handle = handleOf(name);
   const initials = handle
     .split(/[-_]/)
     .filter(Boolean)

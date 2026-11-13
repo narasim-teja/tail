@@ -57,8 +57,30 @@ export interface HuntModel {
 
 export const money = (units: bigint) => `$${formatAmount(units)}`;
 
-/** "maya.tail-dev.testnet" → "maya": friends know each other by handle. */
-export const handleOf = (account: string) => account.split(".")[0] ?? account;
+/** Test players are ghost accounts (`ghost-…`, the relay's testing door). */
+export const isTestPlayer = (account: string) => account.startsWith("ghost-");
+
+/** "maya.tail-dev.testnet" → "maya": friends know each other by handle. A ghost is "Test player". */
+export const handleOf = (account: string) =>
+  isTestPlayer(account) ? "Test player" : (account.split(".")[0] ?? account);
+
+export type Outcome = "survived" | "won" | "out" | "running";
+
+/**
+ * How the match went for you. The chain's record decides when the HUD's last word is missing (the
+ * app was reopened, or the final HUD never arrived): out is out, and the only one left standing
+ * at the end won.
+ */
+export function resultOutcome(f: {
+  hudStatus: "hunting" | "out" | "won" | null;
+  out: boolean;
+  ended: boolean;
+  standing: number;
+}): Outcome {
+  if (f.hudStatus === "out" || f.out) return f.ended ? "out" : "running";
+  if (f.hudStatus === "won" || (f.ended && f.standing === 1)) return "won";
+  return "survived";
+}
 
 /**
  * The tagged screen's lines. The HUD names who took your head; without the name (a HUD from a

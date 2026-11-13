@@ -29,6 +29,7 @@ import { checkedRefereeBox } from "../relay/referee";
 import { assertWith, attestor, radioPort } from "./device";
 import { files } from "./files";
 import { decodeMatchRecord, encodeMatchRecord, type MatchRecord } from "./persist";
+import { type Page, type Route, routeFor } from "./route";
 
 /** The busy label while a typed lobby code is looked up; Home shows it on its button. */
 export const FINDING_LOBBY = "Finding the lobby";
@@ -40,20 +41,6 @@ export interface Settings extends CarryConfig {
   rpcUrl: string;
   contractId: string;
 }
-
-/** Screens opened from Home, before any match. */
-export type Page = "create" | "scan" | "profile";
-
-export type Route =
-  | "loading"
-  | "enrol"
-  | "primer"
-  | "home"
-  | Page
-  | "lobby"
-  | "briefing"
-  | "hunt"
-  | "results";
 
 export interface RecentMatch {
   matchId: string;
@@ -140,16 +127,17 @@ class AppModel {
   }
 
   get route(): Route {
-    if (!this.ready) return "loading";
-    if (!this.identity?.accountId) return "enrol";
-    if (!this.primerSeen) return "primer";
-    if (!this.matchId) return this.page ?? "home";
-    if (this.resultsNow) return "results";
-    if (this.session) return this.session.snapshot().over ? "results" : "hunt";
-    const phase = this.match?.phase;
-    if (phase === "running" || phase === "ending") return "briefing";
-    if (phase === "ended") return "results";
-    return "lobby";
+    return routeFor({
+      ready: this.ready,
+      enrolled: !!this.identity?.accountId,
+      primerSeen: this.primerSeen,
+      matchId: this.matchId,
+      page: this.page,
+      resultsNow: this.resultsNow,
+      session: this.session ? { over: this.session.snapshot().over } : null,
+      phase: this.match?.phase,
+      out: !!this.match?.chain?.players.find((p) => p.accountId === this.me)?.out,
+    });
   }
 
   get me(): string | null {

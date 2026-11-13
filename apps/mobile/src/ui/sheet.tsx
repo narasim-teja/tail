@@ -26,9 +26,12 @@ export function HintSheet({
   onClose,
   reduceMotion,
   initialKind = HintKind.Near,
+  noLocation = false,
 }: {
   open: boolean;
   hints: HintOption[];
+  /** Your target never reports a location (a test player): the referee refuses every hint. */
+  noLocation?: boolean;
   onSend: (kind: HintKind, question: string) => void;
   onClose: () => void;
   reduceMotion: boolean;
@@ -119,9 +122,13 @@ export function HintSheet({
             autoCorrect
           />
           <Body muted style={styles.count}>{`${question.length}/${HINT_TEXT_MAX}`}</Body>
+          {noLocation ? (
+            <Caption muted>Your target is a test player. It has no location, so hints can't find it.</Caption>
+          ) : null}
           <Button
             title={chosen ? `Send ${chosen.name}, ${chosen.price}` : "Send"}
             icon={ICON[kind]}
+            disabled={noLocation}
             onPress={() => {
               onSend(kind, question);
               setQuestion("");

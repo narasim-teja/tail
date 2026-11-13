@@ -3,7 +3,7 @@
 // name slides up out of a mask with a tick in the hand, and the last seconds count down by feel.
 import { useEffect, useState } from "react";
 import { Animated, StyleSheet, View } from "react-native";
-import { money } from "../game/huntModel";
+import { handleOf, isTestPlayer, money } from "../game/huntModel";
 import { clock } from "../game/rules";
 import { useApp } from "../state/app";
 import { Mark } from "../ui/brand";
@@ -43,7 +43,7 @@ export function BriefingView({
   onRetry: () => void;
 }) {
   const reduceMotion = useReduceMotion();
-  const handle = m.target ? (m.target.split(".")[0] ?? m.target) : null;
+  const handle = m.target ? handleOf(m.target) : null;
   const reveal = useArrive(handle, reduceMotion, { ms: motion.slow * 1.4, delay: 120 });
   const secs = Math.ceil(m.startsInMs / 1_000);
   const step = useArrive(secs <= FINAL ? secs : 0, reduceMotion, { ms: motion.base });
@@ -104,7 +104,11 @@ export function BriefingView({
           </Animated.View>
         </View>
         <Animated.View style={rise(reveal, 6)}>
-          <Body muted>{m.target}</Body>
+          <Body muted>
+            {isTestPlayer(m.target)
+              ? "A test player: it never moves, and drops out after 3 minutes."
+              : m.target}
+          </Body>
         </Animated.View>
       </View>
       <Row gap="xxl" style={styles.figures}>

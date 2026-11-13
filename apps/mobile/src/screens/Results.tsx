@@ -2,7 +2,7 @@
 // it is verified, one tap away for anyone who asks.
 import { useEffect, useState } from "react";
 import { Animated, Linking, Pressable, StyleSheet, View } from "react-native";
-import { money } from "../game/huntModel";
+import { money, type Outcome, resultOutcome } from "../game/huntModel";
 import { useApp } from "../state/app";
 import { Icon, Mark } from "../ui/brand";
 import { RollingMoney } from "../ui/game";
@@ -25,7 +25,7 @@ import { Ripple } from "../ui/scene";
 import { color, HIT, motion, radius, space } from "../ui/theme";
 
 export interface ResultsModel {
-  outcome: "survived" | "won" | "out" | "running";
+  outcome: Outcome;
   head: bigint | null;
   tags: number;
   /** Null until the replay site is set or the match has ended. */
@@ -186,14 +186,12 @@ export function Results() {
   const snap = app.session?.snapshot();
   const mine = app.match?.chain?.players.find((p) => p.accountId === app.me);
   const ended = app.match?.phase === "ended" || app.match?.chain?.phase === "ended";
-  const out = snap?.hud?.status === "out" || !!mine?.out;
-  const outcome: ResultsModel["outcome"] = out
-    ? ended
-      ? "out"
-      : "running"
-    : snap?.hud?.status === "won"
-      ? "won"
-      : "survived";
+  const outcome = resultOutcome({
+    hudStatus: snap?.hud?.status ?? null,
+    out: !!mine?.out,
+    ended,
+    standing: app.match?.chain?.players.filter((p) => !p.out).length ?? 0,
+  });
   const replay =
     ended && app.matchId && app.settings.replayUrl
       ? `${app.settings.replayUrl.replace(/\/+$/, "")}/?match=${app.matchId}`
