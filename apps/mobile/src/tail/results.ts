@@ -19,17 +19,18 @@ export function relayFaultLine(f: RelayFault | null, checking: boolean): string 
   return `The log check against NEAR was not completed: ${bad}${times}. Your phone kept the proof.`;
 }
 
-/** The money line on Results: what to call it, the amount, and a plain refund note if any. */
+/** The money line on Results: what to call it, the amount, and a plain note on how it was settled. */
 export interface FinalMoney {
   label: string;
   units: bigint | null;
-  refund: string | null;
+  note: string | null;
 }
 
 /**
  * Before the match settles, the head the contract holds (or the last HUD's). Once it has, heads
  * are 0 and `paid` is what this player got: the head plus any hint credit on a payout, the stake
- * on a refund. A refund says why, in plain words.
+ * on a refund. A refund says why, in plain words, and so does a payout the contract made on its
+ * old rules, which never replayed the match.
  */
 export function finalMoney(f: {
   settledAs: Settlement | null;
@@ -39,23 +40,29 @@ export function finalMoney(f: {
 }): FinalMoney {
   switch (f.settledAs) {
     case null:
-      return { label: "Final head", units: f.head, refund: null };
+      return { label: "Final head", units: f.head, note: null };
     case "payout":
-      return { label: "Final head", units: f.paid, refund: null };
+      return { label: "Final head", units: f.paid, note: null };
+    case "payout_unreplayed":
+      return {
+        label: "Final head",
+        units: f.paid,
+        note: "Paid out on the contract's old rules: it paid what the referee's verdicts said, without replaying the match.",
+      };
     case "refunded_rule_violation": {
       // "event 3: a Tag did not follow the ring" → "a Tag did not follow the ring".
       const rule = f.violation?.replace(/^event \d+: /, "");
       return {
         label: "Refunded",
         units: f.paid,
-        refund: `Refunded: the referee broke a rule${rule ? ` (${rule})` : ""}, so every player got their stake back.`,
+        note: `Refunded: the referee broke a rule${rule ? ` (${rule})` : ""}, so every player got their stake back.`,
       };
     }
     case "refunded_abort":
       return {
         label: "Refunded",
         units: f.paid,
-        refund: "Refunded: the match was called off, so every player got their stake back.",
+        note: "Refunded: the match was called off, so every player got their stake back.",
       };
   }
 }

@@ -351,7 +351,7 @@ export const STATES: Record<string, () => ReactNode> = {
     <ResultsView
       m={{
         outcome: "survived",
-        money: { label: "Final head", units: 10_400_000n, refund: null },
+        money: { label: "Final head", units: 10_400_000n, note: null },
         tags: 1,
         replayUrl: "https://replay.example/?match=x",
         seed: 0,
@@ -372,7 +372,7 @@ export const STATES: Record<string, () => ReactNode> = {
     <ResultsView
       m={{
         outcome: "out",
-        money: { label: "Final head", units: 0n, refund: null },
+        money: { label: "Final head", units: 0n, note: null },
         tags: 0,
         replayUrl: "https://replay.example/?match=x",
         seed: 0,
@@ -396,8 +396,7 @@ export const STATES: Record<string, () => ReactNode> = {
         money: {
           label: "Refunded",
           units: 5_000_000n,
-          refund:
-            "Refunded: the referee broke a rule (a Tag did not follow the ring), so every player got their stake back.",
+          note: "Refunded: the referee broke a rule (a Tag did not follow the ring), so every player got their stake back.",
         },
         tags: 1,
         replayUrl: "https://replay.example/?match=x",
@@ -419,7 +418,7 @@ export const STATES: Record<string, () => ReactNode> = {
     <ResultsView
       m={{
         outcome: "survived",
-        money: { label: "Final head", units: 10_400_000n, refund: null },
+        money: { label: "Final head", units: 10_400_000n, note: null },
         tags: 0,
         replayUrl: "https://replay.example/?match=x",
         seed: 0,
@@ -440,7 +439,7 @@ export const STATES: Record<string, () => ReactNode> = {
     <ResultsView
       m={{
         outcome: "running",
-        money: { label: "Final head", units: 0n, refund: null },
+        money: { label: "Final head", units: 0n, note: null },
         tags: 0,
         replayUrl: null,
         seed: 0,

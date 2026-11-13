@@ -53,12 +53,20 @@ describe("final money", () => {
     expect(finalMoney({ ...f, settledAs: null })).toEqual({
       label: "Final head",
       units: 1_500_000n,
-      refund: null,
+      note: null,
     });
     expect(finalMoney({ ...f, head: 0n, settledAs: "payout" })).toEqual({
       label: "Final head",
       units: 2_000_000n,
-      refund: null,
+      note: null,
+    });
+  });
+
+  test("a match paid out before the contract upgrade shows what NEAR paid and says it was never replayed", () => {
+    expect(finalMoney({ ...f, head: 0n, settledAs: "payout_unreplayed" })).toEqual({
+      label: "Final head",
+      units: 2_000_000n,
+      note: "Paid out on the contract's old rules: it paid what the referee's verdicts said, without replaying the match.",
     });
   });
 
@@ -72,10 +80,9 @@ describe("final money", () => {
     expect(broken).toEqual({
       label: "Refunded",
       units: 1_000_000n,
-      refund:
-        "Refunded: the referee broke a rule (a Tag did not follow the ring), so every player got their stake back.",
+      note: "Refunded: the referee broke a rule (a Tag did not follow the ring), so every player got their stake back.",
     });
-    expect(finalMoney({ ...f, paid: 1_000_000n, settledAs: "refunded_abort" }).refund).toBe(
+    expect(finalMoney({ ...f, paid: 1_000_000n, settledAs: "refunded_abort" }).note).toBe(
       "Refunded: the match was called off, so every player got their stake back.",
     );
   });

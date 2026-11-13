@@ -121,6 +121,10 @@ describe("match facts", () => {
       "refunded_rule_violation",
       "event 2: a Tag did not follow the ring",
     ]);
+    // A match that ended before the upgrade: paid out by the old code, never replayed.
+    expect(parseMatchFacts({ ...view, settled_as: "payout_unreplayed" })?.settledAs).toBe(
+      "payout_unreplayed",
+    );
   });
 
   test("a contract from before v2 reports no settlement; an unknown one is refused", () => {

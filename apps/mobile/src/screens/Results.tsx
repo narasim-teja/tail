@@ -32,7 +32,7 @@ import { color, HIT, motion, radius, space } from "../ui/theme";
 
 export interface ResultsModel {
   outcome: Outcome;
-  /** The money line: the head before settlement, what NEAR paid after, a refund said plainly. */
+  /** The money line: the head before settlement, what NEAR paid after, and how it was settled. */
   money: FinalMoney;
   tags: number;
   /** Null until the replay site is set or the match has ended. */
@@ -190,7 +190,7 @@ export function ResultsView({
           <Num>{tags}</Num>
         </View>
       </Row>
-      {m.money.refund ? <Body>{m.money.refund}</Body> : null}
+      {m.money.note ? <Body>{m.money.note}</Body> : null}
       <Animated.View
         style={[styles.dispatch, dark && styles.dispatchDark, rise(handler, 10)]}
         accessible

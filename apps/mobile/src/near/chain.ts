@@ -7,11 +7,18 @@ import { type AnchoredRoot, fromHex } from "@tail/protocol";
 import type { NearRpc } from "./rpc";
 
 /**
- * How a match's money left it (`get_match.settled_as`). Only `payout` follows the play; the two
- * refunds give every player their stake back. Null while it is a lobby or running, and on a
- * contract from before protocol v2, which does not report it.
+ * How a match's money left it (`get_match.settled_as`). `payout` follows the play after End's
+ * replay held; `payout_unreplayed` is a match that ended on the contract before protocol v2,
+ * paid as the verdicts moved the heads, never replayed. The two refunds give every player their
+ * stake back. Null while it is a lobby or running, and on a contract from before protocol v2,
+ * which does not report it.
  */
-export const SETTLEMENTS = ["payout", "refunded_rule_violation", "refunded_abort"] as const;
+export const SETTLEMENTS = [
+  "payout",
+  "payout_unreplayed",
+  "refunded_rule_violation",
+  "refunded_abort",
+] as const;
 export type Settlement = (typeof SETTLEMENTS)[number];
 
 /** `settled_as` as the contract reports it, or null when it is absent. */
