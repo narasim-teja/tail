@@ -405,9 +405,8 @@ The scripts read the repo-root `.env.local`. `REFEREE_PAYMENT_KEY` takes precede
 `OUTLAYER_PAYMENT_KEY`, and `REFEREE_VERSION=<wasm sha256>` pins a deployed version that is not
 active.
 
-Active version on OutLayer: wasm sha256 `20446c643bd4b1cc8a017669596ed361506ad557c99464ecfe19beead6d08664`
-(HUDs carry `tagged_by`). It was built before the host split for the local test referee. The
-current source is protocol v2 and builds `04d93c90…` (720 KB; WASI imports 0.2.6, HTTP
-0.2.4). It is not deployed: OutLayer testnet was not running calls on 2026-11-12. The v1
-version on OutLayer does not speak protocol v2; upload this one and pin its hash once OutLayer
-runs calls again.
+Active version on OutLayer: wasm sha256 `3f9320a61236f02f72481c2ec2b920854f22c7554924a315eebbea52aad85690`
+(protocol v2, 768 KB; WASI imports 0.2.6, HTTP 0.2.4), deployed 2026-11-13. `pubkeys` returns
+the same keys as the v1 build `20446c64…08664` before it. `ALLOW_UNATTESTED` is not set there,
+so `enroll` refuses a device without an Apple attestation, and `scripts/smoke.ts` (which enrols
+unattested ghosts) stops at `enroll` against it; against the local test referee it passes.

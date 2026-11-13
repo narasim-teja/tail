@@ -16,13 +16,13 @@ and Forfeit against it and the revealed hint targets. Only then does it pay out.
 fails, it refunds every original stake and records the first broken rule. `abort` refunds every
 original stake of a match whose referee went quiet.
 
-Testnet: `tail.tail-dev-a38d13.testnet`, deployed by `e2e/deploy.ts`. It runs the code from before
-this round (no `vrf_sender`, no `get_verdict_head`, no dossiers): the in-place upgrade
-(`deploy.ts --upgrade --migrate`) has not been run. Since OutLayer testnet stopped running calls on
-2026-11-12 it pins the local test referee's keys, not the enclave's: `get_config` shows
-`referee_pk` `d35338a9…6594` and `vrf_pk` `ad82f28f…defcb`. While those are pinned, the referee is
-whoever runs that machine. The enclave's verdict key is `e1c64271…7d6c56` and OutLayer's testnet
-VRF key `c0c5aeae…f8cfa8`; re-pinning them is a `set_referee_pk` / `set_vrf_pk` away.
+Testnet: `tail.tail-dev-a38d13.testnet`, deployed by `e2e/deploy.ts`. It was upgraded in place to
+this code on 2026-11-13 (`deploy.ts --upgrade --migrate`; matches settled before that read
+`settled_as: "payout_unreplayed"`). Since OutLayer testnet stopped running calls on 2026-11-12 it
+pins the local test referee's keys, not the enclave's: `get_config` shows `referee_pk`
+`d35338a9…6594` and `vrf_pk` `ad82f28f…defcb`. While those are pinned, the referee is whoever runs
+that machine. The enclave's verdict key is `e1c64271…7d6c56` and OutLayer's testnet VRF key
+`c0c5aeae…f8cfa8`; re-pinning them is a `set_referee_pk` / `set_vrf_pk` away.
 
 ## Encoding
 
