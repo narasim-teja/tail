@@ -58,7 +58,14 @@ export type DossierRead =
   | { kind: "no-view" }
   | { kind: "unreachable"; reason: string };
 
-export type RootAnswer = "held" | "not-held" | "unreachable";
+/** no-checkpoint: the match was called off before its first checkpoint, so it anchored no root. */
+export type RootAnswer = "held" | "not-held" | "unreachable" | "no-checkpoint";
+
+/**
+ * An entry for a match aborted before its first checkpoint carries log_size 0 and the empty log's
+ * root (SHA-256 of nothing): no root was ever anchored, so get_roots rightly lists none.
+ */
+export const beforeAnyCheckpoint = (e: DossierEntry) => e.log_size === "0";
 
 /** near-api-js reports a missing view as "Contract method is not found" (ContractMethodNotFoundError). */
 const noSuchMethod = (e: unknown) =>
@@ -124,6 +131,7 @@ export async function readDossier(network: string, contract: string, account: st
 
 /** Whether `get_roots(match_id)` lists the entry's root at its log size (a checkpoint or End). */
 export async function rootOnNear(network: string, contract: string, e: DossierEntry): Promise<RootAnswer> {
+  if (beforeAnyCheckpoint(e)) return "no-checkpoint";
   try {
     const roots = await viewer(network)<{
       checkpoints: { log_size: number; root: string }[];

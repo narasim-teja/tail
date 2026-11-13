@@ -1,10 +1,11 @@
-// The Dossier page: the contract's NFT card against the one drawn here from the same record.
+// The Dossier page: the contract's NFT card against the one drawn here from the same record, and
+// each entry's root against NEAR's.
 
 import { describe, expect, test } from "bun:test";
-import type { DossierView } from "@tail/brand";
+import type { DossierEntry, DossierView } from "@tail/brand";
 import vectors from "@tail/brand/vectors/dossier.json" with { type: "json" };
 import { renderToStaticMarkup } from "react-dom/server";
-import { compareCard } from "../src/lib/dossier.ts";
+import { compareCard, rootOnNear } from "../src/lib/dossier.ts";
 import { Record } from "../src/ui/Dossier.tsx";
 import { text } from "./render.tsx";
 
@@ -34,5 +35,29 @@ describe("the dossier card", () => {
     const unread = text(page({ kind: "unread" }));
     expect(unread).toContain("NEAR didn't return the NFT, so its picture wasn't compared.");
     expect(unread).toContain("Drawn here from the record");
+  });
+});
+
+describe("a dossier entry's root", () => {
+  test("a match called off before any checkpoint anchored nothing: not 'not held', and NEAR isn't asked", async () => {
+    const real = globalThis.fetch;
+    let asked = 0;
+    globalThis.fetch = (async () => {
+      asked++;
+      throw new TypeError("offline");
+    }) as unknown as typeof fetch;
+    try {
+      const empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+      const entry = {
+        ...(v.view.entries[0] as DossierEntry),
+        log_size: "0",
+        root: empty,
+        result: "refunded" as const,
+      };
+      expect(await rootOnNear("testnet", "tail.example.testnet", entry)).toBe("no-checkpoint");
+      expect(asked).toBe(0);
+    } finally {
+      globalThis.fetch = real;
+    }
   });
 });

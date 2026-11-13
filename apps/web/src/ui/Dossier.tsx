@@ -10,6 +10,7 @@ import { ArrowUpRight } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import {
+  beforeAnyCheckpoint,
   type CardCheck,
   type DossierRead,
   type RootAnswer,
@@ -231,7 +232,7 @@ function Entry({
   const [answer, setAnswer] = useState<RootAnswer | "checking" | null>(null);
   const token = facts ? tokens[facts.token] : undefined;
   const payout = token ? `${money(BigInt(e.payout), token.decimals)} ${token.symbol}` : null;
-  const anchored = e.log_size !== "0";
+  const anchored = !beforeAnyCheckpoint(e);
   const check = () => {
     setAnswer("checking");
     void rootOnNear(PINS.network, PINS.contract, e).then(setAnswer);
@@ -263,7 +264,7 @@ function Entry({
               entries
             </>
           ) : (
-            "Called off before the first checkpoint: nothing was anchored."
+            "Called off before any checkpoint, so it anchored no root."
           )}
         </p>
         {!sample && (
