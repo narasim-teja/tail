@@ -120,7 +120,10 @@ up in that call's `leaves`. `hint_id` is the one the Hint verdict on chain carri
 
 **`end`** `{match_id, state, last_seq, receipts?}`, only after a tick returned `over`. →
 `{call_id, seq, verdicts: [End], proofs, log_size, root (hex), state, leaves, log_sealed}`.
-Here `log_size` and `root` are the End verdict's, the log before End's own entry.
+Here `log_size` and `root` are the End verdict's, the log before End's own entry. `end` again
+with the same `state` and `receipts` answers with the End it recorded (same `call_id`, verdict,
+signature and proof), so a relay whose answer was lost just calls again; a repeat that would
+produce another End (other receipts, another state) is refused.
 
 **`declassify`** `{match_id, log_sealed: [b64]}`, only after End, with every `log_sealed` blob
 of `start`, each `tick` and `end`, in order. It refuses unless the blobs open in sequence, the
@@ -222,8 +225,8 @@ Storage holds:
 - `device:{account}`, one per enrolled device: borsh `Device` (the receipt body) ‖ `0x02` ‖
   u64le notBefore of its credential certificate (0 for a ghost). A record of the receipt body
   alone (version 1) reads as notBefore 0.
-- `match:{id}`, written once at `start` (`set_if_absent`) and once at `end` (compare-and-swap),
-  so a match never gets two Start or two End verdicts. It holds K_m, the VRF alpha and
+- `match:{id}`, written once at `start` (`set_if_absent`) and once at `end` (compare-and-swap,
+  then checked by every repeat of `end`), so a match never gets two Start or two End verdicts. It holds K_m, the VRF alpha and
   signature, the ring and the devices.
 
 | Domain                                         | Used for                                                                  |
@@ -372,11 +375,13 @@ digest, signed, padded and sealed player keys, a second `start` refused). It the
 batch refused with `ASSERTION`, signed HUDs naming the log, `voice` (only the five fields, the template padded,
 sealed and signed to the asker; a forged hint blob refused), a receipt with an altered prefix
 refused, the receipt passed twice and logged once in the next tick, a
-Checkpoint, and the end. Then two racing `end`s of which exactly one wins, the verdict chain,
+Checkpoint, and the end. Then two racing `end`s that record one End between them, the verdict chain,
 every consistency proof, the VRF reveal under `vrf_pk` with the contract's alpha checks,
 `declassify` (refused with a blob missing; the log equals the leaves, with `Enrolled`, `Tick`,
 `Rejected` and the receipt, every salt checked against the released `K_m`),
-`declassify_batches` with assertions, and the file modes.
+`declassify_batches` with assertions, and the file modes. A second match ends twice with the
+same input (the same End back, byte for byte) and is refused a third `end` that would log a
+receipt the first left out.
 
 `REFEREE_MODE=local bun crates/referee-wasi/scripts/smoke.ts` (and `match.ts`) run the same
 scripts as on OutLayer against `target/release/tail-referee`, checked with `packages/protocol`,

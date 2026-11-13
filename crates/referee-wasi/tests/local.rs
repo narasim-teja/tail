@@ -179,13 +179,29 @@ fn enroll_all(dir: &Path, referee_pk: &VerifyingKey, accounts: &[&str]) {
     }
 }
 
-/// Two `end`s racing on one blob: the compare-and-swap on the match record lets one through.
+/// Two `end`s racing on one blob: the compare-and-swap on the match record records one End. The
+/// other is refused if it lost the race, or, if it read the record after, answered with that
+/// same End; never with another.
 fn end_once(dir: &Path, input: &Value) -> Value {
     let racers: Vec<_> = (0..2).map(|_| spawn(Some(dir), input)).collect();
     let mut answers: Vec<Value> = racers.into_iter().map(answer).collect();
     answers.sort_by_key(|a| a["ok"] != true);
     assert_eq!(answers[0]["ok"], true, "{}", answers[0]);
-    assert_eq!(answers[1]["ok"], false, "only one End: {}", answers[1]);
+    if answers[1]["ok"] == true {
+        assert_eq!(
+            answers[1]["result"]["verdicts"], answers[0]["result"]["verdicts"],
+            "one End"
+        );
+    } else {
+        assert!(
+            answers[1]["error"]
+                .as_str()
+                .unwrap()
+                .contains("match record changed"),
+            "{}",
+            answers[1]
+        );
+    }
     answers[0]["result"].clone()
 }
 
@@ -828,13 +844,81 @@ fn plays_a_match_with_keys_on_disk() {
         Some(dir),
         &json!({ "cmd": "end", "match_id": b64(&match_id), "state": ended["state"], "last_seq": end.seq }),
     );
-    assert!(again.contains("already ended"), "{again}");
+    assert!(again.contains("AlreadyEnded"), "{again}");
 
     check_modes(dir);
 
     // ── a second process with the same directory has the same keys ──
     // ed25519 signatures are deterministic, so even `box_pk_sig` is byte for byte the same.
     assert_eq!(call(dir, &json!({ "cmd": "pubkeys" })), keys);
+}
+
+#[test]
+fn end_answers_a_repeat_with_the_recorded_end_and_refuses_any_other() {
+    let tmp = TempDir::new("end-again");
+    let dir = tmp.0.as_path();
+    let (keys, referee_pk, _) = pubkeys(dir);
+    let box_pk: [u8; 32] = fixed(&keys["referee_box_pk"]);
+    let accounts = ["carol.test.near", "alice.test.near", "bob.test.near"];
+    enroll_all(dir, &referee_pk, &accounts);
+    let match_id = [9u8; 16];
+    let (started, start_ms, end_ms, _) = start_match(dir, &referee_pk, &accounts, match_id);
+    let mut phones: Vec<Phone> = accounts
+        .iter()
+        .map(|a| Phone::open(&started, a, &referee_pk))
+        .collect();
+    phones.sort_by_key(|p| p.index);
+    // Tick 1: everyone reports, and player 0 asks a hint. Its receipt is not passed on, as when
+    // `voice` failed before End.
+    let t1_ms = start_ms + 10_000;
+    let batches: Vec<String> = phones
+        .iter_mut()
+        .map(|p| {
+            let actions = if p.index == 0 {
+                vec![Action::Hint {
+                    hint: 0,
+                    nonce: 1,
+                    text: Some("close?".into()),
+                }]
+            } else {
+                Vec::new()
+            };
+            p.batch(&box_pk, t1_ms - 1_000, actions, 1).0
+        })
+        .collect();
+    let t1 = call(
+        dir,
+        &json!({ "cmd": "tick", "match_id": b64(&match_id), "state": started["state"], "last_seq": 1,
+                 "now_ms": t1_ms, "batches": batches }),
+    );
+    assert_eq!(t1["hints"].as_array().map(Vec::len), Some(1), "{t1}");
+    let v = call(
+        dir,
+        &json!({ "cmd": "voice", "state": t1["state"], "blob": t1["hints"][0]["blob"] }),
+    );
+    let t2 = call(
+        dir,
+        &json!({ "cmd": "tick", "match_id": b64(&match_id), "state": t1["state"], "last_seq": t1["seq"],
+                 "now_ms": end_ms }),
+    );
+    assert_eq!(t2["over"], true);
+    let end = |receipts: &[&Value]| {
+        json!({ "cmd": "end", "match_id": b64(&match_id), "state": t2["state"], "last_seq": t2["seq"],
+                "receipts": receipts })
+    };
+    let first = call(dir, &end(&[]));
+    // The answer was lost: the same call again gets the same End, signature and proof included.
+    let again = call(dir, &end(&[]));
+    for k in [
+        "call_id", "seq", "verdicts", "proofs", "log_size", "root", "leaves",
+    ] {
+        assert_eq!(again[k], first[k], "{k}");
+    }
+    // A repeat that would end the match another way (here with the receipt the first left out)
+    // is refused: the match keeps the End it recorded.
+    let other = refused(Some(dir), &end(&[&v["receipt"]]));
+    assert!(other.contains("another End"), "{other}");
+    assert_eq!(call(dir, &end(&[]))["verdicts"], first["verdicts"]);
 }
 
 fn uuid(v: &Value) -> [u8; 16] {

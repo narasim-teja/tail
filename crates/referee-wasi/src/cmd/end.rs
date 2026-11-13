@@ -32,15 +32,21 @@ fn load_record(match_id: &MatchId) -> Result<(Vec<u8>, MatchRecord), String> {
     Ok((bytes, record))
 }
 
+/// `end` again on the same input answers with the End it already recorded, so an answer lost on
+/// the way back (a timeout, a relay crash before it stored the result) is not the end of the
+/// match: the relay calls again and gets the same verdict. The engine is deterministic, so the
+/// state blob, the receipts and the recorded call id reproduce the same End (same seq, prev,
+/// call id, root and VRF reveal, hence the same signature); any other input produces a
+/// different End, and the stored record refuses it, so a match never has two End verdicts.
 pub fn run(input: Value) -> Result<Value, String> {
     let i: EndInput = parse(input)?;
     let match_id: MatchId = fixed_b64("match_id", &i.match_id)?;
     let mut st = open_checked(&match_id, &i.state, i.last_seq)?;
-    let call_id = host::call_id()?;
     let (stored, mut record) = load_record(&match_id)?;
-    if record.end.is_some() {
-        return Err("match has already ended".into());
-    }
+    let call_id = match &record.end {
+        Some(end) => end.call_id,
+        None => host::call_id()?,
+    };
 
     let receipts = receipts(&st.box_sk, &match_id, &i.receipts)?;
     let first = st.core.log_size();
@@ -60,16 +66,26 @@ pub fn run(input: Value) -> Result<Value, String> {
         None => return Err("engine did not produce an End verdict".into()),
     };
     let verdicts = sign_all(match_id, call_id, fin.verdicts)?;
-    record.end = Some(EndRecord {
+    let end = EndRecord {
         seq,
         log_size,
         root,
         call_id,
-    });
-    // Two `end` calls racing on one state blob: only the one whose write lands releases a
-    // verdict, so a match never has two different End verdicts.
-    if !host::storage_replace(&match_record_key(&match_id), &stored, &to_borsh(&record))? {
-        return Err("match record changed during end; it has probably just ended".into());
+    };
+    match &record.end {
+        Some(recorded) if *recorded != end => {
+            return Err("match has already ended with another End (state or receipts differ)".into());
+        }
+        Some(_) => {}
+        None => {
+            record.end = Some(end);
+            // Two first `end` calls racing on one state blob: only the one whose write lands
+            // releases a verdict. The loser's call id is not the recorded one; calling again
+            // gets the recorded End.
+            if !host::storage_replace(&match_record_key(&match_id), &stored, &to_borsh(&record))? {
+                return Err("match record changed during end; it has probably just ended".into());
+            }
+        }
     }
     st.core = fin.state;
     let blob = state::seal(&st, domain::STATE, &match_id)?;
