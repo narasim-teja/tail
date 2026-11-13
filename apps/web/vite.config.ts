@@ -14,7 +14,9 @@ export default defineConfig(({ mode }) => {
     server: {
       // Phones open the dev page by the Mac's Bonjour name (`<mac>.local`) on the LAN, or through
       // a Cloudflare quick tunnel (`*.trycloudflare.com`) from anywhere; Vite's DNS-rebinding
-      // check blocks any host it is not told about.
+      // check blocks any host it is not told about. Vite listens on localhost only by default, so
+      // it has to listen on every interface for a phone on the LAN to reach it at all.
+      host: true,
       allowedHosts: [".local", ".trycloudflare.com"],
       proxy: { "/relay": { target: relay, changeOrigin: true, rewrite: (p) => p.replace(/^\/relay/, "") } },
     },
