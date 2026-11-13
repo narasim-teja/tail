@@ -433,6 +433,41 @@ describe("presence proofs", () => {
     expect(checkPresence(moved, onChain, pinned)).toMatchObject({ why: "bad-path" });
   });
 
+  test("the phone's share reads back to its proof; one whose fields disagree with it is refused", () => {
+    // Built exactly as apps/mobile/src/proximity/receipts.ts presenceJson builds it.
+    const c = proof.entry as Extract<LogEntry, { kind: "Contact" }>;
+    const share = (over: Record<string, unknown> = {}) =>
+      JSON.stringify(
+        {
+          kind: "tail/presence-proof/v1",
+          contract: proof.contract,
+          match_id: toHex(proof.matchId),
+          accounts: proof.accounts,
+          epoch: c.epoch,
+          index: Number(proof.index),
+          size: Number(proof.size),
+          proof: toB64(encodePresenceProof(proof)),
+          check:
+            "decodePresenceProof(proof), then verifyPresence(proof, roots, players) from @tail/protocol, with roots from get_roots and players from get_match on the contract, for match_id",
+          ...over,
+        },
+        null,
+        2,
+      );
+    expect(toPresenceJson(parsePresence(share()))).toEqual(toPresenceJson(proof));
+    expect(checkPresence(parsePresence(share()), onChain, pinned)).toMatchObject({ ok: true });
+    for (const over of [
+      { contract: "tail.evil-copy.testnet" },
+      { match_id: "00".repeat(16) },
+      { accounts: [proof.accounts[1], proof.accounts[0]] },
+      { epoch: c.epoch + 1 },
+      { index: Number(proof.index) + 1 },
+      { size: Number(proof.size) + 1 },
+    ])
+      expect(() => parsePresence(share(over))).toThrow("its fields don't match the proof it carries");
+    expect(() => parsePresence(share({ proof: "AAAA" }))).toThrow("its proof field isn't a presence proof");
+  });
+
   test("only Contact entries make presence proofs", () => {
     const tick = good.log.findIndex((x) => x.entry?.kind === "Tick");
     expect(presenceFor(good, tick, roots)).toBeNull();

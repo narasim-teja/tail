@@ -11,7 +11,13 @@
 //   { "type": "tail/presence-proof", "matchId": hex, "contract": string,
 //     "contact": { "a": u16, "b": u16, "epoch": u32, "salt": hex 16 }, "index": "u64", "size": "u64",
 //     "path": [hex 32], "accounts": [string, string] }
-// The page also reads the protocol's borsh PresenceProof, base64.
+// The page also reads the protocol's borsh PresenceProof, base64, and the phone's share
+// (apps/mobile proximity/receipts.ts presenceJson):
+//   { "kind": "tail/presence-proof/v1", "contract", "match_id": hex, "accounts": [a, b],
+//     "epoch", "index", "size", "proof": base64 borsh PresenceProof, "check": how to verify }
+// whose `proof` is the whole proof; the other fields only describe it, and a share whose
+// description disagrees with the proof it carries is refused rather than shown as one claim
+// while another is checked.
 
 import {
   decodePresenceProof,
@@ -28,6 +34,8 @@ import { type DecodedBundle, fromB64 } from "./bundle.ts";
 import type { AnchoredRoot } from "./history.ts";
 
 export const PRESENCE_TYPE = "tail/presence-proof";
+/** The `kind` of the phone's share. */
+export const PHONE_PRESENCE_KIND = "tail/presence-proof/v1";
 
 export interface PresenceJson {
   type: typeof PRESENCE_TYPE;
@@ -61,11 +69,15 @@ const u64 = (x: unknown) =>
   (typeof x === "string" && /^\d{1,20}$/.test(x)) ||
   (typeof x === "number" && Number.isSafeInteger(x) && x >= 0);
 
-/** Reads a proof from pasted text: the JSON form, or the borsh form in base64. Throws on anything else. */
+/**
+ * Reads a proof from pasted text: the page's JSON form, the phone's share, or the borsh form in
+ * base64. Throws on anything else.
+ */
 export function parsePresence(text: string): PresenceProof {
   const t = text.trim();
   if (!t.startsWith("{")) return decodePresenceProof(fromB64(t));
   const j: unknown = JSON.parse(t);
+  if (isObj(j) && j["kind"] === PHONE_PRESENCE_KIND) return fromPhoneShare(j);
   if (!isObj(j) || j["type"] !== PRESENCE_TYPE) throw new Error("not a TAIL presence proof");
   const c = j["contact"];
   const acc = j["accounts"];
@@ -104,6 +116,31 @@ export function parsePresence(text: string): PresenceProof {
     path: (path as string[]).map(fromHex),
     accounts: [acc[0] as string, acc[1] as string],
   };
+}
+
+function fromPhoneShare(j: Record<string, unknown>): PresenceProof {
+  const raw = j["proof"];
+  let p: PresenceProof;
+  try {
+    if (typeof raw !== "string") throw new Error("no proof");
+    p = decodePresenceProof(fromB64(raw));
+  } catch {
+    throw new Error("its proof field isn't a presence proof");
+  }
+  const acc = j["accounts"];
+  const agrees =
+    j["contract"] === p.contract &&
+    j["match_id"] === toHex(p.matchId) &&
+    Array.isArray(acc) &&
+    acc.length === 2 &&
+    acc[0] === p.accounts[0] &&
+    acc[1] === p.accounts[1] &&
+    p.entry.kind === "Contact" &&
+    j["epoch"] === p.entry.epoch &&
+    j["index"] === Number(p.index) &&
+    j["size"] === Number(p.size);
+  if (!agrees) throw new Error("its fields don't match the proof it carries");
+  return p;
 }
 
 /** For `/?presence=`: the JSON, base64url. */
