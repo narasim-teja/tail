@@ -210,6 +210,17 @@ export class FakeChain implements Chain {
     if (m?.phase !== "lobby") throw new Error("only a lobby can be called off");
     m.phase = "aborted";
   }
+  /** As the contract's `abort` of a lobby: only past its start time or once its lock ran out. */
+  aborted: string[] = [];
+  async abortLobby(matchId: string) {
+    const m = this.matches.get(matchId);
+    if (m?.phase !== "lobby") throw new Error("only a lobby can be called off");
+    const now = Date.now();
+    const ranOut = m.locked_until_ms !== null && now >= m.locked_until_ms;
+    if (!(now > m.start_by_ms || ranOut)) throw new Error("lobby is still open");
+    m.phase = "aborted";
+    this.aborted.push(matchId);
+  }
   async lockLobby(matchId: string) {
     const m = this.matches.get(matchId);
     if (m?.phase !== "lobby" || m.locked_until_ms !== null) throw new Error("lobby is not open");

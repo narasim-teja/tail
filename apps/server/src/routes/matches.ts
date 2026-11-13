@@ -140,4 +140,13 @@ export function matchRoutes(
     const r = await d.matches.start(id, account);
     return c.json({ players: r.players, keys: r.keys, start_ms: r.startMs, end_ms: r.endMs });
   });
+
+  // Signed by the host. → {match_id}: a lobby that can no longer start (its lock ran out, or its
+  // start time passed) is aborted on chain, so every stake goes back. 409 while it can still start.
+  app.post("/matches/:id/cancel", async (c) => {
+    const id = field.matchId(c.req.param("id"));
+    const { account } = await d.auth.signed(c);
+    await d.matches.cancel(id, account);
+    return c.json({ match_id: id });
+  });
 }

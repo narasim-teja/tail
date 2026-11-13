@@ -169,6 +169,12 @@ export interface Chain {
   /** Freezes joins and leaves; the referee `start` follows. Host (relay) only. */
   lockLobby(matchId: string): Promise<void>;
   /**
+   * `abort` for a lobby that can no longer start (its start time passed or its lock ran out):
+   * every stake goes back to its player's balance. Anyone may call it; a phone's key may not
+   * (PLAYER_METHODS), so the relay does at the host's word.
+   */
+  abortLobby(matchId: string): Promise<void>;
+  /**
    * The match as of the latest block (`optimistic`, the default) or the latest final one. An
    * optimistic block can still be dropped; only a `final` read says a verdict is there for good.
    */
@@ -373,6 +379,16 @@ export class NearChain implements Chain {
       methodName: "lock_lobby",
       args: { match_id: matchId },
       gas: teraToGas("30"),
+    });
+  }
+
+  async abortLobby(matchId: string) {
+    // 50 Tgas: abort credits every player's stake (up to 12) and each sponsor back.
+    await this.relay.callFunction({
+      contractId: this.o.contract,
+      methodName: "abort",
+      args: { match_id: matchId },
+      gas: teraToGas("50"),
     });
   }
 

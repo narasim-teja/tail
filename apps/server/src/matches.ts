@@ -303,7 +303,8 @@ export class Matches {
       }
     }
     if (chain.locked_until_ms === null || chain.locked_until_ms < this.now()) {
-      throw new HttpError(409, "the lobby lock ran out; players may leave or abort");
+      // The contract locks a lobby once (`lock_lobby`), so it can never start now.
+      throw new HttpError(409, "the lobby lock ran out; players may leave, and the host may call it off");
     }
     const players = chain.players.map((p) => p.account_id);
     // Again on the list the lock froze: a player (or a test player, ghosts/fill.ts) can join
@@ -369,6 +370,35 @@ export class Matches {
       startMs: row?.start_ms ?? 0,
       endMs: row?.end_ms ?? 0,
     };
+  }
+
+  /**
+   * The host calls off a lobby that can no longer start, and every stake goes back: `abort` on
+   * chain, which the contract allows once the start time has passed or the lock ran out
+   * (contracts/tail `abort`). The lock is taken once per match, so a lobby whose lock ran out
+   * would otherwise hold the stakes until each player left, and keep the host from opening
+   * another. An open lobby is not called off: its players may simply leave it.
+   */
+  async cancel(matchId: string, caller: string): Promise<void> {
+    const m = this.d.store.match(matchId);
+    if (!m) throw new HttpError(404, "no such match");
+    if (m.host !== caller) throw new HttpError(403, "only the host can call the lobby off");
+    // A start in flight decides for itself; a running or finished match is not a lobby.
+    if (m.phase !== "lobby" && m.phase !== "failed") throw new HttpError(409, `match is ${m.phase}`);
+    const chain = await this.d.chain.getMatch(matchId);
+    if (!chain) throw new HttpError(404, "match is not on chain");
+    if (chain.phase === "lobby") {
+      const now = this.now();
+      const ranOut = chain.locked_until_ms !== null && now >= chain.locked_until_ms;
+      if (!ranOut && now <= chain.start_by_ms) {
+        throw new HttpError(409, "the lobby can still start; players may leave it instead");
+      }
+      await this.d.chain.abortLobby(matchId);
+    } else if (chain.phase !== "aborted") {
+      throw new HttpError(409, `match is ${chain.phase} on chain`);
+    }
+    this.d.store.setPhase(matchId, "failed", "the host called the lobby off");
+    this.d.log.info({ matchId }, "lobby called off");
   }
 
   /** Every player is enrolled here and its device is with the referee, or this throws. */

@@ -1059,6 +1059,58 @@ describe("starting a match", () => {
   });
 });
 
+describe("calling a lobby off", () => {
+  /** A lobby an earlier Start locked on chain and then failed in, its lock since run out. */
+  async function lapsed(env: Env) {
+    const l = await lobby(env);
+    await env.chain.lockLobby(l.id);
+    (env.chain.matches.get(l.id) as { locked_until_ms: number }).locked_until_ms = Date.now() - 1;
+    return l;
+  }
+
+  test("a lobby whose lock ran out never starts; the host calls it off on chain and can open another", async () => {
+    const env = setup();
+    const l = await lapsed(env);
+    // The contract takes a lock once, so Start cannot lock it again.
+    const s = await req(env, "POST", `/matches/${l.id}/start`, {}, l.a);
+    expect(s.status).toBe(409);
+    expect(String(s.json["error"])).toStartWith("the lobby lock ran out");
+    expect(env.chain.locked).toEqual([l.id]);
+    expect(
+      (await req(env, "POST", "/matches", { ...MATCH, start_by_ms: Date.now() + 600_000 }, l.a)).status,
+    ).toBe(409);
+
+    expect((await req(env, "POST", `/matches/${l.id}/cancel`, {}, l.b)).status).toBe(403);
+    const c = await req(env, "POST", `/matches/${l.id}/cancel`, {}, l.a);
+    expect(c.status).toBe(200);
+    expect(env.chain.aborted).toEqual([l.id]);
+    expect(env.chain.matches.get(l.id)?.phase).toBe("aborted");
+    expect(env.store.match(l.id)).toMatchObject({ phase: "failed", error: "the host called the lobby off" });
+    // Asked again (a lost answer), it is already called off: nothing more on chain.
+    expect((await req(env, "POST", `/matches/${l.id}/cancel`, {}, l.a)).status).toBe(200);
+    expect(env.chain.aborted).toEqual([l.id]);
+    expect(
+      (await req(env, "POST", "/matches", { ...MATCH, start_by_ms: Date.now() + 600_000 }, l.a)).status,
+    ).toBe(200);
+  });
+
+  test("a lobby that can still start, or a running match, is not called off", async () => {
+    const env = setup();
+    const open = await lobby(env);
+    const c = await req(env, "POST", `/matches/${open.id}/cancel`, {}, open.a);
+    expect(c.status).toBe(409);
+    expect(c.json["error"]).toBe("the lobby can still start; players may leave it instead");
+    // Locked and still in time: the referee's Start may still land.
+    await env.chain.lockLobby(open.id);
+    expect((await req(env, "POST", `/matches/${open.id}/cancel`, {}, open.a)).status).toBe(409);
+    expect(env.chain.aborted).toEqual([]);
+
+    const other = setup();
+    const run = await started(other);
+    expect((await req(other, "POST", `/matches/${run.id}/cancel`, {}, run.a)).status).toBe(409);
+  });
+});
+
 describe("health", () => {
   test("reports which referee is behind the relay and whether it is answering", async () => {
     const referee = new GuardedReferee(new FakeReferee(), "local");
