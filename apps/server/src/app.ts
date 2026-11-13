@@ -114,6 +114,9 @@ export function createRelay(d: RelayDeps) {
     const r = d.refereeHealth?.();
     return c.json({
       ok: true,
+      // The contract this relay plays on. Phones keep their own setting as the trust anchor and
+      // only use this to notice a mismatch (and offer to switch), never to adopt it silently.
+      contract: d.replay.contract,
       test_players: d.allowGhosts,
       ...(r
         ? { referee: { kind: r.kind, status: r.status, last_ok_ms: r.lastOkMs, last_error: r.lastError } }

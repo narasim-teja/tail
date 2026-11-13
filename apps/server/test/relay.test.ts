@@ -529,6 +529,7 @@ describe("health", () => {
     await referee.pubkeys();
     const after = await req(env, "GET", "/health");
     expect((after.json["referee"] as Record<string, unknown>)["status"]).toBe("up");
+    expect(after.json["contract"]).toBe("tail.relay.testnet");
   });
 
   test("says test players are on offer only when the ghost door is open", async () => {
