@@ -308,7 +308,9 @@ Each report the relay takes is kept in the match file (seq, batch hash). On Resu
 computes each one's log leaf (`Batch`, or `Rejected` with the refusal code), asks the relay for a
 path at the size of the newest root anchored on NEAR, and verifies it against that root. It says
 "N of M reports are in the log anchored on NEAR", "K refused by the referee (reason)", and lists
-a report that is in neither form as a problem once End's root is there.
+a report that is in neither form as a problem once End's root is there. Against a checkpoint the
+phone tries only the refusal code its HUD named, since a report not found there is only "not
+anchored yet"; against End's root it tries every code.
 
 **Prove I met (name)** shares a JSON document: `proof` is the borsh `PresenceProof` (base64), a
 `Contact` entry with its path to End's root, plus the accounts, epoch, index and size. Anyone can

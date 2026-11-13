@@ -111,6 +111,28 @@ describe("inclusion receipts", () => {
     const r = await checkReceipts({ player: ME, reports, root: rootAt(4), final: false, proofs: relay() });
     expect(r).toMatchObject({ included: [0, 1], missing: [2, 3] });
   });
+
+  test("against a checkpoint, a report not under it costs one lookup, two with the HUD's refusal code", async () => {
+    let asked = 0;
+    const counted: ProofSource = (leaf, size) => {
+      asked++;
+      return relay()(leaf, size);
+    };
+    const r = await checkReceipts({ player: ME, reports, root: rootAt(4), final: false, proofs: counted });
+    expect(r).toMatchObject({ included: [0, 1], missing: [2, 3] });
+    expect(asked).toBe(4);
+    asked = 0;
+    const named = reports.map((x) => (x.seq === 3 ? { ...x, code: RejectCode.ClockSkew } : x));
+    const atEnd = await checkReceipts({
+      player: ME,
+      reports: named,
+      root: rootAt(log.length),
+      final: false,
+      proofs: counted,
+    });
+    expect(atEnd.refused).toEqual([{ seq: 3, code: RejectCode.ClockSkew }]);
+    expect(asked).toBe(5);
+  });
 });
 
 describe("presence proofs", () => {

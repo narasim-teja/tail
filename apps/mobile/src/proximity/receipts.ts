@@ -6,7 +6,10 @@
 // path that does not verify counts against it, never for it.
 //
 // A report the referee refused is in the log too, as a Rejected entry carrying the refusal
-// code; the phone tries the code the signed HUD gave it first, then the others.
+// code; the phone tries the code the signed HUD gave it first, then the others. Against a
+// checkpoint it tries only the code the HUD gave: there a report not found is only "not anchored
+// yet" and is checked again against End's root, while every report sent after the checkpoint
+// would otherwise cost 13 lookups (as a batch, then under each of 12 refusal codes), all 404.
 //
 // After End the plaintext log is in the replay bundle, and the same check yields a presence
 // proof: "these two phones were near each other", a Contact entry and its path to an anchored
@@ -89,7 +92,8 @@ export async function checkReceipts(i: {
     const asBatch = await found(merkleLeaf(batch), i.root, i.proofs);
     if (asBatch === "yes") return void out.included.push(r.seq);
     if (asBatch === "bad") return void out.badProof.push(r.seq);
-    const codes = r.code === undefined ? REJECT_CODES : [r.code, ...REJECT_CODES.filter((c) => c !== r.code)];
+    const named = r.code === undefined ? [] : [r.code];
+    const codes = i.final ? [...named, ...REJECT_CODES.filter((c) => c !== r.code)] : named;
     for (const code of codes) {
       const entry: LogEntry = { kind: "Rejected", player: i.player, seq: r.seq, hash: r.hash, code };
       const asRefused = await found(merkleLeaf(entry), i.root, i.proofs);
