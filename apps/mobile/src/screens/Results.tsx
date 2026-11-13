@@ -3,7 +3,7 @@
 // NEAR, after the end a presence proof for each player you met, and, above all of it, the alarm
 // if the referee's log roots did not fit together (proximity/monitor.ts), with its evidence.
 import { useEffect, useState } from "react";
-import { Animated, Linking, Pressable, StyleSheet, View } from "react-native";
+import { Animated, Pressable, StyleSheet, View } from "react-native";
 import { type RefereeKind, replayLink } from "../relay/client";
 import { useApp } from "../state/app";
 import { handlerProblem } from "../tail/handler";
@@ -35,8 +35,12 @@ export interface ResultsModel {
   /** The money line: the head before settlement, what NEAR paid after, and how it was settled. */
   money: FinalMoney;
   tags: number;
-  /** Null until the match has ended, and when the relay names no replay site. */
+  /** The replay page; null until the match has ended, and when the relay names no replay site. */
   replayUrl: string | null;
+  /** Watch the replay is fetching a pass for a private match. */
+  replayBusy?: boolean;
+  /** Why Watch the replay opened nothing, in one line. */
+  replayProblem?: string | null;
   /** Picks the Handler's sign-off, so a rematch hears a different line. */
   seed: number;
   /** Which referee the relay says ran the match; null when it did not say. */
@@ -137,10 +141,12 @@ export function ResultsView({
       tone={dark ? "ink" : "paper"}
       footer={
         <>
+          {m.replayProblem ? <Caption>{m.replayProblem}</Caption> : null}
           {m.replayUrl ? (
             <Button
               symbol="play.circle.fill"
               title="Watch the replay"
+              busy={!!m.replayBusy}
               onPress={onReplay}
               hint="Opens in Safari"
             />
@@ -296,6 +302,8 @@ export function Results() {
         }),
         tags: app.tags,
         replayUrl: replay,
+        replayBusy: app.openingReplay,
+        replayProblem: app.replayProblem,
         seed: Number.parseInt(app.matchId?.slice(0, 6) ?? "0", 16) || 0,
         referee: app.refereeKind,
         receipts: app.receipts,
@@ -304,7 +312,7 @@ export function Results() {
         relayNote: relayFaultLine(app.relayFault, app.session !== null),
         handlerProblem: handlerProblem(app.handlerCheck),
       }}
-      onReplay={() => replay && void Linking.openURL(replay)}
+      onReplay={() => void app.openReplay()}
       onDone={() => app.finishMatch()}
       onProve={(account) => void app.shareMeeting(account)}
       onExportFork={() => void app.shareFork()}

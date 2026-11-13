@@ -5,7 +5,7 @@
 // decimal strings. Answers are checked field by field.
 
 import { decodeLogEntry, type LogEntry } from "@tail/protocol";
-import { fromB64, toB64 } from "../lib/b64";
+import { fromB64, toB64, toB64Url } from "../lib/b64";
 import { parseSettlement, type Settlement } from "../near/chain";
 import { replayDigest, type Signer } from "../proximity/auth";
 import { isMatchId, matchIdBytes, type Obj, obj, RelayError, RelayTransport, read } from "../proximity/relay";
@@ -233,8 +233,32 @@ export function replaySite(v: unknown): string | null {
   return SITE.test(site) ? site : null;
 }
 
-/** The web replay of one match, as Results opens it. */
-export const replayLink = (site: string, matchId: string) => `${site}/?match=${matchId}`;
+/**
+ * One look at a private replay: the relay's single-use nonce (valid 2 minutes) and the player's
+ * signature over `replayDigest(nonce, match id, account)`, which the relay checks against the
+ * player's NEAR key before it serves the bundle.
+ */
+export interface ReplayPass {
+  accountId: string;
+  nonce: Uint8Array;
+  sig: Uint8Array;
+}
+
+/**
+ * The web replay of one match, as Results opens it. With a pass (a private match) the pass rides
+ * in the fragment, base64url: a fragment is never sent to the web server or written to its logs,
+ * and the page hands the three values to the relay and clears them from the address bar.
+ */
+export function replayLink(site: string, matchId: string, pass: ReplayPass | null = null): string {
+  const page = `${site}/?match=${matchId}`;
+  if (!pass) return page;
+  const fragment = new URLSearchParams({
+    account_id: pass.accountId,
+    nonce: toB64Url(pass.nonce),
+    sig: toB64Url(pass.sig),
+  });
+  return `${page}#${fragment.toString()}`;
+}
 
 /**
  * Calls the relay answers only after a referee call (its own deadline is 60 s) and NEAR
@@ -416,11 +440,10 @@ export class RelayClient extends RelayTransport {
   // ── After the match ──────────────────────────────────────────────────────────────────────
 
   /**
-   * The match log in plaintext, from the replay bundle (after End only). Asked as a player
-   * (challenge, then the signed nonce), which a private match needs and a public one ignores.
-   * Untrusted: every entry used from it is checked against a root anchored on NEAR.
+   * A fresh pass to this match's replay as `signer` (ReplayPass): the relay's challenge, signed.
+   * The relay answers 403 to anyone not a player in the match.
    */
-  async replayLog(signer: Signer, matchId: string): Promise<LogEntry[]> {
+  async replayPass(signer: Signer, matchId: string): Promise<ReplayPass> {
     const c = await this.json(
       "POST",
       `/replay/${matchId}/challenge`,
@@ -428,7 +451,21 @@ export class RelayClient extends RelayTransport {
     );
     const nonce = read.b64(c, "nonce");
     const sig = signer.sign(replayDigest(nonce, matchIdBytes(matchId), signer.accountId));
-    const q = new URLSearchParams({ account_id: signer.accountId, nonce: toB64(nonce), sig: toB64(sig) });
+    return { accountId: signer.accountId, nonce, sig };
+  }
+
+  /**
+   * The match log in plaintext, from the replay bundle (after End only). Asked as a player
+   * (replayPass), which a private match needs and a public one ignores.
+   * Untrusted: every entry used from it is checked against a root anchored on NEAR.
+   */
+  async replayLog(signer: Signer, matchId: string): Promise<LogEntry[]> {
+    const pass = await this.replayPass(signer, matchId);
+    const q = new URLSearchParams({
+      account_id: pass.accountId,
+      nonce: toB64(pass.nonce),
+      sig: toB64(pass.sig),
+    });
     const bundle = await this.json("GET", `/replay/${matchId}?${q.toString()}`);
     return read.list(bundle, "log").map((e) => {
       if (typeof e !== "string") throw new RelayError(0, "relay answer: log entry is not base64");

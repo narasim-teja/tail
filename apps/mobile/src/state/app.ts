@@ -4,7 +4,7 @@
 import type { AnchoredRoot, PlayerKeys } from "@tail/protocol";
 import Constants from "expo-constants";
 import { useSyncExternalStore } from "react";
-import { Share } from "react-native";
+import { Linking, Share } from "react-native";
 import TailRadio from "../../modules/tail-radio";
 import {
   enrol,
@@ -48,6 +48,7 @@ import {
   RelayClient,
   type RelayInfo,
   readJoin,
+  replayLink,
 } from "../relay/client";
 import { checkHandlerLines, type HandlerCheck } from "../tail/handler";
 import { TailHunt } from "../tail/hunt";
@@ -165,6 +166,10 @@ class AppModel {
   receipts: Receipts = { kind: "idle" };
   /** Presence proofs this player can share once the match has ended; null until looked up. */
   meetings: Meeting[] | null = null;
+  /** Watch the replay is getting a pass from the relay (a private match). */
+  openingReplay = false;
+  /** Why the last Watch the replay opened nothing; Results shows it under the button. */
+  replayProblem: string | null = null;
   private relayClient: RelayClient | null = null;
   busy: string | null = null;
   error: string | null = null;
@@ -677,6 +682,8 @@ class AppModel {
     this.receipts = { kind: "idle" };
     this.meetings = null;
     this.handlerCheck = null;
+    this.openingReplay = false;
+    this.replayProblem = null;
     try {
       const r = this.loadRecord(id);
       this.savedTags = r.tags;
@@ -1054,6 +1061,37 @@ class AppModel {
       return;
     }
     this.emit();
+  }
+
+  /**
+   * Opens the match's replay in Safari. A public match gets the plain page. A private one gets a
+   * fresh pass from the relay, signed here (relay/client.ts replayPass), in the link's fragment,
+   * since the page alone cannot prove who is asking. When that fails, nothing opens and Results
+   * says why in one line.
+   */
+  async openReplay(): Promise<void> {
+    const site = this.replaySite;
+    const id = this.matchId;
+    if (!site || !id || this.openingReplay) return;
+    this.openingReplay = true;
+    this.replayProblem = null;
+    this.emit();
+    try {
+      const pass =
+        this.match?.chain?.publicReplay === true
+          ? null
+          : await this.relay.replayPass(nearSigner(this.need()), id);
+      if (this.matchId === id) await Linking.openURL(replayLink(site, id, pass));
+    } catch (e) {
+      if (this.matchId === id)
+        this.replayProblem =
+          e instanceof RelayError && e.status === 403
+            ? "Only this match's players can watch its replay."
+            : `Couldn't open the replay. ${message(e)}`;
+    } finally {
+      if (this.matchId === id) this.openingReplay = false;
+      this.emit();
+    }
   }
 
   /** Shares the proof of having met `account` as a JSON document. */

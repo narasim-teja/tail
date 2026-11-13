@@ -15,6 +15,10 @@ export function toB64(b: Uint8Array): string {
   return out;
 }
 
+/** URL-safe base64 without padding (RFC 4648 §5), for values carried in a link. */
+export const toB64Url = (b: Uint8Array) =>
+  toB64(b).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
 export function fromB64(s: string): Uint8Array {
   if (s.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(s)) throw new Error("invalid base64");
   const pad = s.endsWith("==") ? 2 : s.endsWith("=") ? 1 : 0;

@@ -148,9 +148,6 @@ describe("relay authentication", () => {
       "https://user@replay.example",
     ])
       expect(await site(bad)).toBeNull();
-    expect(replayLink("https://replay.example", "ab".repeat(16))).toBe(
-      `https://replay.example/?match=${"ab".repeat(16)}`,
-    );
   });
 
   test("the HUD URL is a WebSocket URL with the match and account", () => {
@@ -529,3 +526,45 @@ describe("carry, receipts and the replay log", () => {
 });
 
 const fromHexId = (id: string) => Uint8Array.from(Buffer.from(id, "hex"));
+
+describe("the replay link", () => {
+  const SITE = "https://replay.example";
+  const ID = "7f3a9c21e4b85d60a1c2e3f405162738";
+
+  test("a public match opens the plain page, with nothing in the fragment", () => {
+    expect(replayLink(SITE, ID)).toBe(`${SITE}/?match=${ID}`);
+    expect(replayLink(SITE, ID, null)).toBe(`${SITE}/?match=${ID}`);
+  });
+
+  test("a private match carries a fresh signed pass in the fragment, base64url", async () => {
+    // Bytes whose standard base64 has +, / and padding, so the URL-safe form is really exercised.
+    const nonce = new Uint8Array(32).fill(0xfb);
+    const asked: string[] = [];
+    const c = new RelayClient("http://relay.test", {
+      contractId: CONTRACT,
+      fetch: (async (url: string, init?: RequestInit) => {
+        asked.push(`${init?.method ?? "GET"} ${url} ${String(init?.body ?? "")}`);
+        return new Response(JSON.stringify({ nonce: toB64(nonce) }), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    const link = replayLink(SITE, ID, await c.replayPass(signer, ID));
+    expect(asked).toEqual([
+      `POST http://relay.test/replay/${ID}/challenge ${JSON.stringify({ account_id: signer.accountId })}`,
+    ]);
+    const [page, fragment] = link.split("#") as [string, string];
+    expect(page).toBe(`${SITE}/?match=${ID}`);
+    const f = new URLSearchParams(fragment);
+    expect([...f.keys()]).toEqual(["account_id", "nonce", "sig"]);
+    expect(f.get("account_id")).toBe(signer.accountId);
+    for (const k of ["nonce", "sig"]) expect(f.get(k)).toMatch(/^[A-Za-z0-9_-]+$/);
+    const raw = (k: string) => Uint8Array.from(Buffer.from(f.get(k) ?? "", "base64url"));
+    expect(raw("nonce")).toEqual(nonce);
+    expect(
+      relayAuth.verifyEd25519(
+        ed25519.getPublicKey(sk),
+        relayAuth.replayDigest(nonce, fromHexId(ID), signer.accountId),
+        raw("sig"),
+      ),
+    ).toBe(true);
+  });
+});
