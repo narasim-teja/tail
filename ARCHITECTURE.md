@@ -17,20 +17,27 @@ Read every claim below with this in mind:
   `referee_pk` `d35338a9…6594` and `vrf_pk` `ad82f28f…defcb`, both local keys. It was pinned
   when OutLayer testnet stopped running calls (HTTP 524) on 2026-11-12. While this referee is
   pinned, every guarantee that rests on the referee reduces to trusting whoever runs that machine.
-- **OutLayer runs the v2 build, unpinned.** The active OutLayer version is `3f9320a6…85690`,
-  with the same enclave keys as the v1 build `20446c64…08664` before it. It enrols only devices
-  with an Apple attestation, and a match needs three players while we have two iPhones, so the
-  contract stays on the local referee until a third attested phone or `ALLOW_UNATTESTED` on the
-  enclave.
-- **The referee code here is ahead of that build.** Since the upload, `crates/referee-wasi`
-  gained the `devices` command, a repeatable `end`, `app_id` in `pubkeys` and state version 7,
-  so this source builds a different wasm, which is not uploaded. The relay here asks `devices`
-  before every Start, so it cannot start a match on the active OutLayer build. No v2 match has
-  run on OutLayer.
-- **Real phones have only run v1.** Two iPhones played indoor matches on 2026-11-12, and a Tag
-  landed from Bluetooth contact. The v2 phone paths (signed HUDs, chain recovery, receipts, the
-  log monitor, the Handler line check, presence proofs, re-enrolment, mesh carry) have only run
-  in tests.
+- **OutLayer's active build has never run a call.** On 2026-11-13 the wasm built from this
+  source, `092ec57c…41f694` (775,347 bytes), was uploaded and made the active version
+  (`get_project` on `outlayer.testnet` names it), and the `ALLOW_UNATTESTED` author secret was
+  set so test players can fill seats. It has the `devices` command the relay here asks before
+  every Start. That evening OutLayer's testnet API took requests, but every call, to this build
+  or to the v2 build `3f9320a6…85690` before it, returned HTTP 524 after about 125 s. So the
+  contract stays on the local referee, no v2 match has run in an enclave, and the replay does not
+  pin this build yet (claim 14).
+- **Real phones have run v2, indoors, on the local referee.** On 2026-11-13 two iPhones (17 Pro
+  Max, 14) and one test player played match `5f36dbbb…` on the upgraded contract. Both phones
+  re-enrolled with a fresh App Attest attestation after the referee's device records were reset
+  (claim 1), played on signed HUDs, and one bought two demand-priced hints. A Tag landed from
+  mutual Bluetooth contact (claim 4), the test player forfeited after 180 s dark, and End's
+  replay paid the survivor. During play the phones fetched consistency proofs for their log
+  monitors (claim 9); after End they found every report under End's root (claim 10). The
+  dossiers were updated (claim 16) and `tail-verify` re-ran the match identically (claim 15). Its
+  Handler lines were templates. In a second match (`93ba284e…`) mesh carry delivered reports
+  between the two phones but crowded out the beacon, so it stays off. Chain recovery, a fork or
+  relay-fault alarm, presence proofs shared from the phone, the phone's signed private-replay link
+  and a NEAR AI line in a v2 match have run only in tests. No range, pocket-mode or outdoor test
+  has run.
 - **One account owns the relay, the contract and the OutLayer project**
   (`tail-dev-a38d13.testnet`, see Trust). So "the relay cannot sign a verdict" holds only while
   the enclave is pinned, and even then the same owner could publish a new referee version.
@@ -131,8 +138,10 @@ Paths are relative to the repo root. "Referee" means `crates/referee-core` (the 
   referee's `attested` flag. App Attest says "a genuine Apple device and our App ID". It does not
   rule out a jailbroken phone, nor one person with many accounts (one iPhone can make any number
   of App Attest keys; the relay caps new enrolments per address and per day). Apple's fraud-risk
-  receipt is not used. The v2 build active on OutLayer runs these checks. With the local test
-  referee, the relay's machine runs them.
+  receipt is not used. The build active on OutLayer has these checks but has not run a call yet.
+  With the local test referee, the relay's machine runs them. On 2026-11-13 both iPhones went
+  through the refresh after the local referee's device records were reset, each with a new
+  attestation and `rebind_sig`.
 
 ### 2. The report was not altered
 
@@ -341,8 +350,9 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   anyone can check. A proof that does not verify convicts only the relay that sent it, so the
   phone keeps it as relay-fault evidence, shows it softly and asks again later.
 - **Limit.** The proofs say the log only grew, not that its entries are true. A fork is caught
-  only by a phone that saw both roots, and only while it is in the match. The log monitor has not
-  run on a phone.
+  only by a phone that saw both roots, and only while it is in the match. The log monitor ran on
+  two iPhones on 2026-11-13 against an honest relay (30 consistency proofs fetched during play);
+  its fork and relay-fault paths have run only in tests.
 
 ### 10. My reports were not dropped
 
@@ -358,7 +368,9 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   can call the `verify_inclusion` view.
 - **Limit.** This detects a dropped report; it does not prevent one. It cannot tell whether the
   relay or the referee dropped it: a direct `POST /batch` gets no signed receipt, and only a
-  mesh-carried report gets a relay-signed `CarryAck`. It has not run on a phone yet.
+  mesh-carried report gets a relay-signed `CarryAck`. It ran on two iPhones on 2026-11-13: after
+  End, their 36 lookups against End's root all found the report. A missing report has been shown
+  only in tests.
 
 ### 11. Two players were near each other (presence proof)
 
@@ -481,17 +493,19 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   wording.
 - **Enforced.** `apps/web/src/verify/pins.ts`, `attestation.ts` and `signer.ts`. The contract
   keeps each match's key.
-- **Check.** `bun crates/referee-wasi/scripts/build.ts` prints the wasm sha256 of the current
-  source. Compare it with a record's `executed_wasm_sha256`, and compare `get_match`'s
-  `referee_pk` with `pins.ts`.
+- **Check.** Compare a record's `executed_wasm_sha256` with the hashes in `pins.ts` and
+  `crates/referee-wasi/README.md`, and `get_match`'s `referee_pk` with `pins.ts`.
+  `bun crates/referee-wasi/scripts/build.ts` prints the sha256 of the wasm it builds, but builds
+  do not reproduce (Limit).
 - **Limit.** The key belongs to the project, not the build, so a new version could sign: this
   detects a swap after the fact, it does not prevent one. The browser reads OutLayer's record and
   does not verify the TDX quote, and whether OutLayer's API answers a browser (CORS) has not been
-  tried. The pinned builds are the v2 build `3f9320a6…85690` and the v1 one. No v2 match has run
-  on OutLayer, and the source here builds a different wasm (see "What runs where today"), which
-  would need uploading and pinning before its verdicts could show "Enclave". Whether the build
-  reproduces byte for byte on another machine has not been tested. The local test referee has no
-  attestation at all.
+  tried. The pinned builds are the v2 build `3f9320a6…85690` and the v1 one. The active build
+  `092ec57c…41f694` is not pinned, so until it is, its verdicts would read "isn't a published
+  referee build", not "Enclave". No v2 match has run on OutLayer. Builds do not reproduce: the
+  same referee source built in two checkouts on one machine gave `092ec57c…` (uploaded) and
+  `5e9cbb68…`, so the hash to trust is the uploaded file's, not a fresh build's. The local test
+  referee has no attestation at all.
 
 ### 15. Every verdict follows from the logged inputs (re-execution)
 
@@ -524,9 +538,11 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   batch that never opened is not released, so its refusal is taken as given (exit 3). It trusts
   the logged times (see "Gaps") and the `attested` flags (claim 1). Without the pins it checks
   the bundle against its own keys, and a bundle made up under its own keys passes just as well.
-  It does not query NEAR; the web replay compares roots, heads and payouts with the chain. No v2
-  match with real phones exists yet; it has run on generated matches and on the 2026-11-13
-  testnet match of test players.
+  It does not query NEAR; the web replay compares roots, heads and payouts with the chain. It has
+  run on generated matches, on a 2026-11-13 testnet match of test players, and on that day's
+  match of two iPhones and a test player: with the keys pinned from `get_match`, 90 log entries
+  and 8 verdicts came out identical and 51 batches' assertions re-checked against the device
+  keys.
 
 ### 16. A dossier counts only matches the contract checked
 
@@ -551,7 +567,11 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   test referee pinned, a record costs only that machine's cooperation. The relay passes an
   optional `requires` from `POST /matches`, and `apps/server/scripts/gated-lobby.ts` plays a gated
   lobby with test players; that script has not been run on testnet, and the app has no control
-  for it. The live contract has held dossiers since the 2026-11-13 upgrade.
+  for it. The live contract has held dossiers since the 2026-11-13 upgrade. After the iPhone
+  match, each player's live `nft_token` SVG was byte-identical to `dossierSvg` of their
+  `get_dossier`, checked by a script; the replay's dossier page has not been run against the live
+  contract in a browser. The live contract predates the `nft_metadata_update` event the source
+  logs at settlement, so its settlements log none.
 
 ## Gaps the proofs leave
 
@@ -607,7 +627,7 @@ account today, `tail-dev-a38d13.testnet`. That account is us.
 | Replaying a recorded token later                           | Refused after about one epoch (claim 3), and contact must be mutual.                                                                                                                                                                                                                                                |
 | Reading NEAR during play                                   | A Hint names only its asker, so the chain does not say who hunts whom. A Tag or Forfeit still names both players as it lands, and its credit, set against earlier hint amounts, can show who was hunting the loser before.                                                                                          |
 | Relay traffic analysis                                     | It learns what claim 12 lists: timing, upload sizes, refusal codes, who asked a hint, the number of new contacts per tick, and who carried whose batch. What it delivers to a phone is always 1072 bytes.                                                                                                           |
-| Target kills the app or turns on airplane mode             | Dark rules: the hunter gets a 100 m cell after 45 s, and 180 s of total dark time forfeits the head. Mesh carry (off by default) would reduce honest dark time.                                                                                                                                                     |
+| Target kills the app or turns on airplane mode             | Dark rules: the hunter gets a 100 m cell after 45 s, and 180 s of total dark time forfeits the head. Mesh carry would reduce honest dark time: on two iPhones it carried an airplane-mode phone's reports, but it crowds out the beacon, so it is off by default.                                                   |
 | Riding a car or train                                      | The speed rule freezes contact.                                                                                                                                                                                                                                                                                     |
 | Referee or relay stalls                                    | `abort` after 15 min of silence, or 15 min past `end_ms`, refunds every original stake.                                                                                                                                                                                                                             |
 | Operator swaps the referee code on OutLayer                | The key survives new versions, so a swap is caught after the fact by the attestation record (claim 14), not prevented. This is bounded by OutLayer's governance.                                                                                                                                                    |
