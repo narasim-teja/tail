@@ -13,7 +13,13 @@ positions and holds no key that signs a verdict. Two things qualify that today:
   running calls on 2026-11-12. OutLayer runs the v2 build now, but it enrols only iPhones with an
   Apple attestation, we have two, and a match needs three, so test players fill the third seat on
   the local referee. While it is pinned, that machine holds the verdict key and could sign any
-  verdict, so trust in the referee is trust in us. The replay labels its matches "test referee".
+  verdict, so trust in the referee is trust in us. The replay says so: a "Test referee" chip
+  beside the header line and on the finale, and test-referee wording on every signature.
+- **The code here is ahead of the OutLayer build.** The referee source in this repository has
+  changed since the v2 build was uploaded and builds a different wasm, which is not uploaded. The
+  relay in this repository asks the referee's `devices` command before every Start, and the
+  active OutLayer build has no such command, so this relay cannot start a match on OutLayer as it
+  stands.
 - **One account runs the relay, the contract and the OutLayer project**
   (`tail-dev-a38d13.testnet`). With the enclave, that owner could publish a new referee version,
   which signs with the same key. Each verdict's OutLayer attestation record names the build that
@@ -23,8 +29,8 @@ positions and holds no key that signs a verdict. Two things qualify that today:
 `tail.tail-dev-a38d13.testnet` was upgraded in place (`migrate` kept every balance, match and
 pinned key), OutLayer's active referee became the v2 build `3f9320a6…85690`, and a full 3-player
 match with test players ran through the relay on the upgraded contract and the local test
-referee: Start, a priced hint, a Bluetooth tag, four checkpoints, End with the contract's own
-replay and payout, and `tail-verify` re-running it identically.
+referee: Start, a priced hint, a tag from simulated Bluetooth sightings, four checkpoints, End
+with the contract's own replay and payout, and `tail-verify` re-running it identically.
 
 Built for the NEAR hackathon, on NEAR testnet. What each proof shows and where it stops is in
 [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -44,13 +50,15 @@ Entered: Games, Privacy, Open, NFTs.
 
 **Games**
 
-- **An NPC that prices intel by demand.** The Handler sells three hints. Each costs its base
-  price (2 % or 5 % of the stake) plus 25 % for every hint anyone in the match bought in the last
-  5 minutes of match time, at most 4×. The rule is one file per language
+- **Intel priced by demand.** The Handler sells three hints. Each costs its base price (2 % or
+  5 % of the stake) plus 25 % for every hint anyone in the match bought in the last 5 minutes of
+  match time, at most 4×. The rule is one file per language
   (`crates/tail-protocol/src/pricing.rs`, `packages/protocol/src/pricing.ts`). The referee
   charges it, each phone's signed HUD carries the current prices, the phone shows the Handler's
   one-line reason, and the contract recomputes the price from earlier hints' times and refuses
-  any other amount.
+  any other amount. The Handler is not an agent with a wallet: it has no NEAR account, key or
+  balance. It is this pricing rule plus a voice. A hint's money moves from the asker's head into
+  the match's hint pool, and from there to the hint's target.
 - **Watch the economy move.** The replay's economy view shows the hint pool, the price, every
   player's head and each transfer, all rebuilt from the signed verdicts.
   `/?fixture=boston-common-economy&view=economy` is a 12-player, 60-minute match played through
@@ -62,7 +70,9 @@ Entered: Games, Privacy, Open, NFTs.
 - **Players never see the chain.** There is no wallet, seed phrase or signing popup. The phone
   makes its NEAR key in the Keychain, the relay creates `<handle>.tail-dev-a38d13.testnet` holding
   only that key (it can join, leave and withdraw), funds it, and pays the gas of every verdict.
-  The one chain step a player sees is naming a wallet on their first withdraw.
+  The one chain step a player sees is naming a wallet on their first withdraw. That wallet is the
+  payout for good, so until then whoever holds the phone's key can withdraw to a wallet of their
+  choosing.
 
 **Privacy**
 
@@ -76,17 +86,19 @@ Entered: Games, Privacy, Open, NFTs.
   log, and the entries with few possible values (contacts, Handler receipts, tag evidence) are
   salted from the match key, so it cannot hash guesses. What it still learns is listed in
   ARCHITECTURE.md, claim 12.
-- **The Handler runs on NEAR AI Cloud, with its attestation checked.** The referee sends the model
-  one coarse fact, never coordinates. `scripts/verify-nearai.ts` and the replay's Handler panel
-  (in the browser, when NEAR AI's API answers it) fetch NEAR AI's attestation report for a fresh
-  nonce and check the Intel TDX quote back to Intel's root, that the quote binds the nonce and
+- **The Handler's voice is built for NEAR AI Cloud, with its signing key's attestation checked.**
+  No v2 match has a model line yet: the local test referee pinned now has no network and speaks
+  template lines. Model lines ran on the v1 OutLayer referee on 2026-11-12. The referee sends the
+  model one coarse fact and the demand behind the hint's price, never coordinates.
+  `scripts/verify-nearai.ts` and the replay's Handler panel (in the browser, when NEAR AI's API
+  answers it) fetch NEAR AI's attestation report for a fresh nonce and check the Intel TDX quote
+  back to Intel's root, that the quote binds the nonce and
   the signing address, and which container manifest the quote measures (a debug-mode enclave or a
   TCB level other than UpToDate fails). NVIDIA's GPU attestation is judged by NVIDIA's service
   (NRAS), which only the script can reach; the GPUs are tied to the quote only by the shared
   nonce, and the panel shows the script's saved result for them. NEAR AI publishes no expected
   image measurements, so nothing pins _which_ code runs: this proves a genuine, up-to-date TDX
-  machine holds the signing key, not that it runs NEAR AI's published stack. No v2 match has a
-  model line yet: the local test referee has no network and uses templates.
+  machine holds the signing key, not that it runs NEAR AI's published stack.
 - **Retention.** A private match's sealed batches, trails, log, zone and Handler lines are purged
   24 h after End (`apps/server/src/retention.ts`, `apps/server/scripts/purge.ts`).
 
@@ -105,14 +117,18 @@ Entered: Games, Privacy, Open, NFTs.
 
 - **A soulbound Dossier per player.** NEP-171 with NEP-177 metadata and NEP-181 enumeration, on
   the tail contract. The token id is the player's sub-account, minted at registration. Its record
-  is computed on every read from matches the contract replayed and paid out; refunds count for
-  nothing.
-- **Art on-chain.** `media` is an SVG data URI the contract draws on every read: a trail with one
-  segment per match. It is at most 4 KB and byte-identical to `packages/brand/src/dossier.ts`,
-  pinned by golden vectors on both sides. The replay shows it at `/dossier/<account>`, the phone
-  on Profile.
+  is written when a match settles: totals over matches the contract replayed and paid out, and
+  the last 12 entries. Refunds are listed and count for nothing.
+- **Art on-chain.** `media` is an SVG data URI the contract draws from the record on every read:
+  a trail with one segment per kept entry. It is byte-identical to `packages/brand/src/dossier.ts`,
+  pinned by golden vectors on both sides. The largest vector is 3,969 bytes, and both sides' tests
+  check the vectors stay within 4 KB; the builder itself enforces no size limit. The replay shows
+  the card at `/dossier/<account>`, reads the contract's `nft_token` and compares its SVG with
+  its own drawing byte for byte. The phone shows it on Profile.
 - **Credential-gated lobbies.** `create_match` takes `requires: {min_matches, min_survived}`, and
-  `join_match` refuses a dossier below it. The relay and the app do not set it yet.
+  `join_match` refuses a dossier below it. The relay passes an optional `requires` from
+  `POST /matches`, and `apps/server/scripts/gated-lobby.ts` shows a gated lobby with test players;
+  that script has not been run on testnet. The app has no control for it yet.
 - **Why soulbound.** A dossier is an access credential. If it could move, a record could be
   bought to get into a gated match, and the gate would measure money instead of play. So
   `nft_transfer` always refuses.
@@ -154,7 +170,7 @@ Entered: Games, Privacy, Open, NFTs.
   carries an App Attest assertion, checked against the same constant: the relay cannot name
   another app. An enrolled account keeps its device. Moving it to new keys takes a signature by
   the account's NEAR key (`rebind_sig`), so a relay holding an iPhone of its own cannot take over
-  someone's seat. The OutLayer build now active predates these checks. Batches with a simulated
+  someone's seat. The v2 build active on OutLayer has these checks. Batches with a simulated
   location are refused. A test player without an attestation is recorded as one, and the replay
   says so.
 - **Which code signed.** Each verdict names the OutLayer call that produced it. That call's
@@ -174,38 +190,47 @@ Entered: Games, Privacy, Open, NFTs.
   tag must take the hunter's current target, each hint must be about the asker's target, each
   credit must be exact and the pool must end at zero. If one rule fails, it refunds every stake
   and records which rule. A match whose referee goes silent is refunded the same way.
-- **What the contract cannot see.** It checks those rules, not the radio evidence behind a tag. A
-  referee that invented contact for a tag of the right target would be paid out. That is caught
-  only by re-running the match from its released batches with `tail-verify` (step 2 below), and
-  only after End.
+- **What the contract cannot see.** It checks those rules, not the radio evidence behind a tag,
+  nor whether a player asked for a hint or went dark. A referee could invent contact for a tag of
+  the right target, sign Hints nobody asked for (each about the asker's current target, at the
+  demand price, while the asker's head covers it, up to 240 per match), or forfeit any live player
+  to their true hunter. Each of these passes the End replay and is paid out. It is caught only by
+  re-running the match from its released batches with `tail-verify` (step 2 below), and only
+  after End.
 
 ## Try it
 
-You need [Bun](https://bun.sh) 1.4+ and Rust (the toolchain is pinned in `rust-toolchain.toml`).
+You need [Bun](https://bun.sh) 1.4+ and Rust through rustup (the toolchains are pinned in
+`rust-toolchain.toml` and `crates/referee-wasi/rust-toolchain.toml`, with the `wasm32-wasip2`
+target). The full gate also needs Xcode's `xcrun swift-format` and
+[gitleaks](https://github.com/gitleaks/gitleaks).
 
 ### 1. Run every check (no accounts needed)
 
 ```sh
 bun install
-bun run check
+bun run check                          # all 13 steps; needs Xcode and gitleaks too
+bun run check ts rust contract referee # the 11 steps that need only Bun and Rust
 ```
 
-You should see `all 13 steps passed`. The steps are Biome, TypeScript, the Bun tests, Rust fmt,
-clippy and tests, the contract's fmt, clippy and tests, the referee module's fmt and wasm
-clippy, Swift lint and a secret scan. On 2026-11-13 they ran:
+The full run ends with `all 13 steps passed`, the subset with `all 11 steps passed`. The gate
+stops at the first failure. The steps are Biome, TypeScript, the Bun tests, Rust fmt, clippy and
+tests, the contract's fmt, clippy and tests, the referee module's fmt and wasm clippy, Swift lint
+and a secret scan of what is staged. They cover:
 
-- 588 Bun tests: protocol and helper packages 96, web replay 118, relay 139, iPhone app 235. One
-  relay test plays a whole match through the relay against the real local test referee and runs
-  `tail-verify` on the replay bundle the relay serves.
-- 152 Rust workspace tests, including the golden vectors that pin the TypeScript and Rust wire
+- The Bun tests of the protocol and helper packages, the web replay, the relay and the iPhone
+  app. Two relay tests play a whole match through the relay against the real local test referee
+  and check the replay bundle the relay serves, one with `tail-verify`, one with the web
+  verifier.
+- The Rust workspace tests, including the golden vectors that pin the TypeScript and Rust wire
   formats to the same bytes, Merkle consistency proofs for every 0 < m ≤ n ≤ 70, App Attest on
-  a real iPhone capture, the End replay's rules, 33 tests over 28 scripted matches and random
-  12-player runs (each replayed the way the contract settles it), and 16 `tail-verify` tests.
-- 244 contract tests, covering money, abuse, the verdict chain, proofs, demand pricing, the End
+  a real iPhone capture, the End replay's rules, the 28 scripted matches and random 12-player
+  runs (each replayed the way the contract settles it), and the `tail-verify` tests.
+- The contract tests, covering money, abuse, the verdict chain, proofs, demand pricing, the End
   replay and the dossier.
 
-The referee module's own tests (`cd crates/referee-wasi && cargo test`, 37 tests) are not in the
-gate. The iPhone app's tests also run on their own: `cd apps/mobile && bun test`.
+The referee module's own tests (`cd crates/referee-wasi && cargo test`) are not in the gate. The
+iPhone app's tests also run on their own: `cd apps/mobile && bun test`.
 
 ### 2. Re-run the referee on a finished match
 
@@ -267,9 +292,11 @@ contact from sightings: `tail-verify` does both.
 - Open `/?fixture=boston-common-tampered-log`: the referee rewrote a contact behind the 5th
   checkpoint and re-signed every later one. Every signature still holds, but the consistency
   proofs 4→5 and 5→6 fail, and the page reports "The log was rewritten".
-- Open `/?fixture=boston-common-economy&view=economy` and press "Whole match in 1 min". The same
-  bundle passes `tail-verify`:
-  `cargo run -q -p referee-verify -- apps/web/public/fixtures/boston-common-economy.json`.
+- Open `/?fixture=boston-common-economy&view=economy` and press "Whole match in 1 min".
+  `bun run dev` writes that bundle to `apps/web/public/fixtures/` (generated, not committed; it
+  needs `cargo`). To re-run it through `tail-verify` by hand, from the repo root:
+  `cargo run -q -p referee-verify -- apps/web/public/fixtures/boston-common-economy.json`. No
+  test in the gate runs this.
 - Click a tag, open one of its contact windows, choose "Make presence proof", and open the link.
   `/?presence=` checks a proof that two players were near each other against roots and players
   read from the pinned contract over RPC. For the fixture it answers "NEAR has no such match",
@@ -295,8 +322,9 @@ leaves and the declassified log against End's root, and one inclusion and one co
 
 On 2026-11-13 it passed on the upgraded contract with `REFEREE_MODE=local` (28/28 checks, about
 0.54 testnet NEAR). Against OutLayer it needs `ALLOW_UNATTESTED=1` set on the enclave, because
-test players have no Apple attestation. The three runs in `apps/server/README.md` (2026-11-12,
-about 0.43 testnet NEAR and $0.05 of OutLayer each) were protocol v1, on OutLayer.
+test players have no Apple attestation, and a referee build with the `devices` command, which
+the active one lacks (see the top). The three runs in `apps/server/README.md` (2026-11-12, about
+0.43 testnet NEAR and $0.05 of OutLayer each) were protocol v1, on OutLayer.
 
 Ghosts are a testing door. They have no Apple attestation, so the referee enrols them only with
 `ALLOW_UNATTESTED=1` and logs them as unattested. The relay makes them only on testnet with
@@ -321,8 +349,10 @@ Ghosts are a testing door. They have no Apple attestation, so the referee enrols
 - Referee: OutLayer project `tail-dev-a38d13.testnet/tail-referee` on testnet. Its active version
   is the protocol v2 build `3f9320a6…85690` (2026-11-13; same enclave keys as the v1 build
   `20446c64…08664` before it). It refuses devices without an Apple attestation, since
-  `ALLOW_UNATTESTED` is not set there. Commands, manifest
-  and measured latency are in `crates/referee-wasi/README.md`.
+  `ALLOW_UNATTESTED` is not set there. It predates the `devices` command and the repeatable
+  `end`, so the source here builds a different wasm (not uploaded), and the relay here cannot
+  start a match on it. Commands, manifest and measured latency are in
+  `crates/referee-wasi/README.md`.
 
 ### 6. Play on iPhones
 
@@ -332,16 +362,16 @@ capability, and the relay running where the phones can reach it. Build and insta
 
 ## Where NEAR fits
 
-| NEAR piece                                 | Job in TAIL                                                                                                                                                                                                                     | Code                                                           |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| Rust contract with `env::ed25519_verify`   | Holds stakes; applies only referee-signed verdicts, in order; checks the VRF reveal; refunds if the referee goes silent. It also checks the verdict chain, consistency proofs, the demand price of each hint, the replay at End | `contracts/tail`                                               |
-| `env::sha256` in the contract              | Verifies RFC 9162 consistency proofs and, in the `verify_inclusion` view, Merkle audit paths                                                                                                                                    | `contracts/tail`, `crates/tail-protocol`                       |
-| NEP-171 / 177 / 181 on the same contract   | One soulbound Dossier per player, its SVG drawn on-chain, gating who may join a match                                                                                                                                           | `contracts/tail/src/dossier.rs`, `art.rs`                      |
-| OutLayer (Intel TDX) on `outlayer.testnet` | The referee: sealed match state, the verdict signing key, VRF, the Handler call. v2 build active since 2026-11-13, not yet pinned (see the top)                                                                                 | `crates/referee-wasi`, `crates/referee-core`                   |
-| NEAR AI Cloud                              | The Handler's lines from an open-weight model; the chat signature is logged and re-checked, and the signing key is shown held in a genuine Intel TDX machine (no image pinned)                                                  | `crates/referee-wasi/src/voice.rs`, `scripts/verify-nearai.ts` |
-| Named sub-accounts with function-call keys | Each player's account holds only a key that can join, leave and withdraw; it is also the Dossier's token id                                                                                                                     | `apps/server/src/near.ts`                                      |
-| NEP-141 token (`usdc.fakes.testnet`)       | Stakes, heads and payouts                                                                                                                                                                                                       | `contracts/tail`                                               |
-| Merkle roots on-chain                      | Checkpoints every minute and at End; the replay, the phones' receipts, the phones' log monitor and presence proofs check against them                                                                                           | `contracts/tail`, `apps/web/src/verify`                        |
+| NEAR piece                                 | Job in TAIL                                                                                                                                                                                                                                         | Code                                                           |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Rust contract with `env::ed25519_verify`   | Holds stakes; applies only referee-signed verdicts, in order; checks the VRF reveal; refunds if the referee goes silent. It also checks the verdict chain, consistency proofs, the demand price of each hint, the replay at End                     | `contracts/tail`                                               |
+| `env::sha256` in the contract              | Verifies RFC 9162 consistency proofs and, in the `verify_inclusion` view, Merkle audit paths                                                                                                                                                        | `contracts/tail`, `crates/tail-protocol`                       |
+| NEP-171 / 177 / 181 on the same contract   | One soulbound Dossier per player, its SVG drawn on-chain, gating who may join a match                                                                                                                                                               | `contracts/tail/src/dossier.rs`, `art.rs`                      |
+| OutLayer (Intel TDX) on `outlayer.testnet` | The referee: sealed match state, the verdict signing key, VRF, the Handler call. v2 build active since 2026-11-13, not pinned on the contract; the referee source here builds a newer wasm, not uploaded (see the top)                              | `crates/referee-wasi`, `crates/referee-core`                   |
+| NEAR AI Cloud                              | The Handler's lines from an open-weight model; the chat signature is logged and re-checked, and the signing key is shown held in a genuine Intel TDX machine (no image pinned). No v2 match has a model line: the local test referee uses templates | `crates/referee-wasi/src/voice.rs`, `scripts/verify-nearai.ts` |
+| Named sub-accounts with function-call keys | Each player's account holds only a key that can join, leave and withdraw; it is also the Dossier's token id                                                                                                                                         | `apps/server/src/near.ts`                                      |
+| NEP-141 token (`usdc.fakes.testnet`)       | Stakes, heads and payouts                                                                                                                                                                                                                           | `contracts/tail`                                               |
+| Merkle roots on-chain                      | Checkpoints every minute and at End; the replay, the phones' receipts, the phones' log monitor and presence proofs check against them                                                                                                               | `contracts/tail`, `apps/web/src/verify`                        |
 
 ## What this does not claim
 
@@ -353,12 +383,13 @@ capability, and the relay running where the phones can reach it. Build and insta
   so a new version of the project could sign, and the attestation record per verdict is how you
   would catch it. With the local test referee pinned now, there is no such bound.
 - **Not proximity checked on-chain.** The contract checks the ring, the hint rules and the money,
-  not the radio evidence. Fabricated contact behind a ring-valid tag is caught only by
-  `tail-verify` on the released batches, after End.
+  not the radio evidence, the hint requests or the dark time. Fabricated contact behind a
+  ring-valid tag, a Hint nobody asked for and a Forfeit of a player who never went dark are
+  caught only by `tail-verify` on the released batches, after End.
 - **Not the referee's clock.** Each tick's time is the referee's word, and the relay may hold it
   back (never more than 20 s ahead). `tail-verify` replays with the logged times and cannot check
-  them. The contract bounds it loosely. Start must be within 5 minutes of block time. After the
-  upgrade, a checkpoint may land no faster than one per 30 s of block time, while the referee
+  them. The contract bounds it loosely. Start must be within 5 minutes of block time. A
+  checkpoint may land no faster than one per 30 s of block time, while the referee
   anchors one per 60 s of its own, so a referee clock running more than about twice as fast as
   the chain stalls the match into a refund.
 - **Not censorship-proof.** The relay can drop a report before the referee sees it; the phone's
@@ -377,25 +408,26 @@ capability, and the relay running where the phones can reach it. Build and insta
 
 ## Status
 
-| Part                                        | State                                                                                                                                                                                                                                                                                                                                                                  |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Wire formats (TS + Rust)                    | Protocol v2, including demand pricing and padded phone seals; golden vectors shared by both                                                                                                                                                                                                                                                                            |
-| Rules engine and simulator                  | 28 scripted scenarios, random 12-player runs in the tests, and `referee-sim bench` (12 players, 60 minutes by default)                                                                                                                                                                                                                                                 |
-| `tail-verify`                               | Re-runs a v2 bundle through the rules engine; passes on the demo, the economy fixture, a relay-served match in the tests, and the 2026-11-13 testnet match (186 log entries, 8 verdicts, all identical)                                                                                                                                                                |
-| Referee on OutLayer testnet                 | v2 build `3f9320a6…85690` active since 2026-11-13; answers with the same enclave keys and refuses unattested devices. Not pinned on the contract (above). A 3-player match passed end to end on the v1 build on 2026-11-12                                                                                                                                             |
-| Local test referee                          | Pinned on the live contract; judged the 2026-11-12 iPhone matches (v1) and the 2026-11-13 v2 match with test players                                                                                                                                                                                                                                                   |
-| NEAR contract on testnet                    | Upgraded in place to this round's code on 2026-11-13 (`migrate`; 253 tests). On it a v2 match ran: verdict chain, consistency-checked checkpoints, a demand-priced hint, End replayed by the contract and paid out, the players' dossiers updated. Each verdict transaction burned 2 to 4 Tgas. Matches from before the upgrade read `settled_as: "payout_unreplayed"` |
-| Contract reviews                            | The first version was security-reviewed and the findings fixed, each with a regression test (`contracts/tail/src/tests.rs`). No outside review of this round's changes yet                                                                                                                                                                                             |
-| Relay                                       | Protocol v2; per-address limits on challenges, HUD sockets and new enrolments; re-enrolment when the contract pins another referee; releases device keys, assertions and refused batches after End. Runs locally against the live contract (not deployed)                                                                                                              |
-| Web replay                                  | Protocol v2, and reads v1 bundles; economy view, NEAR AI attestation panel, dossier page; runs locally                                                                                                                                                                                                                                                                 |
-| iPhone app                                  | Two iPhones (17 Pro Max, 14) ran enrolment with App Attest, lobbies and a Tag from Bluetooth contact indoors on 2026-11-12 (v1). The v2 paths (signed HUDs, chain recovery, receipts, the log monitor, the check of each Handler line against the logged receipt, re-enrolment, the Dossier card) pass their tests and have not run on a phone                         |
-| Range, pocket and outdoor tests             | **Not run yet**                                                                                                                                                                                                                                                                                                                                                        |
-| Mesh carry (Offline Protocol SDK)           | Phone to phone, with no relay node: an offline phone seals its signed request to the relay and a nearby phone posts it. Off by default behind a setting; tested only with a fake mesh; Bluetooth coexistence not measured                                                                                                                                              |
-| Sponsor-funded public matches (Sputnik DAO) | The contract supports sponsors; no DAO flow                                                                                                                                                                                                                                                                                                                            |
+| Part                                        | State                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wire formats (TS + Rust)                    | Protocol v2, including demand pricing and padded phone seals; golden vectors shared by both                                                                                                                                                                                                                                                                                                                           |
+| Rules engine and simulator                  | 28 scripted scenarios, random 12-player runs in the tests, and `referee-sim bench` (12 players, 60 minutes by default)                                                                                                                                                                                                                                                                                                |
+| `tail-verify`                               | Re-runs a v2 bundle through the rules engine; passes on the demo and a relay-served match in the tests, and passed by hand on the economy fixture and the 2026-11-13 testnet match (186 log entries, 8 verdicts, all identical)                                                                                                                                                                                       |
+| Referee on OutLayer testnet                 | v2 build `3f9320a6…85690` active since 2026-11-13; answers with the same enclave keys and refuses unattested devices. Not pinned on the contract (above). No v2 match has run on it, and the relay here cannot start one: it lacks the `devices` command. A 3-player match passed end to end on the v1 build on 2026-11-12                                                                                            |
+| Local test referee                          | Pinned on the live contract; judged the 2026-11-12 iPhone matches (v1) and the 2026-11-13 v2 match with test players                                                                                                                                                                                                                                                                                                  |
+| NEAR contract on testnet                    | Upgraded in place to this round's code on 2026-11-13 (`migrate`). On it a v2 match of test players ran: verdict chain, consistency-checked checkpoints, a demand-priced hint, End replayed by the contract and paid out, the players' dossiers updated. Its 8 verdict transactions burned 2.3 to 4.2 Tgas each in the contract (End the most). Matches from before the upgrade read `settled_as: "payout_unreplayed"` |
+| Contract reviews                            | The first version was security-reviewed and the findings fixed, each with a regression test (`contracts/tail/src/tests.rs`). No outside review of this round's changes yet                                                                                                                                                                                                                                            |
+| Relay                                       | Protocol v2; per-address limits on challenges, HUD sockets and new enrolments; re-enrolment when the contract pins another referee; before each Start, asks the referee whether it holds every player's device; releases device keys, assertions and refused batches after End. Runs locally against the live contract (not deployed)                                                                                 |
+| Web replay                                  | Protocol v2, and reads v1 bundles; strict ed25519 checks, economy view, NEAR AI attestation panel, presence page (reads the phone's proofs too), dossier page compared with the contract's NFT; runs locally                                                                                                                                                                                                          |
+| iPhone app                                  | Two iPhones (17 Pro Max, 14) ran enrolment with App Attest, lobbies and a Tag from Bluetooth contact indoors on 2026-11-12 (v1). The v2 paths (signed HUDs, chain recovery, receipts, the log monitor, the check of each Handler line against the logged receipt, re-enrolment, the Dossier card) pass their tests and have not run on a phone                                                                        |
+| Range, pocket and outdoor tests             | **Not run yet**                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Mesh carry (Offline Protocol SDK)           | Phone to phone, with no relay node: an offline phone seals its signed request to the relay and a nearby phone posts it. Off by default behind a setting; tested only with a fake mesh; Bluetooth coexistence not measured                                                                                                                                                                                             |
+| Sponsor-funded public matches (Sputnik DAO) | The contract supports sponsors; no DAO flow                                                                                                                                                                                                                                                                                                                                                                           |
 
 Measured on testnet with the v1 code (2026-11-12): a game tick took 2.9 s at the median and 6.7 s
 at p95, of which about 1.5 s was inside the enclave. An `apply` of one verdict burned about
-2 Tgas, and an OutLayer call cost about $0.001. The v2 code is not measured on testnet.
+2 Tgas, and an OutLayer call cost about $0.001. With the v2 code only the contract is measured
+(the gas above); v2 tick latency on OutLayer is not.
 
 ## Repository
 
