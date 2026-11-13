@@ -15,7 +15,7 @@ import type { RefereeKeys } from "./referee.ts";
  * missing or broken, which no wait will mend.
  */
 export function pinProblem(
-  config: Pick<Config, "refereeMode" | "vrfSender">,
+  config: Pick<Config, "refereeMode" | "vrfSender" | "appId">,
   pinned: Pick<ContractConfig, "referee_pk" | "vrf_pk" | "vrf_sender">,
   keys: RefereeKeys | Error,
 ): string | null {
@@ -31,5 +31,9 @@ export function pinProblem(
     pinned.vrf_sender !== config.vrfSender
   )
     return `the contract pins another referee's keys or VRF caller; ${pin}`;
+  // The relay writes its App ID into every replay bundle, and the verifier checks assertions
+  // against it; the referee checked them against its own. The two must be the same app.
+  if (keys.appId !== null && keys.appId !== config.appId)
+    return `the referee checks App ID ${keys.appId}, the relay is set to ${config.appId} (APPLE_TEAM_ID.IOS_BUNDLE_ID)`;
   return null;
 }

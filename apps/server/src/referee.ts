@@ -25,6 +25,11 @@ export interface RefereeKeys {
   refereeBoxPk: Uint8Array;
   boxPkSig: Uint8Array;
   vrfPk: Uint8Array;
+  /**
+   * The App ID pinned in the referee's code, which it checks attestations and assertions against;
+   * null when the referee's answer predates the field.
+   */
+  appId: string | null;
 }
 
 export interface EnrollInput {
@@ -514,6 +519,7 @@ export class RefereeClient implements Referee {
       refereeBoxPk: s.bytes(r, "referee_box_pk"),
       boxPkSig: s.bytes(r, "box_pk_sig"),
       vrfPk: s.hex(r, "vrf_pk"),
+      appId: r["app_id"] === undefined ? null : s.str(r, "app_id"),
     };
   }
 

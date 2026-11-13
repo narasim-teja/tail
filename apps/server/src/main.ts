@@ -113,6 +113,8 @@ async function checkPins(config: Config) {
   }
   if (keys instanceof Error)
     log.warn({ err: keys.message }, "could not check the contract's pinned referee keys; starting anyway");
+  else if (keys.appId === null)
+    log.warn({ appId: config.appId }, "this referee build does not name its App ID; it is not checked");
   if (config.refereeMode === "local") {
     log.warn(
       { contract: config.contract },

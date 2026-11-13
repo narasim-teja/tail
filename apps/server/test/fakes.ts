@@ -513,7 +513,13 @@ export class FakeReferee implements Referee {
   }
   async pubkeys(): Promise<RefereeKeys> {
     this.calls.push("pubkeys");
-    return { refereePk: this.pk, refereeBoxPk: this.boxPk, boxPkSig: new Uint8Array(64), vrfPk: this.pk };
+    return {
+      refereePk: this.pk,
+      refereeBoxPk: this.boxPk,
+      boxPkSig: new Uint8Array(64),
+      vrfPk: this.pk,
+      appId: "TEAM.app",
+    };
   }
   async enroll(i: EnrollInput): Promise<EnrollResult> {
     this.calls.push("enroll");

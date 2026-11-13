@@ -11,10 +11,11 @@ const keys: RefereeKeys = {
   refereeBoxPk: new Uint8Array(32).fill(2),
   boxPkSig: new Uint8Array(64),
   vrfPk: new Uint8Array(32).fill(3),
+  appId: "TEAM.app",
 };
 const pinned = { referee_pk: toHex(keys.refereePk), vrf_pk: toHex(keys.vrfPk), vrf_sender: "relay.testnet" };
-const outlayer = { refereeMode: "outlayer" as const, vrfSender: "relay.testnet" };
-const local = { refereeMode: "local" as const, vrfSender: "relay.testnet" };
+const outlayer = { refereeMode: "outlayer" as const, vrfSender: "relay.testnet", appId: "TEAM.app" };
+const local = { refereeMode: "local" as const, vrfSender: "relay.testnet", appId: "TEAM.app" };
 
 describe("pinProblem", () => {
   test("the referee the contract pins passes", () => {
@@ -35,5 +36,11 @@ describe("pinProblem", () => {
       { ...pinned, vrf_sender: "someone-else.testnet" },
     ])
       expect(pinProblem(outlayer, p, keys)).toContain("pin-referee.ts");
+  });
+
+  test("a referee that checks another App ID than the relay names stops the relay", () => {
+    expect(pinProblem(outlayer, pinned, { ...keys, appId: "OTHER.app" })).toContain("App ID OTHER.app");
+    // A build from before pubkeys named it cannot be checked (main.ts warns).
+    expect(pinProblem(outlayer, pinned, { ...keys, appId: null })).toBeNull();
   });
 });

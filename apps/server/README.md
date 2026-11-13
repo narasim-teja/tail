@@ -377,9 +377,11 @@ nothing attests the code that signed, so:
   refuses it with a 409 before locking it, and the host makes a new one;
 - the relay checks at startup that the contract pins the keys and the VRF caller (`vrf_sender`:
   `OUTLAYER_OWNER`, or the relay account for the local referee) of the referee it runs with, in
-  either mode, and refuses to start otherwise. A local test referee that does not answer (binary
-  missing or broken) stops it too; an enclave that does not answer is reported down instead,
-  since OutLayer comes back;
+  either mode, and refuses to start otherwise, or when the App ID the referee pins in its code
+  (`pubkeys` `app_id`) is not `APPLE_TEAM_ID.IOS_BUNDLE_ID`, the one the relay writes into every
+  replay bundle (a referee build from before `app_id` is not checked). A local test referee
+  that does not answer (binary missing or broken) stops it too; an enclave that does not answer
+  is reported down instead, since OutLayer comes back;
 - every replay bundle it serves says `referee.kind: "local"`, and the replay page labels the
   signatures as the test referee's;
 - the Handler answers with its template lines (no model call).

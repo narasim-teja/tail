@@ -108,6 +108,8 @@ describe("a match judged by the real (local) referee", () => {
     };
     const referee = new GuardedReferee(new RefereeClient(transport), "local");
     const pins = await referee.pubkeys();
+    // The App ID pinned in the referee's code is the one the relay names.
+    expect(pins.appId).toBe(APP_ID);
     const chain = new ContractChain(
       { refereePk: pins.refereePk, vrfPk: pins.vrfPk, vrfSender: PARENT },
       () => clock.ms,
