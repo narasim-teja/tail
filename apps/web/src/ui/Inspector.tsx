@@ -762,6 +762,54 @@ function TagRuleLine() {
   );
 }
 
+/**
+ * The Handler lines' model signatures, counted. The title says how many carry one, so a match of
+ * template lines doesn't read as signed, and a fixture's public test key is never called NEAR AI's.
+ */
+function ModelSignatureLine() {
+  const { match, verify } = useReplay();
+  const signer = useStore(verify, (s) => s.signer);
+  const lines = match.events.flatMap((e) =>
+    e.handler ? [e.handler.signature?.signature ?? "unchecked"] : [],
+  );
+  const n = lines.length;
+  if (n === 0) return null;
+  const count = (k: string) => lines.filter((x) => x === k).length;
+  const [signed, bad, unsigned, unchecked] = [
+    count("signed"),
+    count("bad"),
+    count("unsigned"),
+    count("unchecked"),
+  ];
+  const testKey = signer === "fixture";
+  if (unchecked === n)
+    return (
+      <ProofLine
+        check="info"
+        detail="This replay doesn't carry the text the model signed, so the model signatures weren't checked."
+      >
+        Handler lines: signatures not checked
+      </ProofLine>
+    );
+  const detail = [
+    signed > 0 &&
+      (testKey
+        ? `${signed} recover to the address logged with them, a public test key of this fixture, not NEAR AI's.`
+        : `${signed} have a NEAR AI chat signature that recovers to the address logged with it. It shows that address signed the chat's request and response hashes, not that the address is in sealed hardware.`),
+    bad > 0 && `${bad} carry a signature that doesn't recover to the address logged with it.`,
+    unsigned > 0 &&
+      `${unsigned} carry no model signature: the referee's template line, used when the model doesn't answer in time, is unsigned by design, and so is a line whose signature couldn't be fetched.`,
+    unchecked > 0 && `For ${unchecked}, this replay doesn't carry the text the model signed.`,
+  ].filter(Boolean);
+  return (
+    <ProofLine check={bad > 0 ? "fail" : signed === n ? "pass" : "info"} detail={detail.join(" ")}>
+      {bad > 0
+        ? `Handler lines: ${bad} of ${n} signatures don't check out`
+        : `Handler lines: ${signed} of ${n} carry ${testKey ? "the fixture's test-key signature" : "a NEAR AI signature"}`}
+    </ProofLine>
+  );
+}
+
 function SummaryBody() {
   const { decoded, verify, source, batches, match } = useReplay();
   const statuses = useStore(verify, (s) => s.statuses);
@@ -783,9 +831,6 @@ function SummaryBody() {
   const lines = match.events.flatMap((e) => (e.handler ? [e.handler] : []));
   const quoted = lines.filter((h) => h.verified !== null);
   const handlerOk = quoted.filter((h) => h.verified).length;
-  const modelSigned = lines.filter((h) => h.signature?.signature === "signed").length;
-  const modelBad = lines.filter((h) => h.signature?.signature === "bad").length;
-  const modelUnchecked = lines.filter((h) => h.signature?.signature === "unchecked").length;
   const status = overall(sum, chain, problem);
   const end = decoded.verdicts.findIndex((x) => x.v?.body.kind === "End");
   const ring = end >= 0 ? local[end]?.ring : undefined;
@@ -946,18 +991,7 @@ function SummaryBody() {
               Handler lines are word for word
             </ProofLine>
           )}
-          {lines.length > 0 && (
-            <ProofLine
-              check={modelBad > 0 ? "fail" : modelSigned === lines.length ? "pass" : "info"}
-              detail={
-                modelUnchecked === lines.length
-                  ? "This replay doesn't carry the text the model signed, so the model signatures weren't checked."
-                  : `${modelSigned} of ${lines.length} lines have a NEAR AI chat signature that recovers to the address logged with it. It shows that address signed the chat's request and response hashes, not that the address is in sealed hardware.`
-              }
-            >
-              Handler chats are signed
-            </ProofLine>
-          )}
+          <ModelSignatureLine />
         </ul>
       </Section>
       {!allLocal && done === n && (

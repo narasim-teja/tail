@@ -89,3 +89,39 @@ describe("who signed, beside the verdict line", () => {
     expect(chips(html(f, <Header place="Boston Common" compact={false} />))).toEqual(["Fixture"]);
   });
 });
+
+describe("the Handler lines' signatures", () => {
+  const relay = { kind: "relay" as const, matchId: fx.full.match.id, url: "x" };
+  const sheet = (r: ReturnType<typeof replayOf>) => {
+    r.play.set({ selection: { kind: "summary" } });
+    return html(r, <Inspector compact={false} />);
+  };
+
+  test("a fixture's lines carry its public test key, never called NEAR AI's", () => {
+    const line = row(sheet(replayOf(fx.full)), "Handler lines:");
+    expect(line.title).toBe("Handler lines: 3 of 3 carry the fixture's test-key signature");
+    expect(`${line.title} ${line.detail}`).not.toContain("NEAR AI chat signature");
+  });
+
+  test("a real match's signed lines are counted; template lines leave the count at 0, unpassed", () => {
+    const r = replayOf(fx.full, { source: relay, signer: "unknown" });
+    expect(row(sheet(r), "Handler lines:")).toMatchObject({
+      glyph: "Checked",
+      title: "Handler lines: 3 of 3 carry a NEAR AI signature",
+    });
+    const events = r.match.events.map((e) =>
+      e.handler?.signature
+        ? {
+            ...e,
+            handler: { ...e.handler, signature: { ...e.handler.signature, signature: "unsigned" as const } },
+          }
+        : e,
+    );
+    const t = row(sheet({ ...r, match: { ...r.match, events } }), "Handler lines:");
+    expect(t).toMatchObject({
+      glyph: "Not checked",
+      title: "Handler lines: 0 of 3 carry a NEAR AI signature",
+    });
+    expect(t.detail).toContain("template line");
+  });
+});
