@@ -286,8 +286,9 @@ bytes.
 ## Measured (hosted testnet, 2026-11-12)
 
 These runs are of the protocol v1 referee (before the verdict chain, consistency proofs, signed
-HUDs and the sealed log). The v2 build has not run on OutLayer yet; `scripts/match.ts` and
-`scripts/smoke.ts` pass against the local test referee (below). v2 adds one signing call per
+HUDs and the sealed log). No v2 match has run on OutLayer yet, and the build active there has not
+answered a call (below); `scripts/match.ts` and `scripts/smoke.ts` pass against the local test
+referee. v2 adds one signing call per
 HUD per tick (12 for 12 players) on OutLayer's `signing_keys`, whose latency is not measured.
 
 `scripts/match.ts` runs 3 ghost phones and starts the match 4 minutes in the past so it can
@@ -428,14 +429,22 @@ The scripts read the repo-root `.env.local`. `REFEREE_PAYMENT_KEY` takes precede
 `OUTLAYER_PAYMENT_KEY`, and `REFEREE_VERSION=<wasm sha256>` pins a deployed version that is not
 active.
 
-Active version on OutLayer: wasm sha256 `3f9320a61236f02f72481c2ec2b920854f22c7554924a315eebbea52aad85690`
-(protocol v2, 768 KB; WASI imports 0.2.6, HTTP 0.2.4), deployed 2026-11-13. `pubkeys` returns
-the same keys as the v1 build `20446c64…08664` before it. `ALLOW_UNATTESTED` is not set there,
-so `enroll` refuses a device without an Apple attestation, and `scripts/smoke.ts` (which enrols
-unattested ghosts) stops at `enroll` against it; against the local test referee it passes.
+Active version on OutLayer: wasm sha256 `092ec57c8dc0b99f815524c1a4ebe016f202ac58faec2206930140679641f694`
+(775,347 bytes; WASI imports 0.2.6, HTTP 0.2.4), built by `scripts/build.ts` from this source and
+deployed on 2026-11-13; `get_project` on `outlayer.testnet` names it as `active_version`. The
+`ALLOW_UNATTESTED` author secret was set the same day. It has never executed a call: that evening
+OutLayer's testnet API took requests, but every call, to this build or to the one before it,
+returned HTTP 524 after about 125 s. So whether its `pubkeys` returns the project's keys, and a
+relay Start against it, are not checked yet. It is not in the replay's pinned list
+(`apps/web/src/verify/pins.ts`).
 
-That build predates `devices`, the idempotent `end`, the legacy device record read by `enroll`,
-`pubkeys` `app_id` and state version 7, so it is no longer what this crate builds: a local
-`scripts/build.ts` of this source gave `5e9cbb689229010b5ca91be184f8f3a76fb1150b095876783a4afec4a6514f4b`
-(776,147 bytes; WASI imports 0.2.6, HTTP 0.2.4), not uploaded. Against the active build the relay
-cannot run Start (it asks `devices` first).
+Before it, the v2 build `3f9320a61236f02f72481c2ec2b920854f22c7554924a315eebbea52aad85690`
+(768 KB, deployed earlier on 2026-11-13) returned the same keys as the v1 build `20446c64…08664`
+and refused unattested devices, since `ALLOW_UNATTESTED` was not set then. It predates `devices`,
+the idempotent `end`, the legacy device record read by `enroll`, `pubkeys` `app_id` and state
+version 7.
+
+Builds do not reproduce byte for byte: `scripts/build.ts` of the same source in another checkout
+on the same machine gave `5e9cbb689229010b5ca91be184f8f3a76fb1150b095876783a4afec4a6514f4b`
+(776,147 bytes), which was never uploaded. Compare a call's `executed_wasm_sha256` with the
+uploaded hash above, not with a fresh build.
