@@ -357,6 +357,20 @@ describe("hunt", () => {
     expect(again.last().handler).toEqual([handlerLine(4, "Bearing north-east.")]);
   });
 
+  test("a Handler line the relay sends again on a reconnect is not a new dispatch", () => {
+    const r = rig();
+    r.s.start();
+    const line = { matchId: keys.matchId, player: 0, hintId: 3, text: "Getting warmer." };
+    const say = () =>
+      r.hud({ type: "handler", sealed: sealSignedVoiceLine(r.boxPk, signVoiceLine(line, refereeSk)) });
+    say();
+    const first = r.s.snapshot().notes;
+    // The relay resends every answered line each time the HUD socket authenticates.
+    say();
+    say();
+    expect(r.s.snapshot().notes).toEqual(first);
+  });
+
   test("a HUD or Handler line the referee did not sign is named as such and changes nothing", () => {
     const r = rig();
     r.s.start();

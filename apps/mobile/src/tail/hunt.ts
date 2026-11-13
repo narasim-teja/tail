@@ -180,11 +180,12 @@ export class TailHunt {
           this.note("info", `${NOT_SIGNED}.`);
           return;
         }
+        // The relay sends every answered line again each time the socket authenticates: a line
+        // already had is no new dispatch (no note, no haptic).
+        if (this.handler.some((l) => l.hintId === line.hintId)) return;
+        this.handler = [...this.handler, handlerLine(line.hintId, line.text)];
+        this.persist();
         this.note("handler", line.text);
-        if (!this.handler.some((l) => l.hintId === line.hintId)) {
-          this.handler = [...this.handler, handlerLine(line.hintId, line.text)];
-          this.persist();
-        }
         return;
       }
       case "refused":
