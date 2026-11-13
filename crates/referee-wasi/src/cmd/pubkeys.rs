@@ -1,5 +1,7 @@
-//! `pubkeys`: the keys a phone, the relay and the contract pin.
+//! `pubkeys`: the keys a phone, the relay and the contract pin, and the App ID the referee
+//! checks attestations and assertions against.
 
+use super::APP_ID;
 use crate::codec::{b64, parse};
 use crate::host;
 use crate::records::box_statement_digest;
@@ -22,5 +24,8 @@ pub fn run(input: Value) -> Result<Value, String> {
         "referee_box_pk": b64(&box_pk),
         "box_pk_sig": b64(&box_sig),
         "vrf_pk": host::vrf_pk()?,
+        // Pinned in the code; the relay writes its own into the replay bundle and checks the two
+        // agree before serving.
+        "app_id": APP_ID,
     }))
 }

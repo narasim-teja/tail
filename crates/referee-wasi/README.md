@@ -42,8 +42,10 @@ to the log returns instead:
 first) to that verdict's `log_size`. `from_size` is a JSON number. The relay passes it to the
 contract's `apply` unchanged.
 
-**`pubkeys`** `{}` → `{referee_pk, referee_pk_hex, referee_box_pk, box_pk_sig, vrf_pk}`.
+**`pubkeys`** `{}` → `{referee_pk, referee_pk_hex, referee_box_pk, box_pk_sig, vrf_pk, app_id}`.
 `box_pk_sig` = ed25519(referee_sk, SHA256(`"tail/referee-box/v1"` ‖ box_pk)). `vrf_pk` is hex.
+`app_id` is the App ID pinned in the code (`LKABS9RZAC.com.lkabs9rzac.tail`), which the relay
+checks against its own.
 
 **`enroll`** `{account_id, app_attest_pk, player_box_pk, near_pk, attestation?, challenge?, rebind_sig?}`.
 `app_attest_pk` is SEC1 P-256, 33 or 65 bytes. `attestation` is the CBOR object the phone got

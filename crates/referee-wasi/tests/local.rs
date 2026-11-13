@@ -130,6 +130,10 @@ fn pubkeys(dir: &Path) -> (Value, VerifyingKey, VerifyingKey) {
     let keys = call(dir, &json!({ "cmd": "pubkeys" }));
     let referee_pk = VerifyingKey::from_bytes(&fixed(&keys["referee_pk"])).unwrap();
     assert_eq!(keys["referee_pk_hex"], hex::encode(referee_pk.to_bytes()));
+    assert_eq!(
+        keys["app_id"], APP_ID,
+        "the App ID it checks attestations against"
+    );
     let box_pk: [u8; 32] = fixed(&keys["referee_box_pk"]);
     let box_digest = sha256(&[b"tail/referee-box/v1", &box_pk]);
     assert!(
