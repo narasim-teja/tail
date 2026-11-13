@@ -291,10 +291,11 @@ cd apps/web
 bun run dev
 ```
 
-Open http://localhost:5173 (the dev server listens on every interface, so a phone on the same
-network can open `http://<mac>.local:5173`). A generated match on Boston Common plays as a short
-film: players walk the park's real paths, the lock line tightens, and each tag flashes on the
-spot. Click a tag to see its proof. In your browser the page re-checks:
+Open http://localhost:5173 for the front page (the dev server listens on every interface, so a
+phone on the same network can open `http://<mac>.local:5173`), and
+http://localhost:5173/?fixture=boston-common for the replay. A generated match on Boston Common
+plays as a short film: players walk the park's real paths, the lock line tightens, and each tag
+flashes on the spot. Click a tag to see its proof. In your browser the page re-checks:
 
 - every verdict signature and the verdict chain;
 - every Merkle root, and consistency between successive roots;
@@ -462,7 +463,7 @@ crates/referee-wasi    the referee: OutLayer module, or the local test referee w
 crates/appattest       App Attest attestation and assertion checks (Rust; runs in the referee)
 contracts/tail         the NEAR contract, with the Dossier NFT
 apps/server            the relay: Bun, Hono, SQLite
-apps/web               the replay and verifier: React, MapLibre, deck.gl
+apps/web               the front page, docs, replay and verifier: React, MapLibre, deck.gl
 apps/mobile            the iPhone app: Expo, React Native, Swift modules
 packages/appattest     App Attest attestation checks (TypeScript; the relay's own check)
 packages/brand         logo, colours, icons, the Dossier card
