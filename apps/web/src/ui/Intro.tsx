@@ -4,8 +4,9 @@
 // the link opens the film midway (`?t=`).
 
 import { useState } from "react";
-import { minutes, money } from "../lib/format.ts";
+import { money } from "../lib/format.ts";
 import { useStore } from "../lib/store.ts";
+import { lengthLine } from "../replay/copy.ts";
 import { useReplay } from "./context.tsx";
 import { TrailMark } from "./icons.tsx";
 
@@ -30,8 +31,7 @@ export function Intro({ place }: { place: string }) {
           {place}
         </p>
         <p className="over-map numeral mt-4 text-[clamp(0.9375rem,1.6vw,1.25rem)] text-text-2">
-          {match.players.length} players · {minutes(match.durationMs)} · {money(match.stake, decimals)} USDC
-          each
+          {match.players.length} players · {lengthLine(match)} · {money(match.stake, decimals)} USDC each
         </p>
       </div>
     </div>

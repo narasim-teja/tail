@@ -15,6 +15,7 @@ import {
   snapshotAt,
   snapshotBefore,
 } from "../src/model/match.ts";
+import { lengthLine } from "../src/replay/copy.ts";
 import { decodeBundle } from "../src/verify/bundle.ts";
 import { checkBatches, checkHandler } from "../src/verify/checks.ts";
 
@@ -104,6 +105,26 @@ describe("the match model", () => {
     const hints = build(JSON.parse(JSON.stringify(fx.v1))).events.filter((e) => e.kind === "hint");
     expect(hints.length).toBe(3);
     expect(hints.every((h) => h.handler?.text && h.handler.verified === true)).toBe(true);
+  });
+
+  test("the match ends at the referee's last tick, so one that ends early has no dead stretch", () => {
+    // Run to time: the last tick runs a little past the planned end, clamped to it as the referee does.
+    expect(m.durationMs).toBe(m.plannedMs);
+    expect(m.events.at(-1)).toMatchObject({ kind: "end", t: m.plannedMs });
+    // The same log with a later planned end: the match ended before it, at its last tick.
+    const later = JSON.parse(JSON.stringify(fx.full)) as typeof fx.full;
+    later.match.endMs += 10 * 60_000;
+    const early = build(later);
+    const lastTick = decodeBundle(later)
+      .log.flatMap((e) => (e.entry?.kind === "Tick" ? [Number(e.entry.nowMs)] : []))
+      .at(-1) as number;
+    expect(early.plannedMs).toBe(m.plannedMs + 10 * 60_000);
+    expect(early.durationMs).toBe(lastTick - later.match.startMs);
+    expect(early.events.at(-1)).toMatchObject({ kind: "end", t: early.durationMs });
+    expect(lengthLine(early)).toBe("20 of 30 min");
+    // A v1 log has no ticks: only the planned end.
+    const v1 = build(JSON.parse(JSON.stringify(fx.v1)));
+    expect(v1.durationMs).toBe(v1.plannedMs);
   });
 
   test("tracks come from verified batches and stop when a player goes dark", () => {

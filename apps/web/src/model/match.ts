@@ -92,7 +92,10 @@ export interface Track {
 export interface Match {
   id: string;
   startMs: number;
+  /** How long it ran: to the referee's last tick at End (playedMs), what the film plays. */
   durationMs: number;
+  /** How long it was set to run (the match's end_ms); longer than durationMs if it ended early. */
+  plannedMs: number;
   stake: bigint;
   token: string;
   network: string;
@@ -184,7 +187,12 @@ export function buildMatch(
 ): Match {
   const m = d.raw.match;
   const startMs = m.startMs;
-  const durationMs = m.endMs - m.startMs;
+  const plannedMs = m.endMs - m.startMs;
+  const verdictLog = new Map<number, number>();
+  d.log.forEach((e, i) => {
+    if (e.entry?.kind === "Verdict" && !verdictLog.has(e.entry.seq)) verdictLog.set(e.entry.seq, i);
+  });
+  const durationMs = playedMs(d, verdictLog, startMs, plannedMs);
   const names = displayNames(d.players);
   const initials = initialsFor(names);
   const enrolled = enrolments(d);
@@ -238,10 +246,6 @@ export function buildMatch(
         logIndex: i,
       });
     }
-  });
-  const verdictLog = new Map<number, number>();
-  d.log.forEach((e, i) => {
-    if (e.entry?.kind === "Verdict" && !verdictLog.has(e.entry.seq)) verdictLog.set(e.entry.seq, i);
   });
   let checkpointNo = 0;
   for (const x of d.verdicts) {
@@ -369,6 +373,7 @@ export function buildMatch(
     id: m.id,
     startMs,
     durationMs,
+    plannedMs,
     stake: d.stake,
     token: m.token,
     network: m.network,
@@ -384,6 +389,27 @@ export function buildMatch(
     ring,
     settlement,
   };
+}
+
+/**
+ * How long the match ran, ms: to the referee's last tick at or before End, whose Tick entry
+ * carries the referee's own clock, so a match that ended early (one player left) ends there and
+ * not at the planned end. Clamped to the planned end, as the referee clamps its clock (its last
+ * tick may run a little past it). A log without ticks (protocol v1) has only the plan.
+ */
+function playedMs(
+  d: DecodedBundle,
+  verdictLog: Map<number, number>,
+  startMs: number,
+  plannedMs: number,
+): number {
+  const end = d.verdicts.find((x) => x.v?.body.kind === "End")?.v;
+  const upTo = (end && verdictLog.get(end.seq)) ?? d.log.length;
+  for (let i = upTo - 1; i >= 0; i--) {
+    const e = d.log[i]?.entry;
+    if (e?.kind === "Tick") return Math.min(plannedMs, Math.max(0, Number(e.nowMs) - startMs));
+  }
+  return plannedMs;
 }
 
 /** Time of each log index: anchors made monotone, linear by index between them. */

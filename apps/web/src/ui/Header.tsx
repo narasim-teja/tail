@@ -2,8 +2,9 @@
 // account of what was checked.
 
 import { cn } from "@/lib/utils";
-import { day, minutes, money, timeOfDay } from "../lib/format.ts";
+import { day, money, timeOfDay } from "../lib/format.ts";
 import { useStore } from "../lib/store.ts";
+import { lengthLine } from "../replay/copy.ts";
 import { matchProblem, summarize, summaryLine } from "../verify/report.ts";
 import { useReplay } from "./context.tsx";
 import { Mark, TrailMark } from "./icons.tsx";
@@ -45,7 +46,7 @@ export function Header({ place, compact }: { place: string | null | undefined; c
       <p
         className={cn("over-map numeral mt-1.5 text-text-2", compact ? "text-[0.75rem]" : "text-[0.875rem]")}
       >
-        {day(match.startMs)} · {timeOfDay(match.startMs)} · {minutes(match.durationMs)} ·{" "}
+        {day(match.startMs)} · {timeOfDay(match.startMs)} · {lengthLine(match)} ·{" "}
         {money(match.stake, decimals)} USDC each
       </p>
       {!match.hasTrails && (

@@ -1,6 +1,6 @@
 // Every sentence the replay says about the match. Short, plain, no protocol words.
 
-import { timeOfDay } from "../lib/format.ts";
+import { minutes, timeOfDay } from "../lib/format.ts";
 import type { Match, MatchEvent } from "../model/match.ts";
 import { snapshotAt } from "../model/match.ts";
 import type { Anchor, ChainMatch } from "../verify/anchor.ts";
@@ -33,6 +33,12 @@ export function endLine(m: Match): string {
   const left = m.players.filter((p) => s.alive[p.index]).map((p) => p.name);
   if (left.length === 1) return `${left[0]} is the last one standing`;
   return `Time. ${list(left)} ${left.length === 2 ? "both" : "all"} made it`;
+}
+
+/** How long the match ran: "60 min", or "23 of 60 min" when it ended before its planned end. */
+export function lengthLine(m: Match): string {
+  const ran = minutes(m.durationMs);
+  return ran === minutes(m.plannedMs) ? ran : `${ran.replace(/ min$/, "")} of ${minutes(m.plannedMs)}`;
 }
 
 export function list(names: string[]): string {
