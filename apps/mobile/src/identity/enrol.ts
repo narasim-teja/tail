@@ -17,7 +17,13 @@ export interface Attestor {
 export async function enrol(
   handle: string,
   id: Identity,
-  deps: { relay: RelayClient; attest: Attestor; secrets: SecretStore },
+  deps: {
+    relay: RelayClient;
+    attest: Attestor;
+    secrets: SecretStore;
+    /** The step now running, for the button label: the relay's half can take a minute. */
+    onStep?: (label: string) => void;
+  },
 ): Promise<Identity> {
   if (!deps.attest.isSupported) throw new Error("App Attest is not available on this device.");
   const ch = await deps.relay.enrollChallenge(handle.trim().toLowerCase());
@@ -25,6 +31,7 @@ export async function enrol(
   const keyId = await deps.attest.generateKey();
   const hash = enrollClientDataHash(ch.challenge, ch.accountId, id.boxPk, id.nearPk);
   const attestation = await deps.attest.attestKey(keyId, toB64(hash));
+  deps.onStep?.("Making your account");
   const r = await deps.relay.enroll({
     challenge: ch.challenge,
     keyId,

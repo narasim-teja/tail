@@ -235,6 +235,13 @@ const circle = (c: Circle) => ({ lat_e7: c.latE7, lon_e7: c.lonE7, radius_m: c.r
 /** The part of fetch the clients use; tests pass their own. */
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
+/**
+ * Calls the relay answers only after a referee call (its own deadline is 60 s) and NEAR
+ * transactions: enrolment and starting a match. Waiting less would report a failure while the
+ * relay is still working, and a retry would then find the work half done.
+ */
+export const SLOW_CALL_MS = 120_000;
+
 export interface RelayOptions {
   fetch?: Fetch;
   now?: () => number;
@@ -282,6 +289,8 @@ export class RelayClient {
         player_box_pk: toB64(i.playerBoxPk),
         near_pk: toB64(i.nearPk),
       }),
+      {},
+      SLOW_CALL_MS,
     );
     return { accountId: read.str(r, "account_id") };
   }
@@ -342,7 +351,7 @@ export class RelayClient {
 
   /** Host only: locks the lobby and starts the referee. */
   async startMatch(signer: Signer, matchId: string): Promise<void> {
-    await this.send(this.sign(signer, `/matches/${matchId}/start`, "{}"));
+    await this.send(this.sign(signer, `/matches/${matchId}/start`, "{}"), SLOW_CALL_MS);
   }
 
   // ── Hunt ─────────────────────────────────────────────────────────────────────────────────
@@ -393,12 +402,18 @@ export class RelayClient {
     return { method: "POST", path, body, account: signer.accountId, timeMs, sig };
   }
 
-  private send(req: SignedRequest): Promise<Obj> {
-    return this.json(req.method, req.path, req.body, {
-      "x-tail-account": req.account,
-      "x-tail-time": String(req.timeMs),
-      "x-tail-sig": toB64(req.sig),
-    });
+  private send(req: SignedRequest, timeoutMs?: number): Promise<Obj> {
+    return this.json(
+      req.method,
+      req.path,
+      req.body,
+      {
+        "x-tail-account": req.account,
+        "x-tail-time": String(req.timeMs),
+        "x-tail-sig": toB64(req.sig),
+      },
+      timeoutMs,
+    );
   }
 
   private async json(
@@ -406,9 +421,10 @@ export class RelayClient {
     path: string,
     body?: string,
     headers: Record<string, string> = {},
+    timeoutMs: number = this.timeoutMs,
   ): Promise<Obj> {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     let res: Response;
     try {
       res = await this.fetchFn(this.baseUrl + path, {
@@ -417,8 +433,13 @@ export class RelayClient {
         ...(body !== undefined ? { body } : {}),
         signal: ctrl.signal,
       });
-    } catch {
-      throw new RelayError(null, "Can't reach the relay.");
+    } catch (e) {
+      // Say which failure it was: a timeout and a refused or blocked connection need different
+      // fixes, and the platform's own reason is what tells them apart on a phone.
+      if (ctrl.signal.aborted)
+        throw new RelayError(null, `The relay didn't answer within ${Math.round(timeoutMs / 1000)} s.`);
+      const why = e instanceof Error && e.message ? ` (${e.message})` : "";
+      throw new RelayError(null, `Can't reach the relay${why}.`);
     } finally {
       clearTimeout(timer);
     }

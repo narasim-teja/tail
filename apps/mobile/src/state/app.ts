@@ -266,7 +266,15 @@ class AppModel {
     return this.act("Checking this phone", async () => {
       if (!this.settings.relayUrl) throw new Error("Set the relay address first.");
       const id = this.identity ?? (await loadIdentity(keychain));
-      this.identity = await enrol(handle, id, { relay: this.relay, attest: attestor, secrets: keychain });
+      this.identity = await enrol(handle, id, {
+        relay: this.relay,
+        attest: attestor,
+        secrets: keychain,
+        onStep: (label) => {
+          this.busy = label;
+          this.emit();
+        },
+      });
     });
   }
 
