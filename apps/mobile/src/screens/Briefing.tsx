@@ -8,7 +8,7 @@ import { handleOf, isTestPlayer, money } from "../tail/huntModel";
 import { clock } from "../tail/rules";
 import { Mark } from "../ui/brand";
 import { haptic } from "../ui/haptics";
-import { Body, Button, Eyebrow, Notice, Num, Poster, Row, Screen } from "../ui/kit";
+import { Body, Button, Caption, Eyebrow, Notice, Num, Poster, Row, Screen } from "../ui/kit";
 import { rise, useArrive, useReduceMotion } from "../ui/motion";
 import { ChaseBand, Ripple } from "../ui/scene";
 import { motion, space } from "../ui/theme";
@@ -37,10 +37,13 @@ export function BriefingView({
   m,
   onHunt,
   onRetry,
+  onSettings,
 }: {
   m: BriefingModel;
   onHunt: () => void;
   onRetry: () => void;
+  /** Settings over the briefing: a wrong relay or RPC address is fixed there, the match stays open. */
+  onSettings: () => void;
 }) {
   const reduceMotion = useReduceMotion();
   const handle = m.target ? handleOf(m.target) : null;
@@ -55,7 +58,15 @@ export function BriefingView({
   }, [secs]);
   if (!m.target || !handle) {
     return (
-      <Screen scroll={false} footer={m.error ? <Button title="Try again" onPress={onRetry} /> : null}>
+      <Screen
+        scroll={false}
+        footer={
+          <>
+            {m.error ? <Button title="Try again" onPress={onRetry} /> : null}
+            <Button kind="quiet" symbol="gearshape" title="Settings" onPress={onSettings} />
+          </>
+        }
+      >
         <View style={[styles.center, !m.error && styles.middle]}>
           {m.error ? null : (
             <Ripple size={220} reduceMotion={reduceMotion}>
@@ -72,6 +83,10 @@ export function BriefingView({
               {m.busy ?? "Waiting for your orders"}
             </Body>
           )}
+          {/* Settings is the way out because it leaves the match open; the clock does not wait. */}
+          <Caption muted center>
+            Your phone can't report until your orders open. Once the match starts, that counts as dark time.
+          </Caption>
         </View>
       </Screen>
     );
@@ -155,6 +170,7 @@ export function Briefing() {
       }}
       onHunt={() => app.showHunt()}
       onRetry={() => void app.brief()}
+      onSettings={() => app.toggleSettings(true)}
     />
   );
 }

@@ -290,6 +290,7 @@ export const STATES: Record<string, () => ReactNode> = {
       m={{ target: "maya.tail-dev.testnet", head: 5_000_000n, startsInMs: 42_000, busy: null, error: null }}
       onHunt={noop}
       onRetry={noop}
+      onSettings={noop}
     />
   ),
   hunt: () => H(hunt({ lock: 2, heat: 1 })),
