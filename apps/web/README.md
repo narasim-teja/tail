@@ -87,13 +87,13 @@ contract every replay is checked against, and its network follows from its name)
 `src/verify/pins.ts` holds everything the bundle is checked against; none of it is read from the
 bundle, so a relay running its own contract copy, referee or OutLayer mirror cannot earn a mark:
 
-| Pin                    | Value                                                                            |
-| ---------------------- | -------------------------------------------------------------------------------- |
-| contract, network      | `VITE_TAIL_CONTRACT` at build time, else `tail.tail-dev-a38d13.testnet`, testnet |
-| OutLayer API           | `https://testnet-api.outlayer.ai` (testnet), `https://api.outlayer.ai` (mainnet) |
-| enclave referee key    | `e1c64271f1d5370eef04929835bbc60aab9ddef5b92f092217d287198a7d6c56`               |
-| local test referee key | `d35338a9a4636d104deca3291c588cd9a7369c0b957b284b68be8ce64d286594`               |
-| published referee wasm | `20446c643bd4b1cc8a017669596ed361506ad557c99464ecfe19beead6d08664`               |
+| Pin                    | Value                                                                                                                                                    |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| contract, network      | `VITE_TAIL_CONTRACT` at build time, else `tail.tail-dev-a38d13.testnet`, testnet                                                                         |
+| OutLayer API           | `https://testnet-api.outlayer.ai` (testnet), `https://api.outlayer.ai` (mainnet)                                                                         |
+| enclave referee key    | `e1c64271f1d5370eef04929835bbc60aab9ddef5b92f092217d287198a7d6c56`                                                                                       |
+| local test referee key | `d35338a9a4636d104deca3291c588cd9a7369c0b957b284b68be8ce64d286594`                                                                                       |
+| published referee wasm | `3f9320a61236f02f72481c2ec2b920854f22c7554924a315eebbea52aad85690` (v2, active), `20446c643bd4b1cc8a017669596ed361506ad557c99464ecfe19beead6d08664` (v1) |
 
 A bundle that names another contract or network, or (for `?match=`) another match id, fails
 whole: the header names the reason ("Names another contract", "Names another network", "Not the
