@@ -10,6 +10,9 @@ import { field, type RequestAuth } from "./util.ts";
 
 type Obj = Record<string, unknown>;
 
+/** Most settled matches (played or survived) a lobby may ask for; the contract takes any u32. */
+const MAX_REQUIRED = 1_000;
+
 function circle(o: Obj, what: string): Circle {
   return {
     latE7: field.int(o, "lat_e7", -900_000_000, 900_000_000),
@@ -38,7 +41,9 @@ export function matchRoutes(
   d: { store: Store; auth: RequestAuth; chain: Chain; view: ChainView; matches: Matches },
 ) {
   // Signed by the host. {stake, duration_ms, zone, safehouses?, public_replay, min_players,
-  // max_players, start_by_ms} → {match_id, zone_hash, code}
+  // max_players, start_by_ms, invites?, requires?: {min_matches, min_survived}} → {match_id,
+  // zone_hash, code}. `requires` goes to the contract, which refuses at join_match a player
+  // whose dossier has fewer settled matches or survivals.
   app.post("/matches", async (c) => {
     const { account, body: b } = await d.auth.signed(c);
     const now = Date.now();
@@ -47,6 +52,7 @@ export function matchRoutes(
       .list(b, "safehouses", 4)
       .map((s, i) => circle(typeof s === "object" && s !== null ? (s as Obj) : {}, `safehouses[${i}]`));
     const minPlayers = field.int(b, "min_players", 3, 12);
+    const requires = b["requires"] === undefined ? undefined : field.obj(b, "requires");
     const r = await d.matches.create(account, {
       stake: field.amount(b, "stake"),
       durationMs: field.int(b, "duration_ms", 60_000, 3_600_000),
@@ -61,6 +67,12 @@ export function matchRoutes(
           throw new HttpError(400, `invites[${i}]: an account id`);
         return x;
       }),
+      requires: requires
+        ? {
+            minMatches: field.int(requires, "min_matches", 0, MAX_REQUIRED),
+            minSurvived: field.int(requires, "min_survived", 0, MAX_REQUIRED),
+          }
+        : null,
     });
     return c.json({ match_id: r.matchId, zone_hash: r.zoneHash, code: showCode(r.code) });
   });

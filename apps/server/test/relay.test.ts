@@ -893,6 +893,39 @@ describe("creating a match", () => {
   });
 });
 
+describe("gated lobbies", () => {
+  test("requires goes to create_match and shows in the public view; it must be small whole numbers", async () => {
+    const env = setup();
+    const host = player(env, "ana");
+    const make = (requires?: unknown) =>
+      req(env, "POST", "/matches", { ...MATCH, start_by_ms: Date.now() + 600_000, requires }, host);
+    const r = await make({ min_matches: 1, min_survived: 1 });
+    expect(r.status).toBe(200);
+    const id = String(r.json["match_id"]);
+    const view = await req(env, "GET", `/matches/${id}`);
+    expect((view.json["chain"] as Record<string, unknown>)["requires"]).toEqual({
+      min_matches: 1,
+      min_survived: 1,
+    });
+    for (const bad of [
+      { min_matches: -1, min_survived: 0 },
+      { min_matches: 1.5, min_survived: 0 },
+      { min_matches: "1", min_survived: 0 },
+      { min_matches: 1001, min_survived: 0 },
+      { min_matches: 1 },
+      3,
+    ])
+      expect((await make(bad)).status).toBe(400);
+    expect(env.chain.matches.size).toBe(1);
+  });
+
+  test("a lobby without requires lets anyone in", async () => {
+    const env = setup();
+    const l = await lobby(env);
+    expect(env.chain.matches.get(l.id)?.requires).toBeNull();
+  });
+});
+
 describe("lobby codes", () => {
   const CODE = /^[23456789ABCDEFGHJKMNPQRSTVWXYZ]{3}-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{3}$/;
 

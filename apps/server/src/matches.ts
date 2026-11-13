@@ -102,6 +102,8 @@ export interface CreateMatchInput {
   maxPlayers: number;
   startByMs: number;
   invites: string[];
+  /** Settled matches played and survived that a player needs to join; null for anyone. */
+  requires: { minMatches: number; minSurvived: number } | null;
 }
 
 /**
@@ -212,6 +214,9 @@ export class Matches {
       max_players: i.maxPlayers,
       start_by_ms: i.startByMs,
       invites: i.invites,
+      ...(i.requires
+        ? { requires: { min_matches: i.requires.minMatches, min_survived: i.requires.minSurvived } }
+        : {}),
     });
     // Minted after the chain answers, with no await between the check and the insert, so two
     // creates cannot take the same code. A clash is one in hundreds of millions; redraw it.

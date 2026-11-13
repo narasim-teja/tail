@@ -192,6 +192,7 @@ export class FakeChain implements Chain {
       end_ms: null,
       alpha: null,
       vrf_signature: null,
+      requires: cfg.requires ?? null,
     });
     return id;
   }

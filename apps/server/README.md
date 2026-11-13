@@ -58,6 +58,12 @@ strings in the token's smallest unit. Errors are `{error: "<short message>"}` wi
 Each player's keys go to that player only (its zone view, its HUD socket), not to the host: the
 seal hides their content, but which blob is whose, and when it changes, is the player's business.
 
+`POST /matches` also takes an optional `requires: {min_matches, min_survived}` (whole numbers
+from 0 to 1000), passed to the contract's `create_match`: `join_match` then refuses a player
+whose dossier has fewer settled matches played or survived. It shows in `GET /matches/:id` as
+`chain.requires` (null for a lobby anyone may join). `scripts/gated-lobby.ts` shows it on
+testnet with ghosts.
+
 ### Signed requests
 
 Headers `x-tail-account`, `x-tail-time` (unix ms) and `x-tail-sig` (base64, 64 bytes): an
@@ -404,6 +410,7 @@ bun apps/server/src/main.ts                   # reads the repo-root .env.local; 
 bun test apps/server                          # tests; one plays a match against the real local referee
 bun apps/server/scripts/pin-referee.ts        # testnet: pin the deployed referee's keys in the contract
 ALLOW_GHOSTS=1 bun apps/server/scripts/ghost-match.ts   # testnet: a full 3-ghost match, end to end
+ALLOW_GHOSTS=1 bun apps/server/scripts/gated-lobby.ts   # testnet: a lobby that refuses a player with no settled match
 ```
 
 Environment (placeholders in `.env.example`): `NEAR_NETWORK` (testnet only), `NEAR_RELAY_ACCOUNT`,

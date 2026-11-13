@@ -106,6 +106,8 @@ export interface ChainMatch {
   end_ms: number | null;
   alpha: string | null;
   vrf_signature: string | null;
+  /** The dossier a player needs to join; null for none. */
+  requires: Requires | null;
 }
 
 export interface ChainRoots {
@@ -124,6 +126,14 @@ export interface MatchCfg {
   start_by_ms: number;
   /** Who may join; empty means any registered account. */
   invites: string[];
+  /** Who may join by their dossier; the contract checks it at `join_match`. Absent: anyone. */
+  requires?: Requires;
+}
+
+/** The contract's `Requires`: settled matches played and survived that a player must have. */
+export interface Requires {
+  min_matches: number;
+  min_survived: number;
 }
 
 /**
