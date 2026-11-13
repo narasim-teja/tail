@@ -12,6 +12,8 @@ import { hudOf } from "../../test/referee";
 import { hudView } from "./hud";
 import type { HuntSnapshot } from "./hunt";
 import {
+  DISPATCH_MS,
+  dispatchCard,
   handleOf,
   howVerified,
   huntModel,
@@ -297,5 +299,33 @@ describe("how it's verified", () => {
 
   test("a relay that does not say gets no enclave claim at all", () => {
     expect(howVerified(null)).not.toContain("enclave");
+  });
+});
+
+describe("the dispatch card", () => {
+  const line = { tMs: NOW - 2_000, kind: "handler" as const, text: "North, darling." };
+  const notice = { tMs: NOW - 1_000, kind: "info" as const, text: "Your target forfeited." };
+
+  test("a fresh Handler line is up under the Handler's name; then it folds into the pull tab", () => {
+    const dispatch = { atMs: line.tMs, text: line.text };
+    expect(dispatchCard(dispatch, [notice, line], NOW, false)).toEqual({
+      show: true,
+      head: "Handler",
+      rows: [{ key: String(line.tMs), text: line.text, voice: "handler" }],
+      tab: null,
+    });
+    const later = dispatchCard(dispatch, [notice, line], line.tMs + DISPATCH_MS, false);
+    expect(later).toMatchObject({ show: false, rows: [], tab: 2 });
+  });
+
+  test("pulled open it is the hunt's log: a game notice is never set as the Handler's voice", () => {
+    const card = dispatchCard(null, [notice, line], NOW, true);
+    expect(card.head).toBe("Log");
+    expect(card.rows.map((r) => [r.text, r.voice])).toEqual([
+      [notice.text, "notice"],
+      [line.text, "handler"],
+    ]);
+    expect(card.tab).toBeNull();
+    expect(dispatchCard(null, [], NOW, false)).toMatchObject({ show: false, tab: null });
   });
 });

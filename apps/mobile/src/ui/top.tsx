@@ -5,12 +5,18 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import type { Note } from "../tail/hunt";
-import type { Banner, Dispatch } from "../tail/huntModel";
+import { type Banner, type Dispatch, dispatchCard } from "../tail/huntModel";
 import { Icon } from "./brand";
 import { Caption, Eyebrow, Strong } from "./kit";
 import { ease } from "./motion";
 import { color, maxScale, motion, radius, space, text } from "./theme";
 
+/**
+ * Drops its content in from above and lifts it away. Once it has lifted away the content leaves
+ * the layout: kept mounted at opacity 0 it would still take its full height, a blank band in the
+ * stack above whatever shows below it (a banner that was up earlier sat as a 75 pt gap over the
+ * Handler's dispatch).
+ */
 function Slide({
   show,
   reduceMotion,
@@ -21,9 +27,12 @@ function Slide({
   children: ReactNode;
 }) {
   const y = useRef(new Animated.Value(show ? 0 : -1)).current;
+  const [mounted, setMounted] = useState(show);
   useEffect(() => {
+    if (show) setMounted(true);
     if (reduceMotion) {
       y.setValue(show ? 0 : -1);
+      if (!show) setMounted(false);
       return;
     }
     Animated.timing(y, {
@@ -31,9 +40,12 @@ function Slide({
       duration: show ? motion.base : motion.fast,
       easing: show ? ease.out : ease.in,
       useNativeDriver: true,
-    }).start();
+    }).start(({ finished }) => {
+      // Interrupted by a new show, it stays.
+      if (finished && !show) setMounted(false);
+    });
   }, [show, reduceMotion, y]);
-  if (!show && reduceMotion) return null;
+  if (!show && !mounted) return null;
   return (
     <Animated.View
       style={{
@@ -78,9 +90,6 @@ export function WarningBanner({ banner, reduceMotion }: { banner: Banner | null;
   );
 }
 
-/** How long a fresh dispatch stays up front before folding into the log. */
-export const DISPATCH_MS = 9_000;
-
 export function DispatchStrip({
   dispatch,
   log,
@@ -93,39 +102,54 @@ export function DispatchStrip({
   reduceMotion: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const fresh = !!dispatch && nowMs - dispatch.atMs < DISPATCH_MS;
-  const entries = log.slice(0, 6);
-  if (!fresh && !open && entries.length === 0) return null;
+  const card = dispatchCard(dispatch, log, nowMs, open);
+  // Kept while it lifts away, so the words don't vanish before the card does.
+  const last = useRef(card);
+  if (card.show) last.current = card;
+  const shown = card.show ? card : last.current;
+  if (!card.show && card.tab === null) return null;
   return (
     <View style={styles.dispatchWrap}>
-      <Slide show={fresh || open} reduceMotion={reduceMotion}>
+      <Slide show={card.show} reduceMotion={reduceMotion}>
         <Pressable
           onPress={() => setOpen((o) => !o)}
           accessibilityRole="button"
-          accessibilityLabel={dispatch ? `Handler: ${dispatch.text}` : "Handler log"}
+          accessibilityLabel={
+            shown.head === "Log"
+              ? `Hunt log: ${shown.rows.map((r) => r.text).join(". ")}`
+              : `Handler: ${shown.rows[0]?.text ?? ""}`
+          }
           accessibilityHint={open ? "Closes the log" : "Opens the log"}
           style={styles.dispatch}
         >
           <View style={styles.dispatchHead}>
-            <Icon name="handler" size={18} tint={color.ink} />
-            <Eyebrow>Handler</Eyebrow>
+            {shown.head === "Handler" ? <Icon name="handler" size={18} tint={color.ink} /> : null}
+            <Eyebrow muted={shown.head === "Log"}>{shown.head}</Eyebrow>
           </View>
-          {open ? (
-            entries.map((n) => (
-              <View key={`${n.tMs}-${n.text}`} style={styles.logRow}>
-                {n.kind === "handler" ? <Strong>{n.text}</Strong> : <Caption muted>{n.text}</Caption>}
-              </View>
-            ))
-          ) : dispatch ? (
-            <Strong lines={3}>{dispatch.text}</Strong>
-          ) : null}
+          {shown.head === "Handler"
+            ? shown.rows.map((r) => (
+                <Strong key={r.key} lines={3}>
+                  {r.text}
+                </Strong>
+              ))
+            : shown.rows.map((r) => (
+                <View key={r.key} style={styles.logRow}>
+                  {/* The Handler's lines carry its mark; a notice keeps the slot empty, aligned. */}
+                  <View style={styles.logMark}>
+                    {r.voice === "handler" ? <Icon name="handler" size={16} tint={color.ink} /> : null}
+                  </View>
+                  <View style={styles.logText}>
+                    {r.voice === "handler" ? <Strong>{r.text}</Strong> : <Caption muted>{r.text}</Caption>}
+                  </View>
+                </View>
+              ))}
         </Pressable>
       </Slide>
-      {!fresh && !open && entries.length > 0 ? (
+      {card.tab !== null ? (
         <Pressable
           onPress={() => setOpen(true)}
           accessibilityRole="button"
-          accessibilityLabel={`Handler log, ${entries.length} ${entries.length === 1 ? "entry" : "entries"}`}
+          accessibilityLabel={`Hunt log, ${card.tab} ${card.tab === 1 ? "entry" : "entries"}`}
           style={styles.logTab}
           hitSlop={12}
         >
@@ -161,7 +185,9 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
   },
   dispatchHead: { flexDirection: "row", alignItems: "center", gap: space.xs },
-  logRow: { paddingVertical: 2 },
+  logRow: { flexDirection: "row", alignItems: "flex-start", gap: space.xs, paddingVertical: 2 },
+  logMark: { width: 16, paddingTop: 4 },
+  logText: { flex: 1 },
   logTab: { alignSelf: "center", height: 24, width: 88, alignItems: "center", justifyContent: "center" },
   tabBar: { width: 40, height: 5, borderRadius: 3, backgroundColor: color.mute },
 });

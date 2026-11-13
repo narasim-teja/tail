@@ -37,6 +37,49 @@ export interface Dispatch {
   text: string;
 }
 
+/** How long a fresh dispatch stays up front before folding into the log. */
+export const DISPATCH_MS = 9_000;
+
+/**
+ * The dispatch card at the top of the hunt screen. Fresh, it is the Handler's newest line under
+ * the Handler's name. Pulled open, it is the hunt's log: the Handler's lines and the game's own
+ * notices ("Your target forfeited…"), so it is headed "Log", and only the Handler's lines are set
+ * as its voice; a notice under the Handler's name would read as the Handler saying it.
+ */
+export interface DispatchCard {
+  /** The card is up: a fresh dispatch, or the log pulled open. */
+  show: boolean;
+  head: "Handler" | "Log";
+  rows: { key: string; text: string; voice: "handler" | "notice" }[];
+  /** The pull tab under the strip, while the card is folded away and the log has entries. */
+  tab: number | null;
+}
+
+export function dispatchCard(
+  dispatch: Dispatch | null,
+  log: Note[],
+  nowMs: number,
+  open: boolean,
+): DispatchCard {
+  const fresh = !!dispatch && nowMs - dispatch.atMs < DISPATCH_MS;
+  const entries = log.slice(0, 6);
+  const rows = open
+    ? entries.map((n) => ({
+        key: `${n.tMs}-${n.text}`,
+        text: n.text,
+        voice: n.kind === "handler" ? ("handler" as const) : ("notice" as const),
+      }))
+    : dispatch && fresh
+      ? [{ key: `${dispatch.atMs}`, text: dispatch.text, voice: "handler" as const }]
+      : [];
+  return {
+    show: open || fresh,
+    head: open ? "Log" : "Handler",
+    rows,
+    tab: !open && !fresh && entries.length > 0 ? entries.length : null,
+  };
+}
+
 export interface HuntModel {
   target: string;
   timeLeft: string;

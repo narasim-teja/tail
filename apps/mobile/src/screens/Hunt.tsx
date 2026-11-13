@@ -9,7 +9,14 @@ import { Animated, Linking, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { Blocked } from "../proximity/client";
 import { useApp } from "../state/app";
-import { type HuntModel, handleOf, huntModel, isTestPlayer, taggedLines } from "../tail/huntModel";
+import {
+  DISPATCH_MS,
+  type HuntModel,
+  handleOf,
+  huntModel,
+  isTestPlayer,
+  taggedLines,
+} from "../tail/huntModel";
 import { Icon } from "../ui/brand";
 import { heatIntervalMs } from "../ui/cadence";
 import { HeadValue, HeatBar, LockArc } from "../ui/game";
@@ -31,7 +38,7 @@ import { ease, rise, useArrive, useReduceMotion } from "../ui/motion";
 import { Breathe, Ripple } from "../ui/scene";
 import { HintSheet } from "../ui/sheet";
 import { color, font, maxScale, motion, radius, space } from "../ui/theme";
-import { DISPATCH_MS, DispatchStrip, WarningBanner } from "../ui/top";
+import { DispatchStrip, WarningBanner } from "../ui/top";
 
 export interface HuntActions {
   onStrike: () => void;
