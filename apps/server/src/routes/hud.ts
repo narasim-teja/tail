@@ -10,6 +10,7 @@ import { hudDigest, verifyEd25519 } from "../auth.ts";
 import type { Store } from "../db.ts";
 import { HttpError } from "../errors.ts";
 import { type HudHub, MAX_PENDING_HUD_SOCKETS } from "../hub.ts";
+import type { Buckets, Clients } from "../limits.ts";
 import { field } from "./util.ts";
 
 /** A socket that has not answered the challenge by then is closed. */
@@ -17,11 +18,19 @@ export const HUD_AUTH_TIMEOUT_MS = 10_000;
 
 export function hudRoutes(
   app: Hono,
-  d: { store: Store; hub: HudHub; upgradeWebSocket: UpgradeWebSocket<unknown> },
+  d: {
+    store: Store;
+    hub: HudHub;
+    upgradeWebSocket: UpgradeWebSocket<unknown>;
+    clients: Clients;
+    /** Per client: anyone can open a socket for any player, so its auth window is the cost. */
+    sockets: Buckets;
+  },
 ) {
   app.get(
     "/hud",
     async (c, next) => {
+      d.sockets.takeOrRefuse(d.clients.ip(c), "connections");
       const matchId = field.matchId(c.req.query("match_id"));
       const account = c.req.query("account_id") ?? "";
       const m = d.store.match(matchId);

@@ -38,9 +38,17 @@ export interface EnrollInput {
    */
   attestation?: Uint8Array;
   challenge?: Uint8Array;
+  /**
+   * The phone's consent to replace the referee's existing record for the account: ed25519 by
+   * that record's near_pk over SHA256("tail/rebind/v1" ‖ borsh(account_id) ‖ app_attest_pk (65)
+   * ‖ player_box_pk ‖ near_pk). The relay passes it through as the phone sent it.
+   */
+  rebindSig?: Uint8Array;
 }
 export interface EnrollResult {
   callId: string;
+  /** The verdict key that signed the receipt; null when the referee's answer predates the field. */
+  refereePk: Uint8Array | null;
   appAttestPk: Uint8Array;
   receipt: Uint8Array;
   sig: Uint8Array;
@@ -65,7 +73,6 @@ export interface StartInput {
   durationMs: number;
   zone: Circle;
   safehouses: Circle[];
-  appId: string;
 }
 export interface SealedFor {
   player: number;
@@ -508,12 +515,14 @@ export class RefereeClient implements Referee {
       ...(i.attestation && i.challenge
         ? { attestation: b64(i.attestation), challenge: b64(i.challenge) }
         : {}),
+      ...(i.rebindSig ? { rebind_sig: b64(i.rebindSig) } : {}),
     });
     const s = shape("enroll");
     if (s.str(r, "account_id") !== i.accountId)
       throw new RefereeError("enroll", "enrolled another account", false);
     return {
       callId: s.str(r, "call_id"),
+      refereePk: r["referee_pk"] === undefined ? null : s.bytes(r, "referee_pk"),
       appAttestPk: s.bytes(r, "app_attest_pk"),
       receipt: s.bytes(r, "receipt"),
       sig: s.bytes(r, "sig"),
@@ -530,7 +539,6 @@ export class RefereeClient implements Referee {
       stake: i.stake.toString(),
       zone: circle(i.zone),
       safehouses: i.safehouses.map(circle),
-      app_id: i.appId,
     });
     const s = shape("start");
     return {

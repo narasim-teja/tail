@@ -12,6 +12,7 @@ import { Enrolment, type VerifyAttestation } from "./enroll.ts";
 import { HttpError } from "./errors.ts";
 import { GhostFiller } from "./ghosts/fill.ts";
 import { HudHub } from "./hub.ts";
+import { Buckets, Clients, type EnrolCaps, RATES } from "./limits.ts";
 import { Matches } from "./matches.ts";
 import type { Chain } from "./near.ts";
 import { type Referee, RefereeError, type RefereeHealth, RefereeUnavailableError } from "./referee.ts";
@@ -56,8 +57,13 @@ export interface RelayDeps {
   verifyAttestation?: VerifyAttestation;
   /** Whether the referee is answering (referee.ts GuardedReferee); /health reports it. */
   refereeHealth?: () => RefereeHealth;
-  /** Background referee registration schedule (enroll.ts); tests pass []. */
-  refereeRetryMs?: readonly number[];
+  /**
+   * The header a trusted reverse proxy sets to the client's address (RELAY_CLIENT_IP_HEADER);
+   * unset, the TCP peer is the client (limits.ts).
+   */
+  clientIpHeader?: string | undefined;
+  /** Caps on new phone enrolments (RELAY_ENROLS_PER_DAY, RELAY_ENROLS_PER_IP_PER_DAY). */
+  enrolCaps?: EnrolCaps;
   now?: () => number;
   tickMs?: number;
 }
@@ -74,7 +80,7 @@ export function createRelay(d: RelayDeps) {
     appId: d.appId,
     environment: d.environment,
     verifyAttestation: d.verifyAttestation ?? appleVerify,
-    ...(d.refereeRetryMs ? { refereeRetryMs: d.refereeRetryMs } : {}),
+    ...(d.enrolCaps ? { caps: d.enrolCaps } : {}),
     ...(d.now ? { now: d.now } : {}),
   });
   const matches = new Matches({
@@ -94,6 +100,7 @@ export function createRelay(d: RelayDeps) {
   // Request freshness is wall-clock time, like the phone's signature on it, not the loop's clock.
   const auth = new RequestAuth(d.store, d.replay.contract);
   const view = new ChainView(d.chain, now, d.chainViewMs);
+  const clients = new Clients(d.clientIpHeader);
   const retention = new Retention({
     store: d.store,
     chain: d.chain,
@@ -152,29 +159,39 @@ export function createRelay(d: RelayDeps) {
   });
   // The referee's public keys. Phones seal batches to referee_box_pk after checking box_pk_sig
   // against the referee_pk the contract pins (get_config), so the relay cannot swap the box key.
-  let pubkeys: Promise<Record<string, string>> | undefined;
   app.get("/referee", async (c) => {
-    pubkeys ??= d.referee
-      .pubkeys()
-      .then((k) => ({
-        referee_pk: Buffer.from(k.refereePk).toString("base64"),
-        referee_box_pk: Buffer.from(k.refereeBoxPk).toString("base64"),
-        box_pk_sig: Buffer.from(k.boxPkSig).toString("base64"),
-        vrf_pk: Buffer.from(k.vrfPk).toString("base64"),
-      }))
-      .catch((e: unknown) => {
-        pubkeys = undefined;
-        throw e;
-      });
-    return c.json(await pubkeys);
+    const k = await enrolment.refereeKeys();
+    return c.json({
+      referee_pk: Buffer.from(k.refereePk).toString("base64"),
+      referee_box_pk: Buffer.from(k.refereeBoxPk).toString("base64"),
+      box_pk_sig: Buffer.from(k.boxPkSig).toString("base64"),
+      vrf_pk: Buffer.from(k.vrfPk).toString("base64"),
+    });
   });
-  enrollRoutes(app, enrolment);
+  enrollRoutes(app, {
+    enrolment,
+    auth,
+    clients,
+    challenges: new Buckets(RATES.enrolChallenge, now),
+  });
   matchRoutes(app, { store: d.store, auth, chain: d.chain, view, matches });
   proofRoutes(app, { store: d.store });
   batchRoutes(app, { store: d.store, auth, matches });
-  carryRoutes(app, { store: d.store, auth, keys: d.carryKeys, now });
-  hudRoutes(app, { store: d.store, hub, upgradeWebSocket });
-  replayRoutes(app, { store: d.store, chain: d.chain, meta: d.replay });
+  carryRoutes(app, { store: d.store, auth, keys: d.carryKeys, clients, now });
+  hudRoutes(app, {
+    store: d.store,
+    hub,
+    upgradeWebSocket,
+    clients,
+    sockets: new Buckets(RATES.hudSocket, now),
+  });
+  replayRoutes(app, {
+    store: d.store,
+    view,
+    meta: d.replay,
+    clients,
+    challenges: new Buckets(RATES.replayChallenge, now),
+  });
   if (d.testnet) topupRoutes(app, { store: d.store, auth, chain: d.chain, now });
   if (d.allowGhosts) {
     const filler = new GhostFiller({

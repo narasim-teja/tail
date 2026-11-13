@@ -44,9 +44,10 @@ export function startRelay(config: Config) {
     testnet: config.network === "testnet",
     allowGhosts: config.allowGhosts,
     retentionMs: config.retentionMs,
+    clientIpHeader: config.clientIpHeader,
+    enrolCaps: config.enrolCaps,
   });
   relay.matches.resume();
-  relay.enrolment.resumePending();
   relay.retention.start();
   // Bun refuses a larger body before the app sees it; routes/util.ts caps the streamed read too.
   const server = Bun.serve({
@@ -66,7 +67,6 @@ export function startRelay(config: Config) {
     server,
     stop() {
       relay.matches.stop();
-      relay.enrolment.stop();
       relay.retention.stop();
       server.stop(true);
       store.close();

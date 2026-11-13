@@ -139,6 +139,14 @@ export class Ghost {
     this.ws?.close();
   }
 
+  /** After Start: fetches its own sealed PlayerKeys from the signed zone view, as a phone does. */
+  async fetchKeys(matchId: string) {
+    const r = await this.request<{ keys: { sealed: string }[] }>("GET", `/matches/${matchId}/zone`);
+    const mine = r.keys[0];
+    if (!mine) throw new Error(`${this.handle} got no keys for ${matchId}`);
+    this.setKeys(mine.sealed);
+  }
+
   /** Opens SignedPlayerKeys sealed to this ghost; throws unless the pinned referee signed them. */
   setKeys(sealed: string) {
     this.keys = openSignedPlayerKeys(this.boxSk, unb64(sealed), this.trust.refereePk);

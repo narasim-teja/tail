@@ -216,7 +216,9 @@ export class Matches {
 
   /**
    * Locks the lobby, asks the referee to start, stores what it returned, applies Start.
-   * Returns the players in index order and each one's PlayerKeys sealed to their box key.
+   * Returns the players in index order and the caller's own PlayerKeys sealed to its box key (the
+   * host is a player). Every other player's keys reach only that player: on its HUD socket and in
+   * its signed zone view.
    */
   async start(matchId: string, caller: string) {
     const m = this.d.store.match(matchId);
@@ -231,7 +233,8 @@ export class Matches {
     }
     const progress = { refereeStarted: false };
     try {
-      return await this.startClaimed(matchId, m.zone, progress);
+      if (!m.zone) throw new HttpError(409, "this match's zone was deleted");
+      return await this.startClaimed(matchId, m.zone, caller, progress);
     } catch (e) {
       // The enclave starts a match id once. After it answered (or refused), a retry cannot work,
       // and the lobby refunds through `abort`. Before that, the host may simply try again.
@@ -242,7 +245,12 @@ export class Matches {
     }
   }
 
-  private async startClaimed(matchId: string, zone: Zone, progress: { refereeStarted: boolean }) {
+  private async startClaimed(
+    matchId: string,
+    zone: Zone,
+    caller: string,
+    progress: { refereeStarted: boolean },
+  ) {
     let chain = await this.d.chain.getMatch(matchId);
     if (!chain) throw new HttpError(404, "match is not on chain");
     if (chain.phase !== "lobby") throw new HttpError(409, `match is ${chain.phase} on chain`);
@@ -276,7 +284,6 @@ export class Matches {
       durationMs: chain.duration_ms,
       zone: zone.zone,
       safehouses: zone.safehouses,
-      appId: this.d.appId,
     });
     progress.refereeStarted = true;
     const start = started.verdicts[0]?.v;
@@ -296,6 +303,8 @@ export class Matches {
         endMs: started.endMs,
         players,
         keys,
+        // The App ID the referee checks assertions against is pinned in its code; the relay's
+        // APPLE_TEAM_ID.IOS_BUNDLE_ID names the same app, and the replay re-checks against it.
         appId: this.d.appId,
       });
       this.d.store.setState(matchId, started.state, 0);
@@ -318,7 +327,12 @@ export class Matches {
     this.schedule(matchId, 0);
     this.d.log.info({ matchId, players: players.length }, "match started");
     const row = this.d.store.match(matchId);
-    return { players, keys, startMs: row?.start_ms ?? 0, endMs: row?.end_ms ?? 0 };
+    return {
+      players,
+      keys: keys.filter((k) => k.account_id === caller),
+      startMs: row?.start_ms ?? 0,
+      endMs: row?.end_ms ?? 0,
+    };
   }
 
   /** Every player is enrolled here and its device is with the referee, or this throws. */

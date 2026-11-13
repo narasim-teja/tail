@@ -27,9 +27,10 @@ import {
 } from "@tail/protocol";
 import type { Hono } from "hono";
 import { replayDigest, verifyEd25519 } from "../auth.ts";
+import type { ChainView } from "../chainview.ts";
 import type { MatchRow, Store } from "../db.ts";
 import { HttpError } from "../errors.ts";
-import type { Chain } from "../near.ts";
+import type { Buckets, Clients } from "../limits.ts";
 import { field, jsonBody } from "./util.ts";
 
 export const REPLAY_CHALLENGE_TTL_MS = 120_000;
@@ -49,9 +50,13 @@ export interface ReplayMeta {
 
 const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
 
-export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: ReplayMeta }) {
+export function replayRoutes(
+  app: Hono,
+  d: { store: Store; view: ChainView; meta: ReplayMeta; clients: Clients; challenges: Buckets },
+) {
   app.post("/replay/:id/challenge", async (c) => {
     const id = field.matchId(c.req.param("id"));
+    d.challenges.takeOrRefuse(d.clients.ip(c), "replay requests");
     const account = field.str(await jsonBody(c), "account_id", 64);
     if (!d.store.match(id)?.players?.includes(account))
       throw new HttpError(403, "not a player in this match");
@@ -79,10 +84,15 @@ export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: R
     ) {
       throw new HttpError(409, "the replay opens when the match has ended");
     }
-    if (m.purged_ms !== null) throw new HttpError(410, "this match's trails were deleted after it ended");
-    const chain = await d.chain.getMatch(id);
-    if (!chain) throw new HttpError(404, "match is not on chain");
-    if (!chain.public_replay) {
+    if (m.purged_ms !== null || !m.zone)
+      throw new HttpError(410, "this match's trails were deleted after it ended");
+    // Whether the replay is public is the relay's own record (the host chose it at create, and the
+    // chain holds the same); only a match from before the relay kept it asks the chain first.
+    // Anything else is read from the chain only once the caller may see the replay.
+    const isPublic =
+      m.public_replay === null ? (await d.view.getMatch(id))?.public_replay : m.public_replay === 1;
+    if (isPublic === undefined) throw new HttpError(404, "match is not on chain");
+    if (!isPublic) {
       const account = c.req.query("account_id") ?? "";
       const nonce = new Uint8Array(Buffer.from(c.req.query("nonce") ?? "", "base64"));
       const sig = new Uint8Array(Buffer.from(c.req.query("sig") ?? "", "base64"));
@@ -104,6 +114,9 @@ export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: R
         throw new HttpError(403, "this replay is for the match's players");
       }
     }
+    const chain = await d.view.getMatch(id);
+    if (!chain) throw new HttpError(404, "match is not on chain");
+    const zone = m.zone;
 
     const reveal = m.reveal;
     const ring = Array.isArray(reveal["ring"]) ? (reveal["ring"] as unknown[]).map(String) : [];
@@ -116,8 +129,8 @@ export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: R
         stake: chain.stake,
         startMs: m.start_ms,
         endMs: m.end_ms,
-        zone: m.zone.zone,
-        safehouses: m.zone.safehouses,
+        zone: zone.zone,
+        safehouses: zone.safehouses,
         publicReplay: chain.public_replay,
         players: m.players,
       },

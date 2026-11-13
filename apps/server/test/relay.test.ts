@@ -23,7 +23,9 @@ import { replayDigest, signRequestHeaders } from "../src/auth.ts";
 import { CHAIN_VIEW_MS } from "../src/chainview.ts";
 import type { Store, Zone } from "../src/db.ts";
 import { MAX_OPEN_CHALLENGES_PER_HANDLE } from "../src/enroll.ts";
+import { RATES } from "../src/limits.ts";
 import { zoneHash } from "../src/matches.ts";
+import { AccountTakenError } from "../src/near.ts";
 import { GuardedReferee } from "../src/referee.ts";
 import { FakeReferee, seedDevice, until } from "./fakes.ts";
 import {
@@ -62,6 +64,7 @@ describe("enrolment", () => {
     env: Env,
     handle = "dana",
     near = ed25519.getPublicKey(ed25519.utils.randomSecretKey()),
+    extra: Record<string, unknown> = {},
   ) {
     const ch = await req(env, "POST", "/enroll/challenge", { handle });
     expect(ch.status).toBe(200);
@@ -73,6 +76,7 @@ describe("enrolment", () => {
       attestation: Buffer.from("attestation").toString("base64"),
       player_box_pk: Buffer.from(box).toString("base64"),
       near_pk: Buffer.from(near).toString("base64"),
+      ...extra,
     };
     const r = await req(env, "POST", "/enroll", body);
     return {
@@ -86,20 +90,24 @@ describe("enrolment", () => {
     };
   }
 
-  test("the referee gets the attestation and challenge exactly as sent; the relay drops them after", async () => {
-    const env = setup({ refereeRetryMs: [] });
-    const { r, challenge } = await attemptIn(env);
+  test("the referee gets the attestation, challenge and rebind_sig exactly as sent, before the answer", async () => {
+    const env = setup();
+    const rebind = new Uint8Array(64).fill(5);
+    const { r, challenge } = await attemptIn(env, "dana", undefined, {
+      rebind_sig: Buffer.from(rebind).toString("base64"),
+    });
     expect(r.status).toBe(200);
-    const kept = env.store.device(`dana.${PARENT}`);
-    expect(kept?.attestation).toEqual(new Uint8Array(Buffer.from("attestation")));
-    expect(kept?.challenge).toEqual(challenge);
-    await env.enrolment.ensureWithReferee([`dana.${PARENT}`]);
     expect(env.referee.enrolls[0]?.attestation).toEqual(new Uint8Array(Buffer.from("attestation")));
     expect(env.referee.enrolls[0]?.challenge).toEqual(challenge);
+    expect(env.referee.enrolls[0]?.rebindSig).toEqual(rebind);
     const done = env.store.device(`dana.${PARENT}`);
     expect(done?.receipt).not.toBeNull();
+    expect(done?.referee_pk).toEqual(env.referee.pk);
     expect(done?.attestation).toBeNull();
     expect(done?.challenge).toBeNull();
+    // Without one, none is sent.
+    expect((await attemptIn(env, "eli")).r.status).toBe(200);
+    expect(env.referee.enrolls[1]?.rebindSig).toBeUndefined();
   });
 
   test("one device enrols once: its NEAR key under a second handle is refused", async () => {
@@ -155,19 +163,90 @@ describe("enrolment", () => {
     expect(seenHash && equal(seenHash, expected)).toBe(true);
     expect(env.chain.accounts.get(`dana.${PARENT}`)).toEqual(near);
     expect(env.store.device(`dana.${PARENT}`)?.kind).toBe("phone");
-    // The referee gets the device just after the phone's answer, not before it.
-    await until(() => env.store.device(`dana.${PARENT}`)?.receipt, "the referee's receipt");
+    // The phone hears "enrolled" only once the referee holds the device.
+    expect(env.store.device(`dana.${PARENT}`)?.receipt).not.toBeNull();
     expect(env.referee.calls).toContain("enroll");
   });
 
-  test("enrolment answers while the referee is down, and the device reaches the referee once it is back", async () => {
-    const env = setup({ refereeRetryMs: [0, 10] });
+  test("while the referee does not answer, enrolment fails and leaves the handle free", async () => {
+    const env = setup();
     env.referee.failEnrolls = 1;
-    const { r } = await attemptIn(env);
-    expect(r.status).toBe(200);
-    await until(() => env.store.device(`dana.${PARENT}`)?.receipt, "the retried receipt");
-    expect(env.referee.calls.filter((c) => c === "enroll").length).toBe(2);
-    expect(env.store.devicesAwaitingReferee()).toEqual([]);
+    const down = await attemptIn(env);
+    expect(down.r.status).toBe(502);
+    expect(env.store.device(`dana.${PARENT}`)).toBeUndefined();
+    expect(env.chain.accounts.has(`dana.${PARENT}`)).toBe(false);
+    // The same phone tries again with the same keys and gets in.
+    expect((await attemptIn(env, "dana", down.near)).r.status).toBe(200);
+  });
+
+  test("a referee refusal frees the handle and makes no account", async () => {
+    const env = setup();
+    env.referee.refuseEnrolls = 1;
+    const refused = await attemptIn(env);
+    expect(refused.r.status).toBe(502);
+    expect(String(refused.r.json["error"])).toContain("The referee refused");
+    expect(env.store.device(`dana.${PARENT}`)).toBeUndefined();
+    expect(env.chain.accounts.size).toBe(0);
+    expect((await attemptIn(env)).r.status).toBe(200);
+  });
+
+  test("a handle taken on chain frees the row again", async () => {
+    const env = setup();
+    const create = env.chain.createPlayerAccount.bind(env.chain);
+    env.chain.createPlayerAccount = async () => {
+      throw new AccountTakenError("taken");
+    };
+    const taken = await attemptIn(env);
+    expect(taken.r.status).toBe(409);
+    expect(env.store.device(`dana.${PARENT}`)).toBeUndefined();
+    env.chain.createPlayerAccount = create;
+    expect((await attemptIn(env, "eli")).r.status).toBe(200);
+  });
+
+  test("new phones are capped per client address and per day", async () => {
+    const env = setup({ enrolCaps: { perDay: 3, perIpPerDay: 2 }, clientIpHeader: "x-client" });
+    const from = (ip: string) => ({ "x-client": ip });
+    const enrol = async (handle: string, ip: string) => {
+      const ch = await env.app.request("/enroll/challenge", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...from(ip) },
+        body: JSON.stringify({ handle }),
+      });
+      const challenge = ((await ch.json()) as { challenge: string }).challenge;
+      const r = await env.app.request("/enroll", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...from(ip) },
+        body: JSON.stringify({
+          challenge,
+          key_id: Buffer.alloc(32, 9).toString("base64"),
+          attestation: Buffer.from("attestation").toString("base64"),
+          player_box_pk: Buffer.alloc(32, 1).toString("base64"),
+          near_pk: Buffer.from(ed25519.getPublicKey(ed25519.utils.randomSecretKey())).toString("base64"),
+        }),
+      });
+      return r.status;
+    };
+    expect(await enrol("a1", "10.0.0.1")).toBe(200);
+    expect(await enrol("a2", "10.0.0.1")).toBe(200);
+    expect(await enrol("a3", "10.0.0.1")).toBe(429);
+    expect(await enrol("b1", "10.0.0.2")).toBe(200);
+    // The relay's own daily share is used up, from any address.
+    expect(await enrol("c1", "10.0.0.3")).toBe(429);
+    expect(env.chain.accounts.size).toBe(3);
+  });
+
+  test("enrolment challenges are rate limited per client address", async () => {
+    const env = setup({ clientIpHeader: "x-client" });
+    const ask = (handle: string, ip: string) =>
+      env.app.request("/enroll/challenge", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-client": ip },
+        body: JSON.stringify({ handle }),
+      });
+    for (let i = 0; i < RATES.enrolChallenge.burst; i++)
+      expect((await ask(`h${i}`, "10.0.0.1")).status).toBe(200);
+    expect((await ask("hx", "10.0.0.1")).status).toBe(429);
+    expect((await ask("hx", "10.0.0.2")).status).toBe(200);
   });
 
   test("an enrolment whose attestation does not verify is refused and creates nothing", async () => {
@@ -188,6 +267,96 @@ describe("enrolment", () => {
     const env = setup();
     expect((await req(env, "POST", "/enroll/challenge", { handle: "ghost-dana" })).status).toBe(400);
     expect((await req(env, "POST", "/enroll/challenge", { handle: "dana" })).status).toBe(200);
+  });
+});
+
+// ── A referee re-pinned ────────────────────────────────────────────────────────────
+
+describe("after the contract pins another referee", () => {
+  /** A relay on the same database and chain as `env`, with a new referee (keys of its own). */
+  function repinned(env: Env) {
+    return setup({ store: env.store, chain: env.chain, referee: new FakeReferee() });
+  }
+
+  async function refresh(env: Env, p: Player, verified = true) {
+    const ch = await req(env, "POST", "/enroll/refresh/challenge", {}, p);
+    expect(ch.status).toBe(200);
+    expect(ch.json["account_id"]).toBe(p.account);
+    const body = {
+      challenge: ch.json["challenge"],
+      key_id: Buffer.alloc(32, 3).toString("base64"),
+      attestation: Buffer.from(verified ? "fresh attestation" : "stale").toString("base64"),
+      player_box_pk: Buffer.alloc(32, 2).toString("base64"),
+      rebind_sig: Buffer.alloc(64, 6).toString("base64"),
+    };
+    return req(env, "POST", "/enroll/refresh", body, p);
+  }
+
+  test("Start names the players the new referee does not know, and each refresh brings one back", async () => {
+    const old = setup();
+    const l = await lobby(old);
+    const env = repinned(old);
+    const s = await req(env, "POST", `/matches/${l.id}/start`, {}, l.a);
+    expect(s.status).toBe(409);
+    expect(s.json["code"]).toBe("refresh");
+    expect(s.json["accounts"]).toEqual([l.a.account, l.b.account, l.c.account]);
+    expect(env.store.match(l.id)?.phase).toBe("lobby");
+    expect((await req(env, "GET", "/enroll/status", undefined, l.b)).json).toEqual({
+      account_id: l.b.account,
+      with_referee: false,
+    });
+
+    for (const p of [l.a, l.b, l.c]) expect((await refresh(env, p)).status).toBe(200);
+    const sent = env.referee.enrolls[0];
+    expect(sent?.accountId).toBe(l.a.account);
+    expect(sent?.attestation).toEqual(new Uint8Array(Buffer.from("fresh attestation")));
+    expect(sent?.rebindSig).toEqual(new Uint8Array(64).fill(6));
+    // The NEAR key stays the account's; the box key is the one the phone sent now.
+    expect(sent?.nearPk).toEqual(ed25519.getPublicKey(l.a.seed));
+    expect(env.store.device(l.a.account)?.player_box_pk).toEqual(new Uint8Array(32).fill(2));
+    expect((await req(env, "GET", "/enroll/status", undefined, l.b)).json["with_referee"]).toBe(true);
+    expect((await req(env, "POST", `/matches/${l.id}/start`, {}, l.a)).status).toBe(200);
+  });
+
+  test("a refresh the referee refuses keeps the old receipt; a refresh needs the account's own key", async () => {
+    const old = setup();
+    const a = player(old, "ana");
+    const before = old.store.device(a.account);
+    const env = repinned(old);
+    env.referee.refuseEnrolls = 1;
+    expect((await refresh(env, a)).status).toBe(502);
+    expect(env.store.device(a.account)?.receipt).toEqual(before?.receipt as Uint8Array);
+    expect((await req(env, "GET", "/enroll/status", undefined, a)).json["with_referee"]).toBe(false);
+    // Unsigned: refused before any challenge is issued.
+    expect((await req(env, "POST", "/enroll/refresh/challenge", {})).status).toBe(401);
+    // A refresh challenge works only for the account it was issued to.
+    const b = player(env, "bo");
+    const ch = await req(env, "POST", "/enroll/refresh/challenge", {}, a);
+    const stolen = await req(
+      env,
+      "POST",
+      "/enroll/refresh",
+      {
+        challenge: ch.json["challenge"],
+        key_id: Buffer.alloc(32, 3).toString("base64"),
+        attestation: Buffer.from("x").toString("base64"),
+        player_box_pk: Buffer.alloc(32, 2).toString("base64"),
+        rebind_sig: Buffer.alloc(64, 6).toString("base64"),
+      },
+      b,
+    );
+    expect(stolen.status).toBe(401);
+  });
+
+  test("a receipt from before the relay kept its referee counts when its signature is this referee's", async () => {
+    const env = setup();
+    const a = player(env, "ana");
+    const b = player(repinned(env), "bo");
+    env.store.db.query("UPDATE devices SET referee_pk = NULL").run();
+    expect((await req(env, "GET", "/enroll/status", undefined, a)).json["with_referee"]).toBe(true);
+    expect(env.store.device(a.account)?.referee_pk).toEqual(env.referee.pk);
+    expect((await req(env, "GET", "/enroll/status", undefined, b)).json["with_referee"]).toBe(false);
+    expect(env.store.device(b.account)?.referee_pk).toBeNull();
   });
 });
 
@@ -323,11 +492,11 @@ describe("test players", () => {
   });
 
   test("a player who joins just before the lock still reaches the referee before Start", async () => {
-    const env = setup({ allowGhosts: true, refereeRetryMs: [] });
+    const env = setup({ allowGhosts: true });
     const l = await twoPhones(env, 4);
     env.chain.join(l.id, player(env, "cy").account);
     const late = `ghost-late.${PARENT}`;
-    seedDevice(env.store, late, ed25519.getPublicKey(ed25519.utils.randomSecretKey()), "ghost", false);
+    seedDevice(env.store, late, ed25519.getPublicKey(ed25519.utils.randomSecretKey()), "ghost");
     const lock = env.chain.lockLobby.bind(env.chain);
     env.chain.lockLobby = async (id) => {
       env.chain.join(id, late);
@@ -468,15 +637,19 @@ describe("the match view", () => {
     expect((await req(env, "GET", `/matches/${open.id}/zone`, undefined, a)).status).toBe(403);
   });
 
-  test("after Start each player gets only its own sealed keys", async () => {
+  test("after Start each player gets only its own sealed keys, the host included", async () => {
     const env = setup();
     env.referee.overAt = 1_000_000;
     const m = await started(env);
-    const view = await req(env, "GET", `/matches/${m.id}/zone`, undefined, m.b);
-    expect(view.status).toBe(200);
-    const mine = (m.start["keys"] as { player: number }[]).filter((k) => k.player === 1);
-    expect(view.json["keys"]).toEqual(mine);
-    expect(mine).toHaveLength(1);
+    const accounts = (keys: unknown) => (keys as { account_id: string }[]).map((k) => k.account_id);
+    expect(accounts(m.start["keys"])).toEqual([m.a.account]);
+    for (const p of [m.a, m.b, m.c]) {
+      const view = await req(env, "GET", `/matches/${m.id}/zone`, undefined, p);
+      expect(view.status).toBe(200);
+      expect(accounts(view.json["keys"])).toEqual([p.account]);
+    }
+    const host = (await req(env, "GET", `/matches/${m.id}/zone`, undefined, m.a)).json["keys"];
+    expect(host).toEqual(m.start["keys"]);
   });
 
   test("the public view reads the chain at most once per few seconds", async () => {
@@ -621,15 +794,20 @@ describe("starting a match", () => {
     expect(ok.status).toBe(200);
     expect(env.chain.locked).toEqual([id]);
     expect(ok.json["players"]).toEqual([`ana.${PARENT}`, `bo.${PARENT}`, `cy.${PARENT}`]);
-    expect((ok.json["keys"] as unknown[]).length).toBe(3);
+    // The host gets its own keys only.
+    expect(ok.json["keys"]).toEqual([expect.objectContaining({ account_id: a.account })]);
     expect(appliedSeqs(env)[0]).toBe(1);
   });
 
-  test("start registers any device the referee does not have yet; while it cannot, the lobby stays open", async () => {
-    const env = setup({ refereeRetryMs: [] });
+  test("start registers a device an older relay left waiting; while it cannot, the lobby stays open", async () => {
+    const env = setup();
     const [a, b] = [player(env, "ana"), player(env, "bo")];
     const cy = `cy.${PARENT}`;
-    seedDevice(env.store, cy, ed25519.getPublicKey(ed25519.utils.randomSecretKey()), "phone", false);
+    seedDevice(env.store, cy, ed25519.getPublicKey(ed25519.utils.randomSecretKey()), "phone");
+    // A row from before synchronous enrolment: no receipt yet, the attestation kept for the referee.
+    env.store.db
+      .query("UPDATE devices SET attestation = ?, challenge = ? WHERE account_id = ?")
+      .run(new Uint8Array([0xa1]), new Uint8Array(32).fill(7), cy);
     const r = await req(env, "POST", "/matches", { ...MATCH, start_by_ms: Date.now() + 600_000 }, a);
     const id = String(r.json["match_id"]);
     for (const acc of [a.account, b.account, cy]) env.chain.join(id, acc);

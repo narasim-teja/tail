@@ -25,7 +25,7 @@ const unb64 = (s: string) => new Uint8Array(Buffer.from(s, "base64"));
 
 describe("a ghost match", () => {
   test("three ghosts play to the end and the replay verifies", async () => {
-    const env = setup({ allowGhosts: true, refereeRetryMs: [] });
+    const env = setup({ allowGhosts: true });
     env.referee.hintAtTick = 0;
     env.referee.checkpointAtTick = 3;
     env.referee.overAt = 1_000_000;
@@ -47,7 +47,9 @@ describe("a ghost match", () => {
       `/matches/${id}/start`,
       {},
     );
-    for (const g of ghosts) g.setKeys(started.keys.find((k) => k.account_id === g.accountId)?.sealed ?? "");
+    // Start hands the host only its own keys; every other player fetches its own.
+    expect(started.keys.map((k) => k.account_id)).toEqual([host.accountId]);
+    for (const g of ghosts) await g.fetchKeys(id);
     for (const g of ghosts) await g.connectHud(id);
     const byPlayer = [...ghosts].sort((x, y) => (x.keys?.player ?? 0) - (y.keys?.player ?? 0));
     const [hunter, target, bystander] = byPlayer as [Ghost, Ghost, Ghost];

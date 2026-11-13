@@ -3,6 +3,7 @@
 // it never runs half-configured against testnet.
 
 import { existsSync, readFileSync } from "node:fs";
+import { DEFAULT_ENROL_CAPS, type EnrolCaps } from "./limits.ts";
 import { DEFAULT_RETENTION_HOURS } from "./retention.ts";
 
 export type Network = "testnet";
@@ -44,6 +45,13 @@ export interface Config {
   retentionMs: number;
   /** Where the relay's own mesh carry keys live (carry.ts); generated there on first start. */
   keysDir: string;
+  /**
+   * The header a reverse proxy in front of the relay sets to the client's address, lowercase
+   * (limits.ts). Undefined: the relay faces clients directly and uses the TCP peer.
+   */
+  clientIpHeader: string | undefined;
+  /** Caps on new phone enrolments per rolling day, in all and per client address (enroll.ts). */
+  enrolCaps: EnrolCaps;
 }
 
 export class ConfigError extends Error {
@@ -102,6 +110,19 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   if (!Number.isInteger(retentionHours) || retentionHours < 1 || retentionHours > 8_760) {
     throw new ConfigError("RELAY_RETENTION_HOURS must be a whole number of hours from 1 to 8760");
   }
+  const count = (k: string, fallback: number) => {
+    const v = Number(opt(k, String(fallback)));
+    if (!Number.isInteger(v) || v < 1 || v > 100_000)
+      throw new ConfigError(`${k} must be a whole number from 1 to 100000`);
+    return v;
+  };
+  const enrolCaps: EnrolCaps = {
+    perDay: count("RELAY_ENROLS_PER_DAY", DEFAULT_ENROL_CAPS.perDay),
+    perIpPerDay: count("RELAY_ENROLS_PER_IP_PER_DAY", DEFAULT_ENROL_CAPS.perIpPerDay),
+  };
+  const ipHeader = env["RELAY_CLIENT_IP_HEADER"]?.trim().toLowerCase();
+  if (ipHeader && !/^[a-z0-9-]+$/.test(ipHeader))
+    throw new ConfigError("RELAY_CLIENT_IP_HEADER must be a header name, like cf-connecting-ip");
   const version = env["REFEREE_VERSION"]?.trim();
   if (version && !/^[0-9a-f]{64}$/.test(version))
     throw new ConfigError("REFEREE_VERSION must be a wasm sha256");
@@ -140,6 +161,8 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     retentionMs: retentionHours * 3_600_000,
     // Private keys: under the repo's ignored .keys/, never next to the relay's data.
     keysDir: opt("RELAY_KEYS_DIR", new URL("../../../.keys/relay", import.meta.url).pathname),
+    clientIpHeader: ipHeader || undefined,
+    enrolCaps,
   };
 }
 
@@ -161,6 +184,8 @@ export function describeConfig(c: Config) {
     allowGhosts: c.allowGhosts,
     retentionHours: c.retentionMs / 3_600_000,
     keysDir: c.keysDir,
+    clientIp: c.clientIpHeader ? `header ${c.clientIpHeader}` : "TCP peer",
+    enrolCaps: c.enrolCaps,
   };
 }
 

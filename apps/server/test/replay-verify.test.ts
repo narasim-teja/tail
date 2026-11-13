@@ -30,7 +30,8 @@ const REFEREE_BIN = join(REFEREE_CRATE, "target/release/tail-referee");
 const VERIFY_BIN = join(ROOT, "target/release/tail-verify");
 const PARENT = "relay.testnet";
 const CONTRACT = "tail.relay.testnet";
-const APP_ID = "TEAM.app";
+/** The App ID the referee pins in its code (crates/referee-wasi cmd/mod.rs `APP_ID`); the relay names the same. */
+const APP_ID = "LKABS9RZAC.com.lkabs9rzac.tail";
 const STAKE = 1_000_000n;
 const DURATION_MS = 120_000;
 const ZONE = { lat_e7: 423_550_000, lon_e7: -710_656_000, radius_m: 1500 };
@@ -108,13 +109,11 @@ describe("the relay's replay bundle", () => {
       refereeHealth: () => referee.health(),
       testnet: true,
       allowGhosts: true,
-      refereeRetryMs: [],
       now: () => clock.ms,
     });
     relay.matches.stop();
     const server = Bun.serve({ port: 0, fetch: relay.app.fetch, websocket: relay.websocket });
     cleanup.push(() => {
-      relay.enrolment.stop();
       server.stop(true);
     });
     const url = `http://localhost:${server.port}`;
@@ -141,7 +140,9 @@ describe("the relay's replay bundle", () => {
       `/matches/${id}/start`,
       {},
     );
-    for (const g of ghosts) g.setKeys(started.keys.find((k) => k.account_id === g.accountId)?.sealed ?? "");
+    // Start hands the host only its own keys; every other player fetches its own.
+    expect(started.keys.map((k) => k.account_id)).toEqual([host.accountId]);
+    for (const g of ghosts) await g.fetchKeys(id);
     for (const g of ghosts) await g.connectHud(id);
     cleanup.push(() => {
       for (const g of ghosts) g.closeHud();

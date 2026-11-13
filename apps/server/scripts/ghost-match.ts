@@ -142,11 +142,12 @@ try {
     end_ms: number;
   }>("POST", `/matches/${matchId}/start`, {});
   const startWall = Math.round(performance.now() - t0);
-  for (const g of ghosts) {
-    const k = started.keys.find((x) => x.account_id === g.accountId);
-    if (!k) throw new Error(`no keys for ${g.accountId}`);
-    g.setKeys(k.sealed);
-  }
+  check(
+    "Start hands the host only its own sealed keys",
+    started.keys.length === 1 && started.keys[0]?.account_id === host.accountId,
+  );
+  // Every player takes its own from the signed zone view, as a phone does.
+  for (const g of ghosts) await g.fetchKeys(matchId);
   m = await relay.chain.getMatch(matchId);
   check(
     "Start landed: the match runs with the ring committed",

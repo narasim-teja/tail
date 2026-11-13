@@ -51,7 +51,6 @@ export function setup(over: Partial<RelayDeps> = {}) {
   relays.push({
     stop: () => {
       relay.matches.stop();
-      relay.enrolment.stop();
     },
   });
   return { store, chain, referee, carryKeys, ...relay };
@@ -69,7 +68,14 @@ export function player(env: Env, name: string): Player {
   const seed = ed25519.utils.randomSecretKey();
   const boxSk = x25519.utils.randomSecretKey();
   const account = `${name}.${PARENT}`;
-  seedDevice(env.store, account, ed25519.getPublicKey(seed), "phone", true, x25519.getPublicKey(boxSk));
+  seedDevice(
+    env.store,
+    account,
+    ed25519.getPublicKey(seed),
+    "phone",
+    env.referee,
+    x25519.getPublicKey(boxSk),
+  );
   return { account, seed, boxSk };
 }
 

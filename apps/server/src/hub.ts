@@ -26,7 +26,8 @@ export interface Sink {
 export const MAX_HUD_SOCKETS_PER_ACCOUNT = 3;
 /**
  * Sockets still in their 10 s auth window, across all accounts. Anyone can open one for any
- * account, so this bound is global and does not count towards the account's own cap.
+ * account, so this bound is global and does not count towards the account's own cap; a
+ * per-client bucket (limits.ts) keeps one client from holding all of them.
  */
 export const MAX_PENDING_HUD_SOCKETS = 1_024;
 

@@ -21,7 +21,8 @@ function circle(o: Obj, what: string): Circle {
 /**
  * Who may see a match's zone: its host, an account it invites, a player on chain, or a player the
  * relay seated. The chain view may be a few seconds old, so a caller it does not list (someone
- * who just joined) is checked once more against a fresh read.
+ * who just joined) is checked once more against a fresh read, shared with any other made for
+ * the match within the last second (chainview.ts), so strangers asking cannot multiply RPC calls.
  */
 async function maySeeZone(view: ChainView, m: MatchRow, account: string): Promise<boolean> {
   if (m.host === account || m.players?.includes(account)) return true;
@@ -118,7 +119,9 @@ export function matchRoutes(
     return c.json({ match_id: id, zone: m.zone });
   });
 
-  // Signed by the host. → {players, keys: [{player, account_id, sealed}], start_ms, end_ms}
+  // Signed by the host. → {players, keys: [{player, account_id, sealed}], start_ms, end_ms}, with
+  // only the host's own keys in `keys`; each other player takes its own from the zone view or
+  // its HUD socket.
   app.post("/matches/:id/start", async (c) => {
     const id = field.matchId(c.req.param("id"));
     const { account } = await d.auth.signed(c);

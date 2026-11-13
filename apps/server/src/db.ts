@@ -23,7 +23,8 @@ const DEVICE_COLUMNS = `
   created_ms INTEGER NOT NULL,
   attestation BLOB,
   challenge BLOB,
-  attested INTEGER
+  attested INTEGER,
+  referee_pk BLOB
 `;
 /** The columns a devices table had before the attestation was kept for the referee. */
 const DEVICE_COLUMNS_V1 =
@@ -173,13 +174,24 @@ CREATE TABLE IF NOT EXISTS leases (
 );
 `;
 
+/** Rows each purge deleted, by kind (db.ts purgeMatch). */
+export interface PurgeCounts {
+  batches: number;
+  trails: number;
+  log: number;
+  logSealed: number;
+  huds: number;
+  handler: number;
+}
+
 export type Phase = "lobby" | "starting" | "running" | "ending" | "ended" | "failed";
 
 /**
- * A device the relay enrolled. The referee's receipt (and its call id) arrive later than the row:
- * enrolment answers the phone once the NEAR account exists, and the device is registered with
- * the referee in the background (enroll.ts). Null until then; a match cannot start with a
- * player whose receipt is still null.
+ * A device the relay enrolled. The row is written before the referee is asked, so it holds the
+ * handle and the keys while that call runs, and it is deleted again if the referee or the chain
+ * says no (enroll.ts). The receipt columns are null until the referee answers, and on rows a
+ * relay from before synchronous enrolment left waiting. A match starts only with players whose
+ * receipt comes from the referee the contract pins now.
  */
 export interface DeviceRow {
   account_id: string;
@@ -203,6 +215,8 @@ export interface DeviceRow {
    * took the device unattested (a ghost). Null until registered, or if the referee did not say.
    */
   attested: number | null;
+  /** The referee key that signed `receipt_sig`; null until registered, and on rows from before it was kept. */
+  referee_pk: Uint8Array | null;
 }
 
 /** What the referee's `enroll` returns, stored on the device row. */
@@ -212,6 +226,7 @@ export interface RefereeReceipt {
   receipt_sig: Uint8Array;
   enroll_call_id: string;
   attested: boolean | null;
+  referee_pk: Uint8Array;
 }
 
 export interface Zone {
@@ -231,7 +246,8 @@ export interface MatchRow {
   host: string;
   /** The short lobby code in stored form (codes.ts); null for matches made before codes. */
   code: string | null;
-  zone: Zone;
+  /** Null once the retention purge deleted it (retention.ts). */
+  zone: Zone | null;
   phase: Phase;
   created_ms: number;
   start_ms: number | null;
@@ -248,7 +264,7 @@ export interface MatchRow {
   error: string | null;
   /** 1 public, 0 private, null for matches made before the relay kept it (read it on chain). */
   public_replay: number | null;
-  /** When the retention purge deleted the match's sealed batches and trails (retention.ts). */
+  /** When the retention purge deleted where and how the match was played (retention.ts). */
   purged_ms: number | null;
   /** 2 for a match judged under protocol v2; null for one started before (served as v1). */
   protocol: number | null;
@@ -257,6 +273,7 @@ export interface MatchRow {
 }
 
 interface MatchRaw extends Omit<MatchRow, "zone" | "players" | "keys" | "reveal"> {
+  /** JSON; "null" after the purge. */
   zone: string;
   players: string | null;
   keys: string | null;
@@ -362,6 +379,10 @@ export class Store {
     this.addColumn("devices", "attestation", "BLOB");
     this.addColumn("devices", "challenge", "BLOB");
     this.addColumn("devices", "attested", "INTEGER");
+    // Which referee signed the receipt: after the contract pins another referee, a device it
+    // does not know must be registered again (enroll.ts). Null on rows from before: the receipt's
+    // signature tells (Enrolment.withReferee).
+    this.addColumn("devices", "referee_pk", "BLOB");
     // voice_hints first named a line by its receipt's leaf; a salted receipt's leaf is known only
     // once it is logged, so the line is named by its hint id (an older `leaves` column stays unread).
     this.addColumn("voice_hints", "hint_id", "INTEGER");
@@ -543,8 +564,8 @@ export class Store {
   putDevice(d: DeviceRow) {
     this.db
       .query(
-        `INSERT INTO devices (account_id, kind, app_attest_pk, player_box_pk, near_pk, receipt, receipt_sig, enroll_call_id, created_ms, attestation, challenge, attested)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO devices (account_id, kind, app_attest_pk, player_box_pk, near_pk, receipt, receipt_sig, enroll_call_id, created_ms, attestation, challenge, attested, referee_pk)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         d.account_id,
@@ -559,7 +580,40 @@ export class Store {
         d.attestation,
         d.challenge,
         d.attested,
+        d.referee_pk,
       );
+  }
+
+  /**
+   * As putDevice for a phone, unless `max` phones were enrolled since `sinceMs` (the daily cap on
+   * new enrolments: each one costs the relay NEAR). Counted and written in one transaction.
+   */
+  putPhoneWithin(d: DeviceRow, sinceMs: number, max: number): boolean {
+    return this.tx(() => {
+      const n =
+        this.db
+          .query<{ n: number }, [number]>(
+            "SELECT COUNT(*) AS n FROM devices WHERE kind = 'phone' AND created_ms >= ?",
+          )
+          .get(sinceMs)?.n ?? 0;
+      if (n >= max) return false;
+      this.putDevice(d);
+      return true;
+    });
+  }
+
+  /** Drops an enrolment the referee or the chain turned down, so the handle is free again. */
+  deleteDevice(accountId: string) {
+    this.db.query("DELETE FROM devices WHERE account_id = ?").run(accountId);
+  }
+
+  /** The account enrolled with this App Attest key, if any. */
+  appAttestKeyOwner(appAttestPk: Uint8Array): string | undefined {
+    return (
+      this.db
+        .query<{ account_id: string }, [Uint8Array]>("SELECT account_id FROM devices WHERE app_attest_pk = ?")
+        .get(appAttestPk)?.account_id ?? undefined
+    );
   }
 
   /** The account already enrolled with this App Attest key or this NEAR key, if any. */
@@ -585,6 +639,7 @@ export class Store {
       receipt_sig: r.receipt_sig ? u8(r.receipt_sig) : null,
       attestation: r.attestation ? u8(r.attestation) : null,
       challenge: r.challenge ? u8(r.challenge) : null,
+      referee_pk: r.referee_pk ? u8(r.referee_pk) : null,
     };
   }
 
@@ -595,7 +650,7 @@ export class Store {
   setDeviceReceipt(accountId: string, r: RefereeReceipt) {
     this.db
       .query(
-        "UPDATE devices SET app_attest_pk = ?, receipt = ?, receipt_sig = ?, enroll_call_id = ?, attested = ?, attestation = NULL, challenge = NULL WHERE account_id = ?",
+        "UPDATE devices SET app_attest_pk = ?, receipt = ?, receipt_sig = ?, enroll_call_id = ?, attested = ?, referee_pk = ?, attestation = NULL, challenge = NULL WHERE account_id = ?",
       )
       .run(
         r.app_attest_pk,
@@ -603,18 +658,25 @@ export class Store {
         r.receipt_sig,
         r.enroll_call_id,
         r.attested === null ? null : r.attested ? 1 : 0,
+        r.referee_pk,
         accountId,
       );
   }
 
-  /** Devices the referee has not registered yet, oldest first. */
-  devicesAwaitingReferee(): string[] {
-    return this.db
-      .query<{ account_id: string }, []>(
-        "SELECT account_id FROM devices WHERE receipt IS NULL ORDER BY created_ms",
-      )
-      .all()
-      .map((r) => r.account_id);
+  /**
+   * A refresh the referee accepted (enroll.ts): the phone's new App Attest key and box key, and
+   * the new receipt. The NEAR key stays: it is the account's own key on chain.
+   */
+  refreshDevice(accountId: string, playerBoxPk: Uint8Array, r: RefereeReceipt) {
+    this.tx(() => {
+      this.db.query("UPDATE devices SET player_box_pk = ? WHERE account_id = ?").run(playerBoxPk, accountId);
+      this.setDeviceReceipt(accountId, r);
+    });
+  }
+
+  /** A receipt from before referee_pk was kept, found to be signed by this key. */
+  setDeviceRefereePk(accountId: string, refereePk: Uint8Array) {
+    this.db.query("UPDATE devices SET referee_pk = ? WHERE account_id = ?").run(refereePk, accountId);
   }
 
   // ── Matches ──────────────────────────────────────────────────────────────────────
@@ -681,7 +743,7 @@ export class Store {
     if (!r) return undefined;
     return {
       ...r,
-      zone: JSON.parse(r.zone) as Zone,
+      zone: JSON.parse(r.zone) as Zone | null,
       players: r.players ? (JSON.parse(r.players) as string[]) : null,
       keys: r.keys ? (JSON.parse(r.keys) as PlayerKeysRow[]) : null,
       reveal: r.reveal ? (JSON.parse(r.reveal) as Record<string, unknown>) : null,
@@ -1075,17 +1137,21 @@ export class Store {
   // ── Retention ────────────────────────────────────────────────────────────────────
 
   /**
-   * Ended matches whose trails are due for the purge: not purged yet, End applied (or, if that
-   * time was lost, the match's end) before `endedBeforeMs`, and not known to be public.
-   * `public_replay` null means a match from before the relay kept it; the caller asks the chain.
+   * Matches due for the purge, not purged yet: private ones whose End was applied (or, if that
+   * time was lost, whose end passed) before `endedBeforeMs`, and failed ones (public or not: a
+   * failed match has no replay) last touched before it. `public_replay` null means a match from
+   * before the relay kept it; the caller asks the chain.
    */
-  purgeCandidates(endedBeforeMs: number): { match_id: string; public_replay: number | null }[] {
+  purgeCandidates(
+    endedBeforeMs: number,
+  ): { match_id: string; phase: "ended" | "failed"; public_replay: number | null }[] {
     return this.db
-      .query<{ match_id: string; public_replay: number | null }, [number]>(
-        `SELECT m.match_id, m.public_replay FROM matches m
-         JOIN verdicts v ON v.match_id = m.match_id AND v.kind = 'End'
-         WHERE m.phase = 'ended' AND m.purged_ms IS NULL AND COALESCE(m.public_replay, 0) = 0
-           AND COALESCE(v.applied_ms, m.end_ms) < ?`,
+      .query<{ match_id: string; phase: "ended" | "failed"; public_replay: number | null }, [number]>(
+        `SELECT m.match_id, m.phase, m.public_replay FROM matches m
+         LEFT JOIN verdicts v ON v.match_id = m.match_id AND v.kind = 'End'
+         WHERE m.purged_ms IS NULL
+           AND (m.phase = 'failed' OR (m.phase = 'ended' AND v.seq IS NOT NULL AND COALESCE(m.public_replay, 0) = 0))
+           AND COALESCE(v.applied_ms, m.end_ms, m.created_ms) < ?`,
       )
       .all(endedBeforeMs);
   }
@@ -1096,13 +1162,30 @@ export class Store {
       .run(publicReplay ? 1 : 0, matchId);
   }
 
-  /** Deletes a match's sealed batches and declassified trails, and records when. */
-  purgeMatch(matchId: string, nowMs: number): { batches: number; trails: number } {
+  /**
+   * Deletes everything of a match that says where or how it was played, and records when: the
+   * sealed batches and state (the referee could open them again), the declassified trails and
+   * log, the log's sealed copies, the zone and safehouses, the sealed HUDs, and the Handler's
+   * lines and hint blobs. What stays is what is public anyway or reveals nothing: the verdicts
+   * (on chain), the leaf hashes (for proofs against the anchored roots), the tick records
+   * (timings and reason codes), the sealed PlayerKeys and the referee's reveal.
+   */
+  purgeMatch(matchId: string, nowMs: number): PurgeCounts {
     return this.tx(() => {
-      const batches = this.db.query("DELETE FROM batches WHERE match_id = ?").run(matchId).changes;
-      const trails = this.db.query("DELETE FROM trails WHERE match_id = ?").run(matchId).changes;
-      this.db.query("UPDATE matches SET purged_ms = ? WHERE match_id = ?").run(nowMs, matchId);
-      return { batches, trails };
+      const del = (table: string) =>
+        this.db.query(`DELETE FROM ${table} WHERE match_id = ?`).run(matchId).changes;
+      const n: PurgeCounts = {
+        batches: del("batches"),
+        trails: del("trails"),
+        log: del("log_entries"),
+        logSealed: del("log_sealed"),
+        huds: del("huds"),
+        handler: del("voice_hints") + del("hints"),
+      };
+      this.db
+        .query("UPDATE matches SET zone = 'null', state = NULL, purged_ms = ? WHERE match_id = ?")
+        .run(nowMs, matchId);
+      return n;
     });
   }
 

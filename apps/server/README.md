@@ -18,7 +18,7 @@ phone ◀──sealed HUD──── relay ◀─verdicts + proofs, sealed HUDs
 | Refuse to start or tick a match.                                                                                                                                             | Sign a verdict, or move money any other way: heads move only on referee-signed verdicts, in seq order, checked by the contract. |
 | See who uploads when, and how big the sealed blobs are. With mesh carry it also learns which phone carried whose request (the carrier posts it, the sender signed it).       | Create a tag. A tag needs mutual radio contact the enclave verifies from both phones' sealed, App Attest-signed batches.        |
 | Replay an old sealed state blob. The referee refuses it (`last_seq` check), and two forks of one blob produce verdicts with the same seq, of which the contract accepts one. | Use a player's account: it holds one function-call key, which the phone generated and keeps. The relay never has it.            |
-| Check the App Attest attestation at enrolment (v1). A dishonest relay could enrol a fake device.                                                                             | Forge later batches: the enclave checks every batch's assertion against the enrolled key.                                       |
+| Refuse to enrol a phone, or ask the referee to register a device. The referee checks the Apple attestation itself; the relay's check is only a first filter.                 | Forge later batches: the enclave checks every batch's assertion against the enrolled key.                                       |
 
 The relay holds two secrets: the NEAR key of `NEAR_RELAY_ACCOUNT` (pays gas, creates accounts,
 hosts matches; it is also the contract owner on testnet) and the OutLayer payment key. Neither is
@@ -29,29 +29,34 @@ ever logged (`@tail/log` redacts key fields; the config prints facts only).
 Bytes are base64 in JSON unless noted; match ids are 32 hex characters; amounts are decimal
 strings in the token's smallest unit. Errors are `{error: "<short message>"}` with a 4xx/5xx status.
 
-| Method, path                             | Auth                                        | Request                                                                                                                                                       | Response                                                                                                                                           |
-| ---------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /health`                            | –                                           | –                                                                                                                                                             | `{ok: true, contract, test_players, referee: {kind: "outlayer"\|"local", status: "unknown"\|"up"\|"down", last_ok_ms, last_error}}`                |
-| `GET /referee`                           | –                                           | –                                                                                                                                                             | `{referee_pk, referee_box_pk, box_pk_sig, vrf_pk}` (base64, from the referee's `pubkeys`, cached)                                                  |
-| `POST /enroll/challenge`                 | –                                           | `{handle}`                                                                                                                                                    | `{challenge (32 B), account_id, expires_ms}`                                                                                                       |
-| `POST /enroll`                           | attestation                                 | `{challenge, key_id (32 B), attestation (CBOR), player_box_pk (32 B), near_pk (32 B ed25519)}`                                                                | `{account_id}`; the referee gets the device in the background (below)                                                                              |
-| `POST /matches`                          | signed (host)                               | `{stake, duration_ms, zone: {lat_e7, lon_e7, radius_m}, safehouses?: [circle], public_replay, min_players, max_players, start_by_ms, invites?: [account_id]}` | `{match_id, zone_hash (hex), code}` (`code`: the short lobby code, e.g. `K7M-4QX`)                                                                 |
-| `GET /matches/:id`                       | –                                           | –                                                                                                                                                             | `{match_id, code, host, phase, error, start_ms, end_ms, tick_no, last_seq, players, keys: [{player, account_id, sealed}], zone, chain: get_match}` |
-| `GET /join/:code`                        | –                                           | –                                                                                                                                                             | `{match_id}`; any case, dash optional; 404 unless the lobby is still open (not started here, not called off on chain)                              |
-| `POST /matches/:id/start`                | signed (host)                               | `{}`                                                                                                                                                          | `{players (index order), keys: [{player, account_id, sealed}], start_ms, end_ms}`                                                                  |
-| `POST /batch`                            | signed (player)                             | `{match_id, sealed}`                                                                                                                                          | `{queued, player}`; `queued: false` = these bytes already wait for the next tick (success)                                                         |
-| `GET /hud?match_id=&account_id=`         | WebSocket challenge                         | see below                                                                                                                                                     | see below                                                                                                                                          |
-| `GET /replay/:id`                        | – (challenge if not `public_replay`, below) | –                                                                                                                                                             | a `ReplayBundle` (`@tail/protocol` `replay.ts`); 409 until the match has ended                                                                     |
-| `POST /replay/:id/challenge`             | –                                           | `{account_id}`                                                                                                                                                | `{nonce}` (32 B, single use, 2 min)                                                                                                                |
-| `GET /matches/:id/inclusion?leaf=&size=` | –                                           | `leaf`: 64 hex, `size` 1–65536                                                                                                                                | `{index, size, path: [hex]}`: RFC 9162 audit path of the leaf's first index among the first `size` leaves; 404 if not there                        |
-| `GET /matches/:id/consistency?from=&to=` | –                                           | `0 ≤ from ≤ to ≤ 65536`                                                                                                                                       | `{from, to, path: [hex]}`: RFC 9162 consistency proof between the trees of the first `from` and `to` leaves                                        |
-| `GET /carry/key`                         | –                                           | –                                                                                                                                                             | `{box_pk, ack_pk}` (base64): the relay's X25519 carry key and ed25519 receipt key                                                                  |
-| `POST /carry`                            | the inner request is signed                 | raw body: `sealCarry(box_pk, CarryRequest)`, 4144 bytes                                                                                                       | `{ack, hud?}`: base64 borsh `CarryAck`, and the sender's latest sealed `SignedHud` when the request was an accepted `/batch`                       |
-| `POST /dev/topup`                        | signed; testnet only                        | `{account_id, amount}` (≤ 100 USDC.e)                                                                                                                         | `{account_id, credited}`: mints `usdc.fakes.testnet` to the relay and `ft_transfer_call`s it with `{"credit": account_id}`                         |
-| `POST /dev/ghosts/enroll`                | testing door, see below                     | `{handle: "ghost-…", app_attest_pk (65 B), player_box_pk, near_pk}`                                                                                           | as `POST /enroll`                                                                                                                                  |
-| `POST /dev/ghosts/fill`                  | signed (host); testing door                 | `{match_id}`                                                                                                                                                  | `{account_id}` of the test player now in the lobby (below)                                                                                         |
+| Method, path                             | Auth                                        | Request                                                                                                                                                       | Response                                                                                                                                       |
+| ---------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /health`                            | –                                           | –                                                                                                                                                             | `{ok: true, contract, test_players, referee: {kind: "outlayer"\|"local", status: "unknown"\|"up"\|"down", last_ok_ms, last_error}}`            |
+| `GET /referee`                           | –                                           | –                                                                                                                                                             | `{referee_pk, referee_box_pk, box_pk_sig, vrf_pk}` (base64, from the referee's `pubkeys`, cached)                                              |
+| `POST /enroll/challenge`                 | – (rate limited per client)                 | `{handle}`                                                                                                                                                    | `{challenge (32 B), account_id, expires_ms}`                                                                                                   |
+| `POST /enroll`                           | attestation                                 | `{challenge, key_id (32 B), attestation (CBOR), player_box_pk (32 B), near_pk (32 B ed25519), rebind_sig? (64 B)}`                                            | `{account_id}`, once the referee holds the device and the account exists (below)                                                               |
+| `GET /enroll/status`                     | signed (the account)                        | –                                                                                                                                                             | `{account_id, with_referee}`: false means the referee the relay runs with now does not know this device; refresh                               |
+| `POST /enroll/refresh/challenge`         | signed (the account)                        | `{}`                                                                                                                                                          | `{challenge (32 B), account_id, expires_ms}`                                                                                                   |
+| `POST /enroll/refresh`                   | signed (the account)                        | `{challenge, key_id (32 B), attestation (CBOR), player_box_pk (32 B), rebind_sig (64 B)}`                                                                     | `{account_id}`, once the referee accepted                                                                                                      |
+| `POST /matches`                          | signed (host)                               | `{stake, duration_ms, zone: {lat_e7, lon_e7, radius_m}, safehouses?: [circle], public_replay, min_players, max_players, start_by_ms, invites?: [account_id]}` | `{match_id, zone_hash (hex), code}` (`code`: the short lobby code, e.g. `K7M-4QX`)                                                             |
+| `GET /matches/:id`                       | –                                           | –                                                                                                                                                             | `{match_id, code, host, phase, start_ms, end_ms, tick_no, last_seq, players, chain: get_match}`                                                |
+| `GET /matches/:id/zone`                  | signed (host, invitee or player)            | –                                                                                                                                                             | `{match_id, zone, keys: [{player, account_id, sealed}], error}`: `keys` holds the caller's own only, once started; `zone` null after the purge |
+| `GET /join/:code`                        | –                                           | –                                                                                                                                                             | `{match_id}`; any case, dash optional; 404 unless the lobby is still open (not started here, not called off on chain)                          |
+| `POST /matches/:id/start`                | signed (host)                               | `{}`                                                                                                                                                          | `{players (index order), keys: [the host's own {player, account_id, sealed}], start_ms, end_ms}`; 409 `code: "refresh"`, `accounts` (below)    |
+| `POST /batch`                            | signed (player)                             | `{match_id, sealed}`                                                                                                                                          | `{queued, player}`; `queued: false` = these bytes already wait for the next tick (success)                                                     |
+| `GET /hud?match_id=&account_id=`         | WebSocket challenge                         | see below                                                                                                                                                     | see below                                                                                                                                      |
+| `GET /replay/:id`                        | – (challenge if not `public_replay`, below) | –                                                                                                                                                             | a `ReplayBundle` (`@tail/protocol` `replay.ts`); 409 until the match has ended                                                                 |
+| `POST /replay/:id/challenge`             | – (rate limited per client)                 | `{account_id}`                                                                                                                                                | `{nonce}` (32 B, single use, 2 min)                                                                                                            |
+| `GET /matches/:id/inclusion?leaf=&size=` | –                                           | `leaf`: 64 hex, `size` 1–65536                                                                                                                                | `{index, size, path: [hex]}`: RFC 9162 audit path of the leaf's first index among the first `size` leaves; 404 if not there                    |
+| `GET /matches/:id/consistency?from=&to=` | –                                           | `0 ≤ from ≤ to ≤ 65536`                                                                                                                                       | `{from, to, path: [hex]}`: RFC 9162 consistency proof between the trees of the first `from` and `to` leaves                                    |
+| `GET /carry/key`                         | –                                           | –                                                                                                                                                             | `{box_pk, ack_pk}` (base64): the relay's X25519 carry key and ed25519 receipt key                                                              |
+| `POST /carry`                            | the inner request is signed                 | raw body: `sealCarry(box_pk, CarryRequest)`, 4144 bytes                                                                                                       | `{ack, hud?}`: base64 borsh `CarryAck`, and the sender's latest sealed `SignedHud` when the request was an accepted `/batch`                   |
+| `POST /dev/topup`                        | signed; testnet only                        | `{account_id, amount}` (≤ 100 USDC.e)                                                                                                                         | `{account_id, credited}`: mints `usdc.fakes.testnet` to the relay and `ft_transfer_call`s it with `{"credit": account_id}`                     |
+| `POST /dev/ghosts/fill`                  | signed (host); testing door                 | `{match_id}`                                                                                                                                                  | `{account_id}` of the test player now in the lobby (below)                                                                                     |
 
-`sealed` in `keys` is a `SignedPlayerKeys` sealed with context `tail/keys/v2` (`openSignedPlayerKeys`): safe to serve publicly.
+`sealed` in `keys` is a `SignedPlayerKeys` sealed with context `tail/keys/v2` (`openSignedPlayerKeys`).
+Each player's keys go to that player only (its zone view, its HUD socket), not to the host: the
+seal hides their content, but which blob is whose, and when it changes, is the player's business.
 
 ### Signed requests
 
@@ -71,12 +76,32 @@ its match ends. This keeps strangers from filling a player's batch queue, openin
 relay's NEAR, or starting a lobby they do not host. `src/auth.ts` has both sides
 (`requestDigest`, `signRequestHeaders`).
 
+### Rate limits
+
+Routes anyone can call without a key are limited per client address, with a global cap behind
+each (`src/limits.ts`): enrolment and refresh challenges (10 at once, then one per 30 s; at most
+1000 open in all and 3 per handle), HUD sockets (30 at once, then one per 2 s; at most 1024 in
+their 10 s auth window in all) and replay challenges (10 at once, then one per 10 s; at most 1000
+open in all, 4 per player). Over a limit the answer is 429. The client is the TCP peer, or with
+`RELAY_CLIENT_IP_HEADER` set, the last entry of that header: set it only behind a proxy you run
+that overwrites it, because a client can send any header. A carried request counts against the
+phone that posted the envelope. The per-client buckets live in memory; a restart empties them.
+
+New phone enrolments are capped at `RELAY_ENROLS_PER_IP_PER_DAY` (default 3) per client address
+and `RELAY_ENROLS_PER_DAY` (default 100) in all, over a rolling 24 h; each costs the relay about
+0.1 NEAR. App Attest proves that a genuine iPhone running this app made the key. It does not
+prove a new person: one iPhone can make any number of App Attest keys, and so any number of
+accounts, so these caps are what bounds that. A phone with many addresses (mobile data, Wi-Fi,
+VPNs) still gets more than one network's share; the daily cap is the backstop. Test players
+(ghosts) are made in-process on testnet only and do not count.
+
 ### Mesh carry
 
 A phone without signal signs its request as usual, seals it with `sealCarry(box_pk, …)` (every
 envelope is 4144 bytes) and hands it to nearby phones; any of them posts it to `POST /carry`.
 The relay opens it and runs the inner request through its own routes exactly as if it came
-directly (only `POST`, never `/carry` itself). For `/batch` the request may be dated anywhere
+directly (only `POST`, never `/carry` itself; the path must be plain: no `%` escapes, and
+unchanged by URL parsing, so `/x/../carry` is refused). For `/batch` the request may be dated anywhere
 from the match's start to now + 60 s. The answer is `{ack, hud?}`: `ack` is a `CarryAck` signed
 with the key from `GET /carry/key` over SHA256(envelope), the inner status and the time the
 relay received it, so sender and carrier can prove delivery; `hud` is the sender's latest
@@ -137,22 +162,56 @@ with `sig` = ed25519 by the NEAR key over
 1. **Enrol.** Generate the App Attest key, the X25519 box key and an ed25519 NEAR key. `POST
    /enroll/challenge {handle}` → `{challenge, account_id}`. Attest with clientDataHash =
    `enrollClientDataHash(challenge, account_id, player_box_pk, near_pk)` (`@tail/protocol`).
-   `POST /enroll`. The relay creates `<handle>.<relay account>` holding only the phone's key
+   `POST /enroll`, with `rebind_sig` (below) if this is a retry the referee may already hold.
+   The relay checks the attestation, writes the device row (which holds the handle), and
+   registers the device with the referee, which checks the attestation itself and signs a
+   receipt. Then it creates `<handle>.<relay account>` holding only the phone's key
    (function-call, contract `TAIL_CONTRACT`, methods `join_match`, `leave_lobby`, `withdraw`,
    0.5 NEAR allowance), funds it with 0.1 NEAR, registers it on the token (`storage_deposit`)
-   and in the contract (`register_for`, payout = the account itself), then answers. It registers
-   the device with the referee in the background (retrying at 0, 5, 15, 30, 60, 120 and 300 s,
-   and again on restart), because a referee call can take minutes when OutLayer is slow.
+   and in the contract (`register_for`, payout = the account itself), and only then answers
+   `{account_id}`. If the referee refuses (502 `The referee refused: …`), does not answer (502 or
+   503) or the chain refuses the account (409), the row is deleted and the handle is free: try
+   again with a new challenge. The call can take as long as a referee call (seconds; more when
+   OutLayer is slow), so give it a 90 s timeout.
 2. **Join** the lobby on chain with its own key: `join_match({match_id})`, 30 Tgas (`withdraw`
    needs 50 Tgas). The stake is
    debited from its internal balance (the host tops players up; on testnet `POST /dev/topup`).
    The relay does not join for players: it does not hold their keys.
-3. **Start**: the host's `POST /matches/:id/start`. Keys arrive in the response, on
-   `GET /matches/:id` and on the HUD socket.
+3. **Start**: the host's `POST /matches/:id/start`. The host's own keys arrive in the response;
+   every player (host included) gets its own on the HUD socket and in the signed
+   `GET /matches/:id/zone`.
 4. **Play.** Every `BATCH_MS`: build the next `Batch`, assert `batchClientDataHash(batch)`, seal
    `BatchEnvelope` to `referee_box_pk` (check `box_pk_sig` against the contract's pinned
    `referee_pk` first), `POST /batch` signed. Retry failed uploads in order. Read HUDs from the
    socket.
+
+### Refresh: after the contract pins another referee
+
+The relay keeps each device's receipt with the referee key that signed it (receipts from before
+are recognised by their signature). When the contract pins another referee (local test referee ↔
+OutLayer, `scripts/pin-referee.ts`), the new one knows none of the devices, and an old
+attestation cannot be sent to it again: Apple's credential certificate in it is valid for about
+3 days. Start then answers 409 `{error, code: "refresh", accounts: [account_id]}`, and every
+listed phone refreshes:
+
+1. `GET /enroll/status` (signed) → `{account_id, with_referee}`. Ask on launch; refresh when false.
+2. `POST /enroll/refresh/challenge {}` (signed) → `{challenge, account_id, expires_ms}` (5 min,
+   single use, only for this account).
+3. Attest an App Attest key (a new one, or the same one again) with clientDataHash =
+   `enrollClientDataHash(challenge, account_id, player_box_pk, near_pk)`; `near_pk` is the
+   account's existing key, `player_box_pk` may be new.
+4. `rebind_sig` = ed25519 by the NEAR key over
+   `rebindDigest(account_id, app_attest_pk, player_box_pk, near_pk)` (`@tail/protocol`:
+   SHA256("tail/rebind/v1" ‖ borsh(account_id) ‖ app_attest_pk (65 B, uncompressed) ‖
+   player_box_pk ‖ near_pk), the keys being the ones this refresh sends). The referee needs it
+   to move an account it already holds to other keys; with no record, or the same keys, it
+   ignores it.
+5. `POST /enroll/refresh {challenge, key_id, attestation, player_box_pk, rebind_sig}` (signed) →
+   `{account_id}` once the referee accepted. On a refusal the relay keeps the old keys and
+   receipt; ask for a new challenge to try again.
+
+Signed means the v2 request signature above, by the account's NEAR key, so only the phone that
+holds the account can refresh it. A test player is registered again by the relay itself at Start.
 
 ### Batch queue
 
@@ -191,9 +250,10 @@ on one sealed state would fork it. Each step:
    the log, the reveal and the trails for the replay. Each of these retries on the next step if
    it fails; the match counts as ended only when both are stored.
 
-Start: the relay reads the lobby from the chain, checks every player is enrolled, registers any
-device the referee does not have yet (if it cannot, the lobby stays open and the host can press
-Start again), calls `lock_lobby` (joins frozen), then referee `start` with `start_ms` = now (the contract wants it
+Start: the relay reads the lobby from the chain, checks every player is enrolled and that its
+receipt is from the referee the relay runs with (a test player, or a device an older relay left
+waiting with its attestation, is registered now; any other phone must refresh, and the lobby
+stays open until it has), calls `lock_lobby` (joins frozen), then referee `start` with `start_ms` = now (the contract wants it
 within 5 min of block time), stores the result and applies Start at once. Before the referee
 answers, a failed start can be retried; after, it cannot (the enclave starts a match id once),
 and the lobby refunds through `leave_lobby`/`abort`.
@@ -216,19 +276,19 @@ signature = DER ECDSA-P256 over SHA256(authenticatorData ‖ clientDataHash), th
 `crates/appattest` verifies. The test `assertion.test.ts` checks the verifier steps on two real
 iPhone assertions and on ghost assertions.
 
-What a ghost cannot do is produce Apple's attestation. Ghost enrolment
-(`POST /dev/ghosts/enroll`) therefore skips it, and is a deliberate hole:
+What a ghost cannot do is produce Apple's attestation. Ghost enrolment therefore skips it, and
+is a deliberate hole:
 
-- The route exists only when the relay runs with `NEAR_NETWORK=testnet` **and** `ALLOW_GHOSTS=1`
-  (`config.ts`; `createRelay` refuses ghosts off testnet, and `NEAR_NETWORK` only accepts testnet).
+- No HTTP route enrols a ghost: the relay does it in-process (`Enrolment.enrollGhost`, used by
+  `POST /dev/ghosts/fill` and `scripts/ghost-match.ts`), and only when it runs with
+  `NEAR_NETWORK=testnet` **and** `ALLOW_GHOSTS=1` (`config.ts`; `createRelay` refuses ghosts off
+  testnet, and `NEAR_NETWORK` only accepts testnet). The referee takes a device without an
+  attestation only with its own `ALLOW_UNATTESTED=1`, and records it as `attested: false`.
 - Ghost handles must start with `ghost-` and phone handles cannot, so every ghost is visible as
   `ghost-….<relay account>` on chain, in the referee's device record and in `/replay`
-  (`kind: "ghost"`).
+  (`kind: "ghost"`, `attested: false`).
 - `GET /health` says `test_players: true` only while the door is open, so the app offers
   "Add a test player" only on such a relay.
-- A relay with the door open can enrol fake devices. That is exactly what the v1 limitation
-  (attestation checked by the relay, not the enclave) already allows a dishonest relay; the
-  door only makes it explicit for testing.
 
 ### Test players
 
@@ -272,7 +332,8 @@ nothing attests the code that signed, so:
 
 - it plays on the same `TAIL_CONTRACT`: a player's NEAR key can call only the contract it was
   made for, so a second contract would lock every enrolled player out. Switching referees means
-  pinning the other one's keys on the contract (`scripts/pin-referee.ts`). Matches keep the keys
+  pinning the other one's keys on the contract (`scripts/pin-referee.ts`), after which every
+  phone refreshes its enrolment with the new referee ("Refresh" above). Matches keep the keys
   they were created with;
 - the relay checks at startup that the contract pins the keys of the referee it runs with, in
   either mode, and refuses to start otherwise;
@@ -300,7 +361,9 @@ Environment (placeholders in `.env.example`): `NEAR_NETWORK` (testnet only), `NE
 `NEAR_RELAY_PRIVATE_KEY`, `TAIL_CONTRACT`, `OUTLAYER_API`, `OUTLAYER_OWNER`, `REFEREE_PROJECT`,
 `REFEREE_PAYMENT_KEY` (or `OUTLAYER_PAYMENT_KEY`), `REFEREE_VERSION` (optional pin), `APPLE_TEAM_ID`,
 `IOS_BUNDLE_ID`, `APP_ATTEST_ENV`, `TAIL_TOKEN`, `NEAR_RPC_URL`, `RELAY_PORT`, `RELAY_DB`,
-`ALLOW_GHOSTS`, `RELAY_KEYS_DIR` (mesh carry keys, default `.keys/relay`), `REFEREE_MODE` (`outlayer` or `local`), and for local mode `LOCAL_REFEREE_BIN` and
+`RELAY_RETENTION_HOURS`, `ALLOW_GHOSTS`, `RELAY_KEYS_DIR` (mesh carry keys, default `.keys/relay`),
+`RELAY_CLIENT_IP_HEADER`, `RELAY_ENROLS_PER_DAY`, `RELAY_ENROLS_PER_IP_PER_DAY` (rate limits,
+above), `REFEREE_MODE` (`outlayer` or `local`), and for local mode `LOCAL_REFEREE_BIN` and
 `LOCAL_REFEREE_DIR` (both optional). A missing value or a leftover placeholder stops the relay at startup.
 
 Most tests run on fakes of the chain and the referee (`test/fakes.ts`). `test/local-referee.test.ts`
@@ -342,4 +405,6 @@ was match `f40e8fdda22b1276c2851caf49eea037`:
 - The relay is not an Offline Protocol node: carried requests reach it as `POST /carry`
   envelopes, posted by whichever phone has signal.
 - One relay process; no horizontal scaling. SQLite holds everything the loop needs to resume.
-- Device attestation is checked here, once, not in the enclave (v1, TECHNICAL.md 4.4).
+- Retention deletes from the relay's database only (`src/retention.ts` says what goes and what
+  stays). A lobby that never started keeps its zone; the relay's own logs and backups are the
+  operator's.

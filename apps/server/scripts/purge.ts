@@ -1,7 +1,8 @@
-// Deletes sealed batches and declassified trails from the relay's database (src/retention.ts).
+// Deletes what says where and how a match was played from the relay's database (src/retention.ts:
+// sealed batches and state, trails, the declassified log, the zone, HUDs, Handler lines).
 // With no argument: every private match whose End is older than RELAY_RETENTION_HOURS (default
-// 24), as the running relay does each hour. With match ids: those matches now, public or private,
-// as long as they have ended. Reads the chain only (get_match, for matches from before the relay
+// 24), and every failed match as old, as the running relay does each hour. With match ids: those
+// matches now, public or private, as long as they have ended or failed. Reads the chain only (get_match, for matches from before the relay
 // kept public_replay); sends no transaction. Safe beside a running relay (SQLite WAL).
 //
 //   bun apps/server/scripts/purge.ts
@@ -35,14 +36,17 @@ try {
   if (ids.length === 0) {
     const purged = await retention.sweep();
     console.log(
-      `purged ${purged.length} private match(es) ended over ${config.retentionMs / 3_600_000} h ago`,
+      `purged ${purged.length} private or failed match(es) ended over ${config.retentionMs / 3_600_000} h ago`,
     );
     for (const id of purged) console.log(`  ${id}`);
   } else {
     for (const id of ids) {
       try {
         const n = retention.purge(id);
-        console.log(`${id}: deleted ${n.batches} sealed batches and ${n.trails} trails`);
+        console.log(
+          `${id}: deleted ${n.batches} sealed batches, ${n.trails} trails, ${n.log} log entries, ` +
+            `${n.logSealed} sealed log blobs, ${n.huds} HUDs, ${n.handler} Handler lines, and the zone`,
+        );
       } catch (e) {
         failed = true;
         console.error(`${id}: ${(e as Error).message}`);

@@ -18,6 +18,7 @@ import type { Hono } from "hono";
 import type { CarryKeys } from "../carry.ts";
 import type { Store } from "../db.ts";
 import { HttpError } from "../errors.ts";
+import type { Clients } from "../limits.ts";
 import { bodyBytes, type RequestAuth } from "./util.ts";
 
 /** Every envelope: ephemeral key, the padded request, the AEAD tag. */
@@ -27,7 +28,7 @@ const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
 
 export function carryRoutes(
   app: Hono,
-  d: { store: Store; auth: RequestAuth; keys: CarryKeys; now: () => number },
+  d: { store: Store; auth: RequestAuth; keys: CarryKeys; clients: Clients; now: () => number },
 ) {
   const key = { box_pk: b64(d.keys.boxPk), ack_pk: b64(d.keys.ackPk) };
   app.get("/carry/key", (c) => c.json(key));
@@ -47,11 +48,17 @@ export function carryRoutes(
     // carried request is never another carry.
     const method = inner.method.toUpperCase();
     if (method !== "POST") throw new HttpError(400, "only POST requests can be carried");
-    if (!inner.path.startsWith("/") || inner.path.startsWith("//") || inner.path.startsWith("/carry"))
+    // Checked on the path the router will see. A URL resolves dot segments ("/x/../carry"), and
+    // the router decodes percent escapes ("/%63arry"), so the path must already be in that form:
+    // no escapes, and unchanged by parsing. A phone signs the path it sends, so it sends it plain.
+    if (!inner.path.startsWith("/") || inner.path.startsWith("//") || inner.path.includes("%"))
+      throw new HttpError(400, "carried path is not a relay route");
+    const url = new URL(inner.path, "http://carried.invalid");
+    if (url.pathname + url.search !== inner.path || url.pathname.startsWith("/carry"))
       throw new HttpError(400, "carried path is not a relay route");
 
     const req = d.auth.markCarried(
-      new Request(new URL(inner.path, "http://carried.invalid").href, {
+      new Request(url.href, {
         method,
         headers: {
           "content-type": "application/json",
@@ -62,9 +69,10 @@ export function carryRoutes(
         body: inner.body,
       }),
     );
-    const res = await app.fetch(req);
+    // The inner request counts against the carrier's client in the rate limits (limits.ts).
+    const res = await app.fetch(d.clients.forward(req, c));
     const ack = signCarryAck(d.keys.ackSk, envelope, res.status, BigInt(receivedMs));
-    const hud = res.status === 200 && inner.path === "/batch" ? senderHud(d.store, inner) : undefined;
+    const hud = res.status === 200 && url.pathname === "/batch" ? senderHud(d.store, inner) : undefined;
     return c.json({ ack: b64(encodeCarryAck(ack)), ...(hud ? { hud: b64(hud) } : {}) });
   });
 }

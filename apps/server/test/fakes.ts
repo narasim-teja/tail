@@ -11,6 +11,7 @@ import { createLogger } from "@tail/log";
 import {
   type Batch,
   batchHash,
+  concat,
   consistencyProof,
   decodeBatchEnvelope,
   decodeSignedVerdict,
@@ -304,6 +305,10 @@ export class FakeReferee implements Referee {
   failTicks = 0;
   /** Throw a transport error on the next N enroll calls (the referee not answering). */
   failEnrolls = 0;
+  /** Refuse `start`, as the referee refuses a match id it started before. */
+  refuseStart = false;
+  /** Refuse the next N enroll calls, as the referee refuses an attestation it does not accept. */
+  refuseEnrolls = 0;
   /** Corrupt the next tick's reported log root. */
   lieAboutLog = false;
   /** Hand out a bad consistency proof with the next Checkpoint/End. */
@@ -393,6 +398,10 @@ export class FakeReferee implements Referee {
     return seal(this.boxPk, utf8(JSON.stringify({ match: toHex(m.matchId), hintId: id, asker })), FAKE_HINT);
   }
 
+  /** As the referee signs an enrolment receipt (enroll.ts receiptSignedBy). */
+  signReceipt(receipt: Uint8Array): Uint8Array {
+    return ed25519.sign(sha256(concat(utf8("tail/enroll-receipt/v1"), receipt)), this.sk);
+  }
   async pubkeys(): Promise<RefereeKeys> {
     this.calls.push("pubkeys");
     return { refereePk: this.pk, refereeBoxPk: this.boxPk, boxPkSig: new Uint8Array(64), vrfPk: this.pk };
@@ -404,17 +413,24 @@ export class FakeReferee implements Referee {
       this.failEnrolls--;
       throw new RefereeError("enroll", "request failed: The operation timed out.", false);
     }
+    if (this.refuseEnrolls > 0) {
+      this.refuseEnrolls--;
+      throw new RefereeError("enroll", "attestation refused: certificate expired", true);
+    }
+    const receipt = crypto.getRandomValues(new Uint8Array(8));
     return {
       callId: "call-enroll",
+      refereePk: this.pk,
       appAttestPk: i.appAttestPk,
-      receipt: new Uint8Array(8),
-      sig: new Uint8Array(64),
+      receipt,
+      sig: this.signReceipt(receipt),
       // As the referee: attested when it got an attestation to check.
       attested: i.attestation !== undefined,
     };
   }
   async start(i: StartInput): Promise<StartResult> {
     this.calls.push("start");
+    if (this.refuseStart) throw new RefereeError("start", "match already started", true);
     const players = sortAccounts(i.players);
     const m: FakeMatch = {
       matchId: i.matchId,
@@ -722,11 +738,12 @@ export function seedDevice(
   accountId: string,
   nearPk: Uint8Array,
   kind: "phone" | "ghost" = "phone",
-  /** False: enrolled here, not yet registered with the referee. */
-  withReferee = true,
+  /** The referee that registered the device; null: enrolled here, not with a referee yet. */
+  referee: FakeReferee | null = null,
   /** The device's X25519 box key; the referee seals keys, HUDs and Handler lines to it. */
   boxPk: Uint8Array = x25519.getPublicKey(x25519.utils.randomSecretKey()),
 ) {
+  const receipt = crypto.getRandomValues(new Uint8Array(8));
   store.putDevice({
     account_id: accountId,
     kind,
@@ -734,12 +751,13 @@ export function seedDevice(
     app_attest_pk: crypto.getRandomValues(new Uint8Array(65)),
     player_box_pk: boxPk,
     near_pk: nearPk,
-    receipt: withReferee ? new Uint8Array(1) : null,
-    receipt_sig: withReferee ? new Uint8Array(64) : null,
-    enroll_call_id: withReferee ? "c" : null,
+    receipt: referee ? receipt : null,
+    receipt_sig: referee ? referee.signReceipt(receipt) : null,
+    enroll_call_id: referee ? "c" : null,
     created_ms: 0,
     attestation: null,
     challenge: null,
-    attested: withReferee ? (kind === "phone" ? 1 : 0) : null,
+    attested: referee ? (kind === "phone" ? 1 : 0) : null,
+    referee_pk: referee ? referee.pk : null,
   });
 }

@@ -184,6 +184,16 @@ describe("mesh carry", () => {
     expect((await carry(env, envelope(env, m.b, "/carry", {}))).status).toBe(400);
     expect(env.store.queuedCount(m.id, 1)).toBe(0);
   });
+
+  test("a carry hidden behind dot segments or escapes is refused; a plain path still goes through", async () => {
+    const { env, m } = await runningForAWhile();
+    for (const path of ["/batch/../carry", "/./carry", "/%63arry", "/x/..%2Fcarry", "/\\carry"]) {
+      expect((await carry(env, envelope(env, m.b, path, {}))).status).toBe(400);
+    }
+    const ok = await carry(env, envelope(env, m.b, "/batch", { match_id: m.id, sealed: sealed(1) }));
+    expect(ok.status).toBe(200);
+    expect(env.store.queuedCount(m.id, 1)).toBe(1);
+  });
 });
 
 describe("the Handler's line", () => {

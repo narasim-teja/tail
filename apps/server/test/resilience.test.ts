@@ -89,8 +89,11 @@ describe("the device table", () => {
       attestation: new Uint8Array([0xa1]),
       challenge: new Uint8Array(32).fill(7),
       attested: null,
+      referee_pk: null,
     });
-    expect(store.devicesAwaitingReferee()).toEqual(["bo.r.testnet"]);
+    expect(store.device("bo.r.testnet")?.attestation).toEqual(new Uint8Array([0xa1]));
+    // Which referee signed the old receipt is not known yet: Enrolment checks its signature.
+    expect(store.device("ana.r.testnet")?.referee_pk).toBeNull();
     store.close();
   });
 

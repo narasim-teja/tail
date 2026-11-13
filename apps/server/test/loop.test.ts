@@ -19,7 +19,8 @@ describe("boot", () => {
     expect(store.claimPhase(l.id, "lobby", "starting")).toBe(true);
     first.matches.stop();
 
-    const next = setup({ store, chain });
+    // The same referee behind the restarted relay: it still holds every device.
+    const next = setup({ store, chain, referee: first.referee });
     next.matches.resume();
     const m = store.match(l.id);
     expect(m?.phase).toBe("lobby");

@@ -66,7 +66,8 @@ const CRATE = join(import.meta.dir, "../../../crates/referee-wasi");
 const BIN = join(CRATE, "target/release/tail-referee");
 const PARENT = "relay.testnet";
 const CONTRACT = "tail.relay.testnet";
-const APP_ID = "TEAM.app";
+/** The App ID the referee pins in its code (crates/referee-wasi cmd/mod.rs `APP_ID`); the relay names the same. */
+const APP_ID = "LKABS9RZAC.com.lkabs9rzac.tail";
 const STAKE = 1_000_000n;
 const DURATION_MS = 120_000;
 const ZONE = { lat_e7: 423_550_000, lon_e7: -710_656_000, radius_m: 1500 };
@@ -132,14 +133,12 @@ describe("a match judged by the real (local) referee", () => {
       refereeHealth: () => referee.health(),
       testnet: true,
       allowGhosts: true,
-      refereeRetryMs: [],
       now: () => clock.ms,
     });
     // No timer runs the match: the test steps it, one tick per simulated TICK_MS.
     relay.matches.stop();
     const server = Bun.serve({ port: 0, fetch: relay.app.fetch, websocket: relay.websocket });
     cleanup.push(() => {
-      relay.enrolment.stop();
       server.stop(true);
     });
     const url = `http://localhost:${server.port}`;
@@ -175,7 +174,9 @@ describe("a match judged by the real (local) referee", () => {
       `/matches/${id}/start`,
       {},
     );
-    for (const g of ghosts) g.setKeys(started.keys.find((k) => k.account_id === g.accountId)?.sealed ?? "");
+    // Start hands the host only its own keys; every other player fetches its own.
+    expect(started.keys.map((k) => k.account_id)).toEqual([host.accountId]);
+    for (const g of ghosts) await g.fetchKeys(id);
     for (const g of ghosts) await g.connectHud(id);
     // The referee registered every device before Start, as unattested (no Apple attestation).
     expect(ghosts.map((g) => store.device(g.accountId)?.attested)).toEqual([0, 0, 0]);
@@ -364,11 +365,18 @@ describe("a match judged by the real (local) referee", () => {
     // The hint's fact reached the asker's HUD too.
     expect(hunter.huds.some((h) => h.hintFact)).toBe(true);
 
-    // The Handler: a template line (no network), sealed and signed to the asker alone.
+    // The Handler: a template line (no network, so no model signature), sealed and signed to the
+    // asker alone. The answer says nothing else: not the line, not where it came from or why.
     const voiced = answers.filter((a) => a.cmd === "voice").map((a) => a.result);
     expect(voiced).toHaveLength(1);
-    expect(voiced[0]).toMatchObject({ source: "template", signed_text: null, player: index(hunter) });
-    expect(String(voiced[0]?.["fallback_reason"])).toContain("no network");
+    expect(Object.keys(voiced[0] ?? {}).sort()).toEqual([
+      "hint_id",
+      "player",
+      "receipt",
+      "sealed",
+      "signed_text",
+    ]);
+    expect(voiced[0]).toMatchObject({ signed_text: null, player: index(hunter) });
     expect(hunter.handlerLines).toEqual(["They're within 150 metres. Look sharp."]);
     expect([...target.handlerLines, ...bystander.handlerLines]).toEqual([]);
 
