@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "tool": "scripts/verify-nearai.ts",
+  "checkedAt": "2026-11-13T06:07:43.862Z",
+  "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+  "nonce": "3cc745970be087ec7cb008c78bc4564ffe076178529d2d4a2f0740d4b6b7636d",
+  "report": "https://cloud-api.near.ai/v1/attestation/report?model=deepseek-ai%2FDeepSeek-V4.1-Flash-1017&signing_algo=ecdsa&nonce=3cc745970be087ec7cb008c78bc4564ffe076178529d2d4a2f0740d4b6b7636d",
+  "nodes": [
+    {
+      "signingAddress": "0xfe0071895500a9755c18044948ab4f4e1a7f337e",
+      "tdxStatus": "UpToDate",
+      "checks": [
+        {
+          "id": "tdx",
+          "ok": true,
+          "by": "local",
+          "detail": "Signed by an Intel TDX CPU; dcap-qvl checked the chain to Intel's root and the TCB level (UpToDate)."
+        },
+        {
+          "id": "address",
+          "ok": true,
+          "by": "local",
+          "detail": "The quote's report data names the key 0xfe0071895500a9755c18044948ab4f4e1a7f337e, so the key was made inside that TEE."
+        },
+        {
+          "id": "nonce",
+          "ok": true,
+          "by": "local",
+          "detail": "The quote's report data carries the fresh nonce 3cc745970be0…, so it was made for this check."
+        },
+        {
+          "id": "compose",
+          "ok": true,
+          "by": "local",
+          "detail": "The container manifest NEAR AI publishes hashes to the quote's mr_config_id (c53e254e8b70…)."
+        },
+        {
+          "id": "gpu",
+          "ok": true,
+          "by": "nvidia",
+          "detail": "NVIDIA's attestation service passed 8 GH100 GPUs in confidential mode (secure boot on, debug off, measurements matched) for the same nonce; its tokens verify against NVIDIA's published keys."
+        }
+      ]
+    }
+  ],
+  "source": null,
+  "receipts": null
+}

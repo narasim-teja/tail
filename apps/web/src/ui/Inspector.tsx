@@ -13,11 +13,12 @@ import { drawSource, eventLine, list, settlementProof, statusLabel, TEST_PLAYER 
 import type { Selection } from "../replay/state.ts";
 import { attestationUrl, isEnclave } from "../verify/attestation.ts";
 import { explorerTx } from "../verify/chain.ts";
-import { checkSalts, enrolments, type HandlerCheck, localOk, ringOk } from "../verify/checks.ts";
+import { checkSalts, enrolments, localOk, ringOk } from "../verify/checks.ts";
 import { tagEvidence } from "../verify/evidence.ts";
 import { PINS } from "../verify/pins.ts";
 import { matchProblem, summarize } from "../verify/report.ts";
 import { useReplay } from "./context.tsx";
+import { HandlerVerified } from "./HandlerVerified.tsx";
 import { GameIcon, Mark } from "./icons.tsx";
 import { type Check, overall } from "./marks.ts";
 import { ContactProof, EvidenceContacts, EvidenceLines, HistoryLines, PresenceMaker } from "./Proofs.tsx";
@@ -303,7 +304,6 @@ function EventBody({ index }: { index: number }) {
                   The Handler's line, word for word
                 </ProofLine>
               )}
-              <ModelSignatureLine check={ev.handler.signature} />
             </>
           )}
           {ev.kind === "forfeit" && <QuietLine ev={ev} />}
@@ -324,6 +324,7 @@ function EventBody({ index }: { index: number }) {
           <SignedAndSettled index={index} />
         </ul>
       </Section>
+      {ev.kind === "hint" && ev.handler && <HandlerVerified check={ev.handler.signature} />}
       {ev.kind === "tag" && decoded.version === 2 && <EvidenceContacts ev={ev} />}
 
       {(ev.kind === "tag" || ev.kind === "forfeit" || ev.kind === "hint") && (
@@ -393,28 +394,6 @@ function HeardLine({ ev }: { ev: MatchEvent }) {
       }
     >
       The referee logged {r.windows} contact window{r.windows === 1 ? "" : "s"}
-    </ProofLine>
-  );
-}
-
-/** The NEAR AI signature on the Handler's chat, recovered in the browser (see HandlerCheck). */
-function ModelSignatureLine({ check }: { check: HandlerCheck | null }) {
-  if (!check) return null;
-  const s = check.signature;
-  return (
-    <ProofLine
-      check={s === "signed" ? "pass" : s === "bad" ? "fail" : "info"}
-      detail={
-        s === "signed"
-          ? `The key ${short(check.signer ?? "", 6)} signed hashes of this chat's request and response for ${check.model}. That this key lives in NEAR AI's sealed hardware is shown by NEAR AI's attestation report, which this page doesn't fetch, and the response hash isn't matched to the quote here.`
-          : s === "bad"
-            ? "The signature in the log doesn't come from the address logged with it."
-            : s === "unsigned"
-              ? "No model signature was logged for this line (a template line, or the lookup failed)."
-              : "This replay doesn't carry the text the model signed, so the signature wasn't checked."
-      }
-    >
-      {s === "signed" ? "The model's chat is signed" : "The model's signature"}
     </ProofLine>
   );
 }
