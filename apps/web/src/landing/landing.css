@@ -128,9 +128,7 @@
 .l-figure,
 .l-hint-price,
 .l-demand-num,
-.l-strip-no,
 .l-row-date,
-.l-dossier-counts b,
 .l-page td {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1;
@@ -279,6 +277,11 @@
 .l-nav a:active {
   background: var(--g-sandHover);
 }
+.l-nav .l-nav-icon {
+  justify-content: center;
+  min-width: 44px;
+  padding: 0;
+}
 .l-nav a[aria-current="page"] {
   text-decoration: underline;
   text-decoration-thickness: 2px;
@@ -319,7 +322,7 @@
 }
 .l-hero-line {
   margin-top: var(--xl);
-  max-width: 30rem;
+  max-width: 34rem;
   font-size: clamp(1.0625rem, 1rem + 0.3vw, 1.25rem);
   line-height: 1.5;
   text-wrap: pretty;
@@ -687,6 +690,66 @@
 .l-beats {
   background: linear-gradient(in oklch, var(--g-day), var(--g-noon));
 }
+
+/* The rules in one breath: four numbered beats on ruled lines, before the instruments. */
+.l-rundown {
+  max-width: calc(var(--max) + 2 * var(--gutter));
+  margin: 0 auto;
+  padding: var(--x3) var(--gutter) 0;
+}
+.l-rundown .l-lede {
+  margin-top: var(--s);
+}
+.l-rundown-list {
+  margin-top: var(--xxl);
+  display: grid;
+  gap: var(--xl);
+  counter-reset: beat;
+}
+@media (min-width: 720px) {
+  .l-rundown-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--xxl) var(--x3);
+  }
+}
+@media (min-width: 1100px) {
+  .l-rundown-list {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+.l-rundown-step {
+  counter-increment: beat;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-content: start;
+  gap: var(--s) var(--m);
+  padding-top: var(--l);
+  border-top: 2px solid var(--t-ink);
+  font-size: 1.0625rem;
+  line-height: 1.45;
+}
+.l-rundown-step p {
+  grid-column: 1 / -1;
+  max-width: 34ch;
+  color: var(--t-inkSoft);
+  text-wrap: pretty;
+}
+.l-rundown-icon {
+  display: inline-flex;
+  color: var(--t-ink);
+}
+.l-rundown-title {
+  align-self: center;
+  font-size: 1.25rem;
+  line-height: 1.2;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.l-rundown-title::before {
+  content: counter(beat) ". ";
+  color: var(--t-inkSoft);
+  font-variant-numeric: tabular-nums;
+}
 /* Lock and heat: the same number from the hunter's side and from the target's. */
 .l-fold-pair {
   align-items: start;
@@ -910,7 +973,7 @@
   font-weight: 800;
 }
 
-/* ── How it's checked: one strip ───────────────────────────────────────────────── */
+/* ── Why a tag can't be faked: eight reasons on ruled lines ─────────────────────── */
 
 .l-proof {
   background: linear-gradient(in oklch, var(--g-noon), var(--g-evening));
@@ -919,53 +982,63 @@
 .l-proof:focus {
   outline: none;
 }
-.l-proof > * {
+.l-proof-in {
   max-width: var(--max);
-  margin-left: auto;
-  margin-right: auto;
+  margin: 0 auto;
 }
-.l-strip {
+.l-proof .l-lede {
+  margin-top: var(--m);
+}
+.l-reasons {
   margin-top: var(--xxl);
   display: grid;
-  gap: var(--l);
-  counter-reset: none;
+  gap: var(--xl);
+}
+@media (min-width: 720px) {
+  .l-reasons {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--xxl) var(--x3);
+  }
 }
 @media (min-width: 960px) {
   .l-proof {
     padding-top: var(--x5);
     padding-bottom: var(--x5);
   }
-  .l-strip {
+}
+@media (min-width: 1200px) {
+  .l-reasons {
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: var(--xxl);
+    gap: var(--x3) var(--xxl);
   }
 }
-.l-strip-step {
+.l-reason {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr);
-  gap: var(--m);
-  align-items: start;
-  font-size: 1.0625rem;
-  line-height: 1.45;
-  font-weight: 500;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-content: start;
+  gap: var(--s) var(--m);
+  padding-top: var(--l);
+  border-top: 2px solid var(--t-ink);
+  font-size: 1rem;
+  line-height: 1.5;
 }
-@media (min-width: 960px) {
-  .l-strip-step {
-    grid-template-columns: minmax(0, 1fr);
-    padding-top: var(--l);
-    border-top: 2px solid var(--t-ink);
-  }
+.l-reason-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--t-ink);
 }
-.l-strip-no {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--t-ink);
-  color: var(--g-day);
-  font-size: 0.9375rem;
-  font-weight: 700;
+.l-reason-title {
+  align-self: center;
+  font-size: 1.1875rem;
+  line-height: 1.25;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.l-reason p {
+  grid-column: 1 / -1;
+  color: var(--t-inkSoft);
+  text-wrap: pretty;
 }
 .l-proof-foot {
   margin-top: var(--x3);
@@ -1132,11 +1205,26 @@
     padding: var(--x5) max(var(--gutter), calc((100vw - var(--max)) / 2));
   }
 }
+.l-dossier-figure {
+  display: grid;
+  gap: var(--m);
+  justify-items: start;
+}
 .l-dossier-card {
   display: block;
   width: min(100%, 360px);
   height: auto;
+  aspect-ratio: 4 / 5;
   border-radius: var(--r-m);
+}
+.l-dossier-blank {
+  background: var(--g-dusk);
+}
+.l-dossier-caption {
+  max-width: 360px;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  color: var(--t-duskSoft);
 }
 .l-dossier-words {
   display: grid;
@@ -1146,22 +1234,27 @@
 .l-dossier .l-lede {
   color: var(--t-duskSoft);
 }
+.l-dossier .l-lede:first-of-type {
+  color: var(--t-duskInk);
+}
 .l-dossier .l-link {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
 }
-.l-dossier-counts {
+.l-dossier-key {
   display: flex;
-  gap: var(--xxl);
-  color: var(--t-duskSoft);
-}
-.l-dossier-counts b {
-  display: block;
-  font-size: 2.5rem;
-  line-height: 1.1;
+  flex-wrap: wrap;
+  gap: var(--s) var(--xl);
+  margin-top: var(--s);
+  font-size: 0.9375rem;
+  font-weight: 600;
   color: var(--t-duskInk);
-  font-weight: 800;
+}
+.l-dossier-key li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--xs);
 }
 
 /* ── Footer ─────────────────────────────────────────────────────────────────────── */
@@ -1176,6 +1269,26 @@
 .l-foot-in {
   max-width: var(--max);
   margin: 0 auto;
+  display: grid;
+  gap: var(--xl);
+}
+.l-foot-built {
+  display: grid;
+  gap: var(--s);
+  padding-bottom: var(--xl);
+  border-bottom: 1px solid var(--line-dusk);
+}
+.l-foot-label {
+  color: var(--t-duskSoft);
+}
+.l-foot-tech {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--xs);
+  margin-left: calc(-1 * var(--m));
+  font-weight: 600;
+}
+.l-foot-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1204,6 +1317,7 @@
 .l-foot-link {
   display: inline-flex;
   align-items: center;
+  gap: var(--s);
   min-height: 44px;
   padding: 0 var(--m);
   border-radius: var(--r-s);

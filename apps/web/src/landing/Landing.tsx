@@ -71,7 +71,7 @@ export function Landing({ data }: { data: LandingData }) {
         <ProofStrip />
         <div className="l-sunset" aria-hidden="true" />
         <Matches index={data.index} demos={data.demos} />
-        {config.dossierAccount && <DossierSection account={config.dossierAccount} />}
+        <DossierSection account={config.dossierAccount} />
       </main>
       <SiteFooter />
     </div>

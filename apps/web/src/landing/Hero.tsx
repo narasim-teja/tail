@@ -34,18 +34,19 @@ export function Hero({
     <section className="l-hero" aria-labelledby="hero-title">
       <div className="l-hero-words">
         <h1 id="hero-title" className="l-hero-title">
-          Every location game gets spoofed. <span className="l-hero-b">This one comes with&nbsp;proof.</span>
+          Tag, in a real park. <span className="l-hero-b">Every tag&nbsp;proven.</span>
         </h1>
         <p className="l-hero-line">
-          Tag for 3 to 12 friends in a park. A tag counts only when two iPhones heard each other, and NEAR
-          checks the whole match before anyone is paid.
+          Think Among Us, on foot. You get one secret target, and someone secretly has you. Stay close until
+          your lock fills, then strike to take their stake. A tag counts only when both phones heard each
+          other over Bluetooth, and NEAR re-checks the whole match before anyone is paid.
         </p>
         <div className="l-actions">
           <a className="l-button" href={replayHref}>
             {featured ? "Watch a real match" : "Watch the demo match"}
           </a>
           <a className="l-button l-button-sand" href="#proof">
-            How it's checked
+            Why it can't be faked
           </a>
         </div>
       </div>

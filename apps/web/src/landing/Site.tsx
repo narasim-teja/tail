@@ -2,7 +2,9 @@
 
 import { markSvg } from "@tail/brand";
 import { config } from "./config.ts";
+import { Logo } from "./logos.tsx";
 import { siteOf } from "./site.ts";
+import { TECH } from "./tech.ts";
 
 const SITE = siteOf(import.meta.env.VITE_SITE_URL);
 const base = import.meta.env.BASE_URL;
@@ -18,15 +20,6 @@ export function Mark({ size = 28 }: { size?: number }) {
   );
 }
 
-/** The site's three ways on: the matches, the docs, the source. */
-function links(current: "home" | "docs") {
-  return [
-    { text: "Matches", href: `${base}#matches` },
-    { text: "Docs", href: config.docsUrl, current: current === "docs" },
-    { text: "GitHub", href: config.repoUrl, external: true },
-  ];
-}
-
 export function SiteTop({ current }: { current: "home" | "docs" }) {
   return (
     <header className="l-top">
@@ -35,16 +28,13 @@ export function SiteTop({ current }: { current: "home" | "docs" }) {
         <span className="l-wordmark">TAIL</span>
       </a>
       <nav aria-label="Site" className="l-nav">
-        {links(current).map((l) => (
-          <a
-            key={l.text}
-            href={l.href}
-            {...(l.current ? { "aria-current": "page" as const } : {})}
-            {...(l.external ? { rel: "noopener" } : {})}
-          >
-            {l.text}
-          </a>
-        ))}
+        <a href={`${base}#matches`}>Matches</a>
+        <a href={config.docsUrl} {...(current === "docs" ? { "aria-current": "page" as const } : {})}>
+          Docs
+        </a>
+        <a className="l-nav-icon" href={config.repoUrl} rel="noopener" aria-label="Source on GitHub">
+          <Logo name="github" size={22} />
+        </a>
       </nav>
     </header>
   );
@@ -54,28 +44,44 @@ export function SiteFooter() {
   return (
     <footer className="l-foot">
       <div className="l-foot-in">
-        <a className="l-foot-brand" href={base}>
-          <Mark size={22} />
-          <span className="l-wordmark">TAIL</span>
-          <span className="l-foot-site">{SITE.host}</span>
-        </a>
-        <ul className="l-foot-links">
-          <li>
-            <a className="l-foot-link" href={config.repoUrl} rel="noopener">
-              GitHub
-            </a>
-          </li>
-          <li>
-            <a className="l-foot-link" href={config.docsUrl}>
-              Docs
-            </a>
-          </li>
-          <li>
-            <a className="l-foot-link" href={`${base}#matches`}>
-              Watch a match
-            </a>
-          </li>
-        </ul>
+        <div className="l-foot-built">
+          <p className="l-eyebrow l-foot-label">Built on</p>
+          <ul className="l-foot-tech">
+            {TECH.map((t) => (
+              <li key={t.name}>
+                <a className="l-foot-link" href={t.href} rel="noopener">
+                  <Logo name={t.logo} size={18} />
+                  {t.name}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="l-foot-row">
+          <a className="l-foot-brand" href={base}>
+            <Mark size={22} />
+            <span className="l-wordmark">TAIL</span>
+            <span className="l-foot-site">{SITE.host}</span>
+          </a>
+          <ul className="l-foot-links">
+            <li>
+              <a className="l-foot-link" href={`${base}#matches`}>
+                Watch a match
+              </a>
+            </li>
+            <li>
+              <a className="l-foot-link" href={config.docsUrl}>
+                Docs
+              </a>
+            </li>
+            <li>
+              <a className="l-foot-link" href={config.repoUrl} rel="noopener">
+                <Logo name="github" size={18} />
+                GitHub
+              </a>
+            </li>
+          </ul>
+        </div>
       </div>
     </footer>
   );

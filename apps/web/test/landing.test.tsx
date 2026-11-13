@@ -26,7 +26,7 @@ import { configOf, DEFAULT_REPO_URL, repoFile } from "../src/landing/config.ts";
 import { readingAt, stillTime } from "../src/landing/HeroMap.tsx";
 import { onMap, parseMap } from "../src/landing/map.ts";
 import { rowState } from "../src/landing/near.ts";
-import { ProofStrip, STANDING } from "../src/landing/Proof.tsx";
+import { ProofStrip, REASONS, STANDING } from "../src/landing/Proof.tsx";
 import { contrast, PAIRS } from "../src/landing/palette.ts";
 import { STAKE, usdc } from "../src/landing/rules.ts";
 import { SiteFooter, SiteTop } from "../src/landing/Site.tsx";
@@ -192,9 +192,9 @@ describe("the site's links", () => {
     expect(plain(foot)).not.toContain("AGPL");
   });
 
-  test("the proof strip is four lines, says where things stand, and sends the rest to the docs", () => {
+  test("the proof section gives every reason, says where things stand, and sends the rest to the docs", () => {
     const strip = renderToStaticMarkup(<ProofStrip />);
-    expect(strip.match(/<li /g)?.length).toBe(4);
+    expect(strip.match(/<li /g)?.length).toBe(REASONS.length);
     expect(plain(strip)).toContain(STANDING);
     expect(strip).toContain('href="/docs#proof"');
     expect(strip).toContain('href="/docs#limits"');

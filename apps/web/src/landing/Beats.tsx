@@ -3,7 +3,8 @@
 // together), STRIKE (the lock-full takeover), and the Handler's hints with the real pricing rule.
 
 import { HINT_BPS, HINT_NAME, HintKind, LOCK_EPOCHS, priceReason } from "@tail/protocol";
-import { useState } from "react";
+import { Timer, VenetianMask } from "lucide-react";
+import { type ReactNode, useState } from "react";
 import { Eyebrow, GameIcon, HeatBar, LockArc, useClimb } from "./instruments.tsx";
 import {
   HINT_ICON,
@@ -16,19 +17,62 @@ import {
   usdc,
 } from "./rules.ts";
 
+/** The whole game in four lines: the rules in one breath, before the instruments show the middle. */
+const RUNDOWN: { icon: ReactNode; title: string; line: string }[] = [
+  {
+    icon: <GameIcon name="head" size={28} />,
+    title: "Everyone stakes",
+    line: `Say $${usdc(STAKE)} each. That money is your head.`,
+  },
+  {
+    icon: <VenetianMask size={28} strokeWidth={1.75} aria-hidden="true" />,
+    title: "You get a secret target",
+    line: "And someone secretly has you. Nobody sees the whole circle, so anyone could be your hunter.",
+  },
+  {
+    icon: <GameIcon name="strike" size={28} />,
+    title: "Close in and strike",
+    line: "Stay near your target until your lock fills, then strike. Their head and their target become yours.",
+  },
+  {
+    icon: <Timer size={28} strokeWidth={1.75} aria-hidden="true" />,
+    title: "Outlast the clock",
+    line: "When time runs out, everyone still standing keeps what is on their head. You can win without a tag.",
+  },
+];
+
+function Rundown() {
+  return (
+    <div className="l-rundown">
+      <h2 id="game" className="l-h2">
+        How a match goes
+      </h2>
+      <p className="l-lede">Three to twelve friends, one park, 30 to 60 minutes.</p>
+      <ol className="l-rundown-list">
+        {RUNDOWN.map((r) => (
+          <li key={r.title} className="l-rundown-step">
+            <span className="l-rundown-icon">{r.icon}</span>
+            <h3 className="l-rundown-title">{r.title}</h3>
+            <p>{r.line}</p>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 export function Beats({ reduced }: { reduced: boolean }) {
   return (
     <section className="l-beats" aria-labelledby="game">
-      <h2 id="game" className="l-visually-hidden">
-        The game
-      </h2>
+      <Rundown />
       <LockAndHeat reduced={reduced} />
       <Strike />
       <div className="l-fold l-fold-hints">
         <div className="l-fold-words">
           <h3 className="l-fold-title">Hints</h3>
           <p className="l-fold-line">
-            The Handler sells hints about your target, dearer the more anyone buys.
+            Stuck? The Handler sells hints about your target. You pay from your head, the money lands on your
+            target's, and prices climb the more anyone buys.
           </p>
         </div>
         <Hints />
@@ -81,7 +125,7 @@ function Strike() {
           Strike
         </h3>
         <p className="l-fold-line">
-          Full lock, strike while still close: their head is yours, and so is their target.
+          Full lock? Strike while you're still close. Their head is yours, and so is their target.
         </p>
       </div>
     </article>
