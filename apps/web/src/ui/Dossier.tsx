@@ -153,11 +153,17 @@ function Record({
           <p className="mt-2 max-w-[60ch] text-[0.9375rem] leading-relaxed text-text-2 text-pretty">
             A host can ask for a record when they open a match (<code className="text-text">requires</code>),
             and <code className="text-text">join_match</code> reads this dossier before it takes the stake.{" "}
-            {handle} gets into any match that asks for at most{" "}
-            <strong className="font-semibold text-text">
-              {view.matches} settled {view.matches === 1 ? "match" : "matches"}
-            </strong>{" "}
-            and <strong className="font-semibold text-text">{view.survived} survived</strong>.
+            {view.matches === 0 ? (
+              <>{handle} has no settled match yet, so only matches that ask for no record let them in.</>
+            ) : (
+              <>
+                {handle} gets into any match that asks for at most{" "}
+                <strong className="font-semibold text-text">
+                  {view.matches} settled {view.matches === 1 ? "match" : "matches"}
+                </strong>{" "}
+                and <strong className="font-semibold text-text">{view.survived} survived</strong>.
+              </>
+            )}
           </p>
 
           <h2 className="mt-10 text-[1.0625rem] font-semibold">Record</h2>
