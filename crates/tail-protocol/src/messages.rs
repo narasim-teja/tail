@@ -77,31 +77,41 @@ pub enum Verdict {
         start_ms: u64,
         end_ms: u64,
     },
+    /// `amount` leaves the asker's head for the match's hint pool. The verdict does not name
+    /// whom the hint was about: it is public during play, and naming the target would tell
+    /// everyone, the target included, who hunts whom. `End` reveals the targets.
     Hint {
         from: u16,
-        to: u16,
         amount: u128,
         hint_id: u32,
         /// `hint_kind`, so the contract can check `amount == hint_price(stake, hint)`.
         hint: u8,
     },
+    /// `credit` is what hints about `target` paid into the pool and nobody was credited yet; it
+    /// moves from the pool onto `target`'s head just before that head goes to `hunter`.
     Tag {
         hunter: u16,
         target: u16,
+        credit: u128,
     },
+    /// As `Tag`, with `player` as the one going out and `to` as the one taking the head.
     Forfeit {
         player: u16,
         to: u16,
+        credit: u128,
     },
     Checkpoint {
         log_size: u64,
         root: Hash,
     },
+    /// `hint_targets[k]` is the player the k-th Hint of the match was about, so the contract can
+    /// replay the whole match against the ring before any money is withdrawable.
     End {
         alpha: String,
         vrf_signature: [u8; 64],
         log_size: u64,
         root: Hash,
+        hint_targets: Vec<u16>,
     },
 }
 

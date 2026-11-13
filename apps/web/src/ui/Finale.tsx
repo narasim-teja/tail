@@ -1,7 +1,8 @@
 // The end of the film: who is left, and the final standings. Everyone in order (still standing
 // by head, then the rest by how long they lasted), what their head ended at, counted up from the
 // stake, what they won or lost, and how each one went out. Then the two things people do next:
-// watch it again, or see what was checked. Over the map, nothing boxed.
+// watch it again, or see what was checked. Over the map, nothing boxed. A match the contract's
+// replay refunds says so under the headline, and every head ends at the stake.
 
 import { RotateCcw } from "lucide-react";
 import type { CSSProperties } from "react";
@@ -10,7 +11,7 @@ import { Button } from "../components/ui/button.tsx";
 import { clock, money } from "../lib/format.ts";
 import { useStore } from "../lib/store.ts";
 import { type Match, snapshotAt } from "../model/match.ts";
-import { endLine } from "../replay/copy.ts";
+import { endLine, refundLine } from "../replay/copy.ts";
 import { useReplay } from "./context.tsx";
 import { GameIcon } from "./icons.tsx";
 import { useTween } from "./tween.ts";
@@ -56,6 +57,7 @@ export function Finale({ compact }: { compact: boolean }) {
   const { match, verify, seek, select, reduced } = useReplay();
   const decimals = useStore(verify, (s) => s.token.decimals);
   const rows = standings(match);
+  const refund = refundLine(match.settlement);
   // A short staggered reveal: the headline, each standing, then the actions.
   const enter = (i: number): { className: string; style?: CSSProperties } =>
     reduced
@@ -83,6 +85,14 @@ export function Finale({ compact }: { compact: boolean }) {
       >
         {endLine(match)}
       </h2>
+      {refund && (
+        <p
+          style={enter(0).style}
+          className={cn(enter(0).className, "over-map text-center text-[0.9375rem] text-balance text-text-2")}
+        >
+          {refund}
+        </p>
+      )}
       {/* Twelve players fit; past the room there is, the list scrolls rather than covering the map. */}
       <ol className={cn("flex flex-col overflow-y-auto", compact ? "max-h-[46dvh]" : "max-h-[52dvh]")}>
         {rows.map((r, i) => (

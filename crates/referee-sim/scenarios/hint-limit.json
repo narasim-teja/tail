@@ -1,0 +1,155 @@
+{
+  "name": "hint-limit",
+  "duration_s": 900,
+  "players": [
+    {
+      "name": "ana",
+      "path": [[0, 0, 0]]
+    },
+    {
+      "name": "ben",
+      "path": [[0, 40, 0]]
+    },
+    {
+      "name": "cal",
+      "path": [[0, 80, 0]]
+    },
+    {
+      "name": "dee",
+      "path": [[0, 120, 0]]
+    },
+    {
+      "name": "eli",
+      "path": [[0, 0, 40]]
+    },
+    {
+      "name": "fay",
+      "path": [[0, 40, 40]]
+    },
+    {
+      "name": "gus",
+      "path": [[0, 80, 40]]
+    },
+    {
+      "name": "hal",
+      "path": [[0, 120, 40]]
+    },
+    {
+      "name": "ivy",
+      "path": [[0, 0, 80]]
+    },
+    {
+      "name": "jon",
+      "path": [[0, 40, 80]]
+    },
+    {
+      "name": "kim",
+      "path": [[0, 80, 80]]
+    },
+    {
+      "name": "lou",
+      "path": [[0, 120, 80]]
+    }
+  ],
+  "events": [
+    {
+      "do": "hint",
+      "t": 20,
+      "player": "ana",
+      "kind": "near",
+      "every": 30,
+      "count": 21
+    },
+    {
+      "do": "hint",
+      "t": 20,
+      "player": "ben",
+      "kind": "near",
+      "every": 30,
+      "count": 21
+    },
+    {
+      "do": "hint",
+      "t": 20,
+      "player": "cal",
+      "kind": "near",
+      "every": 30,
+      "count": 21
+    },
+    {
+      "do": "hint",
+      "t": 20,
+      "player": "dee",
+      "kind": "near",
+      "every": 30,
+      "count": 21
+    },
+    {
+      "do": "hint",
+      "t": 20,
+      "player": "eli",
+      "kind": "near",
+      "every": 30,
+      "count": 21
+    },
+    {
+      "do": "hint",
+      "t": 20,
+      "player": "fay",
+      "kind": "near",
+      "every": 30,
+      "count": 21
+    },
+    {
+      "do": "hint",
+      "t": 20,
+      "player": "gus",
+      "kind": "near",
+      "every": 30,
+      "count": 21
+    },
+    {
+      "do": "hint",
+      "t": 20,
+      "player": "hal",
+      "kind": "near",
+      "every": 30,
+      "count": 21
+    },
+    {
+      "do": "hint",
+      "t": 20,
+      "player": "ivy",
+      "kind": "near",
+      "every": 30,
+      "count": 21
+    },
+    {
+      "do": "hint",
+      "t": 20,
+      "player": "jon",
+      "kind": "near",
+      "every": 30,
+      "count": 21
+    },
+    {
+      "do": "hint",
+      "t": 20,
+      "player": "kim",
+      "kind": "near",
+      "every": 30,
+      "count": 21
+    },
+    {
+      "do": "hint",
+      "t": 20,
+      "player": "lou",
+      "kind": "near",
+      "every": 30,
+      "count": 21
+    }
+  ],
+  "expect": {
+    "only_listed_refusals": false
+  }
+}

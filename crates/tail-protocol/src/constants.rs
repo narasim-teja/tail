@@ -25,6 +25,10 @@ pub const HINT_TREND_MS: u64 = 60_000;
 pub const CHECKPOINT_MS: u64 = 60_000;
 pub const REFEREE_TIMEOUT_MS: u64 = 900_000;
 pub const HINT_TEXT_MAX: usize = 140;
+/// Most hints one match may charge. The contract keeps one record per hint until `End` replays
+/// them, and pays for that storage when the match is created, so the count needs a bound: 20 per
+/// player at 12 players. The referee refuses the next one (`refuse_code::HINT_LIMIT`).
+pub const MAX_HINTS: usize = 240;
 
 pub mod hint_kind {
     pub const NEAR: u8 = 0;
@@ -102,6 +106,8 @@ pub mod refuse_code {
     pub const FUNDS: u8 = 9;
     /// Hint: no usable fix for the asker or the target.
     pub const NO_FIX: u8 = 10;
+    /// Hint: the match already charged `MAX_HINTS`.
+    pub const HINT_LIMIT: u8 = 11;
 }
 
 pub mod domain {

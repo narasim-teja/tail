@@ -298,12 +298,25 @@ describe("a match judged by the real (local) referee", () => {
     expect(kinds.filter((x) => x === "Hint" || x === "Tag")).toEqual(["Hint", "Tag"]);
     expect(kinds.filter((x) => x === "Checkpoint").length).toBeGreaterThanOrEqual(1);
     const hintV = vs.find((v) => v.body.kind === "Hint")?.body;
-    expect(hintV).toMatchObject({ from: index(hunter), to: index(target), amount: hintPrice(STAKE, 0) });
-    expect(vs.find((v) => v.body.kind === "Tag")?.body).toMatchObject({
+    // The Hint names only its asker: whom it was about comes out at End.
+    expect(hintV).toEqual({
+      kind: "Hint",
+      from: index(hunter),
+      amount: hintPrice(STAKE, 0),
+      hintId: 0,
+      hint: 0,
+    });
+    expect(vs.find((v) => v.body.kind === "Tag")?.body).toEqual({
+      kind: "Tag",
       hunter: index(hunter),
       target: index(target),
+      credit: hintPrice(STAKE, 0),
     });
-    // Settled as the contract settles: the hunter has its own head and the target's.
+    const endBody = vs.at(-1)?.body;
+    expect(endBody?.kind === "End" && endBody.hintTargets).toEqual([index(target)]);
+    // Settled as the contract settles once its replay holds: the hunter paid for the hint, the
+    // target was credited it just before its head went to the hunter.
+    expect(chain.settlement(id)).toEqual({ settledAs: "payout", violation: null });
     const paid = Object.fromEntries(m?.players.map((p) => [p.account_id, BigInt(p.paid)]) ?? []);
     expect(paid).toEqual({
       [hunter.accountId]: 2n * STAKE,

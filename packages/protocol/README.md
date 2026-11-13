@@ -51,23 +51,23 @@ enclave until `declassify` releases it with the log after End.
 
 ## Messages
 
-| Message          | Fields (borsh order)                                                                                                                                                                                                              |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Fix`            | `t_ms u64, lat_e7 i32, lon_e7 i32, acc_m u16, speed_cmps u16, flags u8`                                                                                                                                                           |
-| `Sighting`       | `epoch u32, token [u8;16], rssi_max i8, rssi_med i8, n u8`                                                                                                                                                                        |
-| `Action`         | `Hint { hint u8, nonce u32, text Option<String> }` · `Strike { nonce u32 }`                                                                                                                                                       |
-| `Batch`          | `match_id [u8;16], player u16, seq u32, prev [u8;32], t_ms u64, fixes, sightings, actions`                                                                                                                                        |
-| `BatchEnvelope`  | `batch, assertion Vec<u8>` (App Attest assertion)                                                                                                                                                                                 |
-| `Verdict`        | `Start`, `Hint { from, to, amount u128, hint_id u32, hint u8 }`, `Tag`, `Forfeit`, `Checkpoint`, `End`                                                                                                                            |
-| `SignedVerdict`  | `match_id, seq u32, prev [u8;32], call_id [u8;16], body Verdict, sig [u8;64]`                                                                                                                                                     |
-| `LogEntry`       | `Batch`, `Contact`, `Verdict`, `HintReceipt` (tags 0–3) · `Tick`, `Rejected`, `Evidence`, `Enrolled` (v2, tags 4–7)                                                                                                               |
-| `PresenceProof`  | `match_id, contract String, entry LogEntry, index u64, size u64, path Vec<[u8;32]>, accounts [String;2]`                                                                                                                          |
-| `PlayerKeys`     | `match_id, player, start_ms, end_ms, k_tag, k_player, target String`                                                                                                                                                              |
-| `Hud`            | `match_id, player u16, tick, epoch, lock, heat, head u128, status, target, leak?, hint_fact?, tagged_by?, next_seq u32, chain_tip [u8;32], dark_ms u32, tags u8, log_size u64, root [u8;32], rejected Option<(seq u32, code u8)>` |
-| `VoiceLine`      | `match_id, player u16, hint_id u32, text String`                                                                                                                                                                                  |
-| `SignedHud` etc. | `SignedHud { hud, sig }`, `SignedPlayerKeys { keys, sig }`, `SignedVoiceLine { line, sig }`                                                                                                                                       |
-| `CarryRequest`   | `account String, time_ms u64, method String, path String, body Vec<u8>, sig [u8;64]` (TypeScript only)                                                                                                                            |
-| `CarryAck`       | `status u16, received_ms u64, sig [u8;64]` (TypeScript only)                                                                                                                                                                      |
+| Message          | Fields (borsh order)                                                                                                                                                                                                                           |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Fix`            | `t_ms u64, lat_e7 i32, lon_e7 i32, acc_m u16, speed_cmps u16, flags u8`                                                                                                                                                                        |
+| `Sighting`       | `epoch u32, token [u8;16], rssi_max i8, rssi_med i8, n u8`                                                                                                                                                                                     |
+| `Action`         | `Hint { hint u8, nonce u32, text Option<String> }` · `Strike { nonce u32 }`                                                                                                                                                                    |
+| `Batch`          | `match_id [u8;16], player u16, seq u32, prev [u8;32], t_ms u64, fixes, sightings, actions`                                                                                                                                                     |
+| `BatchEnvelope`  | `batch, assertion Vec<u8>` (App Attest assertion)                                                                                                                                                                                              |
+| `Verdict`        | `Start`, `Hint { from u16, amount u128, hint_id u32, hint u8 }` (no target), `Tag { hunter, target, credit u128 }`, `Forfeit { player, to, credit u128 }`, `Checkpoint`, `End { alpha, vrf_signature, log_size, root, hint_targets Vec<u16> }` |
+| `SignedVerdict`  | `match_id, seq u32, prev [u8;32], call_id [u8;16], body Verdict, sig [u8;64]`                                                                                                                                                                  |
+| `LogEntry`       | `Batch`, `Contact`, `Verdict`, `HintReceipt` (tags 0–3) · `Tick`, `Rejected`, `Evidence`, `Enrolled` (v2, tags 4–7)                                                                                                                            |
+| `PresenceProof`  | `match_id, contract String, entry LogEntry, index u64, size u64, path Vec<[u8;32]>, accounts [String;2]`                                                                                                                                       |
+| `PlayerKeys`     | `match_id, player, start_ms, end_ms, k_tag, k_player, target String`                                                                                                                                                                           |
+| `Hud`            | `match_id, player u16, tick, epoch, lock, heat, head u128, status, target, leak?, hint_fact?, tagged_by?, next_seq u32, chain_tip [u8;32], dark_ms u32, tags u8, log_size u64, root [u8;32], rejected Option<(seq u32, code u8)>`              |
+| `VoiceLine`      | `match_id, player u16, hint_id u32, text String`                                                                                                                                                                                               |
+| `SignedHud` etc. | `SignedHud { hud, sig }`, `SignedPlayerKeys { keys, sig }`, `SignedVoiceLine { line, sig }`                                                                                                                                                    |
+| `CarryRequest`   | `account String, time_ms u64, method String, path String, body Vec<u8>, sig [u8;64]` (TypeScript only)                                                                                                                                         |
+| `CarryAck`       | `status u16, received_ms u64, sig [u8;64]` (TypeScript only)                                                                                                                                                                                   |
 
 The log entries:
 
@@ -101,7 +101,7 @@ took no action on a valid batch's Strike or Hint (the tick's `refused[].reason`)
 | 3 `PlayerOut`                | 9 `FixOrder`   | 3 `MatchOver`                | 8 `Cooldown`    |
 | 4 `Seq`                      | 10 `Teleport`  | 4 `Lock`                     | 9 `Funds`       |
 | 5 `Prev`                     | 11 `TimeOrder` | 5 `NoContact`                | 10 `NoFix`      |
-| 6 `Assertion`                | 12 `TooOld`    |                              |                 |
+| 6 `Assertion`                | 12 `TooOld`    |                              | 11 `HintLimit`  |
 
 ## Hashes and signatures
 
@@ -128,6 +128,12 @@ public attestation record and check which wasm hash actually ran.
 bytes for the first (seq 1). A referee that signed two different verdicts for the same seq
 cannot get both onto the chain, and anyone holding the stream can check it
 (`verdictChainBreak`).
+
+**Settlement replay.** `settle.ts` / `settle.rs` hold the one rule the contract runs at End
+(TECHNICAL 4.10): `replaySettlement(ring, events, hintTargets, pool)` replays every Hint, Tag
+and Forfeit against the ring (`ringOrder`, player indices) and End's `hintTargets`, and returns
+what each survivor is still owed, or the first broken rule (`SettleCheck`, stored by the
+contract as a borsh enum: append, never reorder). `MAX_HINTS` (240) bounds the hints per match.
 
 **Request auth.** The relay request digest names the account and the contract, so a signature
 cannot be replayed for another account that shares the key, or against another deployment.

@@ -11,6 +11,7 @@ import {
   type LogEntry,
   merkleLeaf,
   merkleVerify,
+  type SignedVerdict,
   sha256,
   signVerdict,
   toHex,
@@ -105,7 +106,7 @@ describe("the verdict chain", () => {
   test("a validly signed verdict whose prev skips its predecessor breaks the chain there", () => {
     const b = clone();
     const k = 5;
-    const v = good.verdicts[k]?.v;
+    const v = good.verdicts[k]?.v as SignedVerdict | undefined;
     if (!v) throw new Error("no verdict");
     const resigned = signVerdict({ ...v, prev: good.verdicts[k - 2]?.digest as Uint8Array }, REFEREE_SK);
     expect(ed25519.verify(resigned.sig, verdictDigest(resigned), good.refereePk)).toBe(true);

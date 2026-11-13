@@ -79,7 +79,12 @@ pub(crate) struct Player {
     /// target is assigned (start, or inheriting one), so contact a hunter had with a player
     /// before hunting them cannot fill the lock the moment they inherit them.
     pub lock_from: u32,
+    /// What the contract holds as this player's head: the stake, less hints paid, plus heads
+    /// taken. Hints about this player are not in it (see `hint_credit`).
     pub head: u128,
+    /// Hints about this player paid into the contract's hint pool and not yet credited: the
+    /// `credit` of the Tag or Forfeit that puts them out, or their extra payout at End.
+    pub hint_credit: u128,
     /// Latest accepted fix with `acc ≤ MAX_ACC_M`.
     pub last_fix: Option<StoredFix>,
     /// Time of the latest accepted fix of any accuracy (fixes must move forward).
@@ -145,6 +150,8 @@ pub struct State {
     pub(crate) log: Log,
     pub(crate) next_checkpoint_ms: u64,
     pub(crate) next_hint_id: u32,
+    /// Whom each hint charged so far was about, in hint order: `End.hint_targets`.
+    pub(crate) hint_targets: Vec<u16>,
     /// Hints still waiting for a voice receipt: `(hint_id, referee time issued)`.
     pub(crate) pending_receipts: Vec<(u32, u64)>,
     /// Strikes from the previous tick waiting for the target's data, in their action order.
@@ -228,8 +235,13 @@ impl State {
             })
             .collect()
     }
-    /// Sum of all heads. Constant from `Start` to `End`: hints and tags only move money.
+    /// Sum of all heads and the hint money not yet credited (the contract's hint pool). Constant
+    /// from `Start` to `End`: hints and tags only move money.
     pub fn total_heads(&self) -> u128 {
-        self.players.iter().map(|p| p.head).sum()
+        self.players.iter().map(|p| p.head + p.hint_credit).sum()
+    }
+    /// The contract's hint pool as the referee tracks it.
+    pub fn hint_pool(&self) -> u128 {
+        self.players.iter().map(|p| p.hint_credit).sum()
     }
 }

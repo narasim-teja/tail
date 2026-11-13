@@ -28,7 +28,7 @@ use tail_protocol::{
     hint_price, ring, Action, Batch, BatchEnvelope, CallId, Fix, GridCell, Hash, HintFact, Hud, LogEntry,
     PlayerKeys, Salt, Token, Verdict, VerdictPayload, CHECKPOINT_MS, CLOCK_SKEW_MS, DARK_FORFEIT_MS,
     DARK_LEAK_MS, EPOCH_MS, FIX_WINDOW_MS, GEO_SLACK_M, HINT_COOLDOWN_MS, HINT_NEAR_M, HINT_TEXT_MAX,
-    HINT_TREND_MS, LEAK_CELL_M, LOCK_EPOCHS, MAX_ACC_M, MAX_SPEED_MPS, MIN_SAMPLES, RSSI_MIN_DBM,
+    HINT_TREND_MS, LEAK_CELL_M, LOCK_EPOCHS, MAX_ACC_M, MAX_HINTS, MAX_SPEED_MPS, MIN_SAMPLES, RSSI_MIN_DBM,
     TELEPORT_MPS, VEHICLE_FREEZE_MS, VEHICLE_HOLD_MS, WINDOW_EPOCHS,
 };
 
@@ -207,6 +207,7 @@ fn start_match(
         log: Log::default(),
         next_checkpoint_ms: start_ms + CHECKPOINT_MS,
         next_hint_id: 0,
+        hint_targets: Vec::new(),
         pending_receipts: Vec::new(),
         deferred: Vec::new(),
         last_tick: None,
@@ -388,11 +389,16 @@ pub fn finish(
     let mut out = Out::new(call_id);
     let now = st.last_tick.map_or(st.start_ms, |(_, t)| t);
     st.log_receipts(&mut out, receipts, now);
+    // What the contract does once End's replay holds: each survivor gets the hints about them.
+    for p in st.players.iter_mut().filter(|p| p.alive()) {
+        p.head += std::mem::take(&mut p.hint_credit);
+    }
     let end = Verdict::End {
         alpha,
         vrf_signature: *vrf_signature,
         log_size: st.log.size(),
         root: st.log.root(),
+        hint_targets: st.hint_targets.clone(),
     };
     st.anchor(&mut out);
     st.verdict(&mut out, end);
@@ -1190,7 +1196,7 @@ impl State {
                 let e = self.epoch(t_ms).expect("a strike that stands has an epoch");
                 // Taken before `eliminate` moves the hunter's lock start to its next target.
                 let epochs = self.lock_epochs(h, t, e);
-                self.eliminate(t, h, cur);
+                let credit = self.eliminate(t, h, cur);
                 self.players[h as usize].tags = self.players[h as usize].tags.saturating_add(1);
                 self.append(
                     out,
@@ -1203,7 +1209,14 @@ impl State {
                         salt: self.next_salt(),
                     },
                 );
-                self.verdict(out, Verdict::Tag { hunter: h, target: t });
+                self.verdict(
+                    out,
+                    Verdict::Tag {
+                        hunter: h,
+                        target: t,
+                        credit,
+                    },
+                );
                 Ok(())
             }
             Err(Refuse::Lock { .. } | Refuse::NoContact) if may_defer && self.awaits_target(h, t_ms) => {
@@ -1219,16 +1232,19 @@ impl State {
         }
     }
 
-    /// `loser`'s head moves to `winner`, who inherits `loser`'s target. The lock on it counts
-    /// from the next epoch: contact the winner had with that player before now was not a hunt.
-    fn eliminate(&mut self, loser: u16, winner: u16, cur: u32) {
+    /// `loser` is credited the hints about them, then their head moves to `winner`, who inherits
+    /// `loser`'s target. The lock on it counts from the next epoch: contact the winner had with
+    /// that player before now was not a hunt. Returns the credit, which the verdict carries.
+    fn eliminate(&mut self, loser: u16, winner: u16, cur: u32) -> u128 {
         let (l, w) = (loser as usize, winner as usize);
-        let head = std::mem::take(&mut self.players[l].head);
+        let credit = std::mem::take(&mut self.players[l].hint_credit);
+        let head = std::mem::take(&mut self.players[l].head) + credit;
         self.players[w].head += head;
         self.players[l].taken_by = Some(winner);
         let next = self.players[l].target.take();
         self.players[w].target = next.filter(|&n| n != winner);
         self.players[w].lock_from = cur + 1;
+        credit
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1244,6 +1260,9 @@ impl State {
     ) -> Result<HintIssued, Refuse> {
         let t = self.live_target(p, t_ms)?;
         let price = hint_price(self.cfg.stake, kind).ok_or(Refuse::UnknownHint)?;
+        if self.hint_targets.len() >= MAX_HINTS {
+            return Err(Refuse::HintLimit);
+        }
         if text.as_ref().is_some_and(|s| s.chars().count() > HINT_TEXT_MAX) {
             return Err(Refuse::TextTooLong);
         }
@@ -1259,8 +1278,11 @@ impl State {
             return Err(Refuse::InsufficientHead { head, price });
         }
         let value = self.hint_value(p, t, kind, t_ms).ok_or(Refuse::NoFix)?;
+        // The price goes into the contract's hint pool, not onto t's head: the verdict is public,
+        // and a target whose head went up would learn it is hunted, and by whom.
         self.players[p as usize].head -= price;
-        self.players[t as usize].head += price;
+        self.players[t as usize].hint_credit += price;
+        self.hint_targets.push(t);
         self.players[p as usize].last_hint_ms = Some(now);
         let hint_id = self.next_hint_id;
         self.next_hint_id += 1;
@@ -1269,7 +1291,6 @@ impl State {
             out,
             Verdict::Hint {
                 from: p,
-                to: t,
                 amount: price,
                 hint_id,
                 hint: kind,
@@ -1351,12 +1372,13 @@ impl State {
                 let Some(to) = self.hunter_of(pi as u16) else {
                     continue;
                 };
-                self.eliminate(pi as u16, to, cur);
+                let credit = self.eliminate(pi as u16, to, cur);
                 self.verdict(
                     out,
                     Verdict::Forfeit {
                         player: pi as u16,
                         to,
+                        credit,
                     },
                 );
             }
@@ -1458,6 +1480,7 @@ impl Player {
             target,
             lock_from: 0,
             head: stake,
+            hint_credit: 0,
             last_fix: None,
             last_fix_t: None,
             last_batch_t: None,

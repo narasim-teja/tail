@@ -19,7 +19,7 @@ export function Header({ place, compact }: { place: string | null | undefined; c
   const decimals = useStore(verify, (s) => s.token.decimals);
   const sum = summarize(statuses);
   const history = useStore(verify, (s) => s.history);
-  const problem = matchProblem(binding, level, history);
+  const problem = matchProblem(binding, level, history, match.settlement);
   const line = summaryLine(sum, chain, problem, localDone);
   const status = overall(sum, chain, problem);
   const title = place === undefined ? null : (place ?? `Match ${match.id.slice(0, 6)}`);

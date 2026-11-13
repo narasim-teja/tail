@@ -46,7 +46,7 @@ Read every claim below with this in mind:
     │           log entries and hint facts sealed to itself
     │  voice: fact only ──▶ NEAR AI Cloud ──▶ line signed + sealed to the asker
     ▼  apply(verdicts, proofs), relay pays gas
- contract  contracts/tail ── ed25519_verify, seq + prev, consistency, ring at End, money
+ contract  contracts/tail ── ed25519_verify, seq + prev, consistency, replay at End, money
     │  views: get_match, get_roots, get_heads, get_verdict_head*, verify_inclusion*
     ▼  after End: declassify releases the log and K_m
  browser  apps/web ── re-checks the bundle against NEAR    (* after the upgrade)
@@ -193,6 +193,7 @@ Paths are relative to the repo root. "Referee" means `crates/referee-core` (the 
     match's pinned `vrf_sender`.
 
   `crates/tail-protocol/src/ring.rs` holds the shuffle.
+  The revealed ring is also what the End replay checks every tag and hint against (claim 7).
 - **Check.** `get_match` shows `ring_commit`, `alpha` and `vrf_signature`. The replay rebuilds
   the ring and checks the commitment and the VRF signature in the browser.
   `packages/protocol/vectors/ring.json` pins the bytes.
@@ -200,19 +201,51 @@ Paths are relative to the repo root. "Referee" means `crates/referee-core` (the 
   differ) and keep the ring it likes. With the local test referee, `vrf_pk` is a local key and
   the request id is a random UUID the relay's machine picks, so that machine can choose rings.
 
-### 7. Every tag followed the ring (after the upgrade)
+### 7. Every tag and hint followed the ring, and money waits for the check (after the upgrade)
 
-- **Mechanism.** The contract records each Tag and Forfeit (at most 11 per match). At End it
-  rebuilds the ring from `vrf_signature` and replays them in order. A Tag must be a hunter
-  taking its current target, and a Forfeit must pay the forfeiter's hunter. The winner then
-  hunts the loser's target. If any step fails, End is refused.
-- **Enforced.** `contracts/tail/src/lib.rs` (`check_ring`). The deployed contract does not have
-  it.
-- **Check.** `cd contracts/tail && cargo test`. The replay also checks that each tagged player
-  was the hunter's target at that point.
-- **Limit.** It proves who hunted whom, not that the proximity evidence was real. It runs only at
-  End. Money moves on each Tag as it lands, and a match whose End is refused settles by `abort`,
-  which pays out the current heads, so an off-ring Tag's transfer stands.
+Money only becomes withdrawable after the contract has replayed and checked the whole match.
+
+- **Mechanism.** During play the ring is secret, so the contract applies each money verdict as
+  it lands, inside the match only:
+  - `Hint { from, amount, hint_id, hint }` names only the asker. The amount must be the kind's
+    price (`HINT_BPS[kind] × stake / 10 000`). It leaves the asker's head for the match's hint
+    pool, onto nobody's head.
+  - `Tag { hunter, target, credit }` and `Forfeit { player, to, credit }` first move `credit`
+    from the pool onto the loser's head (at most what the pool holds), then the loser's whole
+    head to the winner. `credit` is what hints about the loser paid in and nobody was credited.
+  - At most `MAX_HINTS` (240) hints per match, so the record the contract keeps is bounded and
+    paid for at creation.
+
+  `End { …, hint_targets }` reveals the VRF signature and whom each hint was about, in hint
+  order. The contract rebuilds the ring and replays every Hint, Tag and Forfeit in seq order,
+  tracking each player's current target (`tail_protocol::settle::replay`):
+  - a Tag must be a hunter taking its current target;
+  - a Forfeit must pay the forfeiter's hunter, and the winner then hunts the loser's target;
+  - each hint's target must be its asker's target at that moment;
+  - each credit must equal the hints paid onto that player and not yet credited;
+  - at End each survivor is owed their pending hints, and the pool must come to exactly 0.
+
+  If every step holds, survivors get what they are owed and the match pays out. If one fails,
+  the End still lands but settles the match as a refund: every player gets their original stake
+  back, sponsors get theirs, `get_match` shows `settled_as: "refunded_rule_violation"` with the
+  first broken rule in `violation`, and the contract logs a `match_refunded` event. `abort` (the
+  referee went silent, or never sent End) refunds every original stake too, hint money with it.
+  So no Tag, Forfeit or hint transfer pays out unless the whole match checked.
+- **Enforced.** `contracts/tail/src/lib.rs` (`settle`, `refund_stakes`, `abort`),
+  `crates/tail-protocol/src/settle.rs` (the replay; twin `packages/protocol/src/settle.ts`). The
+  deployed contract does not have it.
+- **Check.** `cd contracts/tail && cargo test`: an off-ring Tag, a Tag of someone else's inherited
+  target, a Forfeit to the wrong player, a wrong hint target, a short credit, a wrong number of
+  hint targets and a corrupted pool are each refunded; an honest match pays out; abort pays
+  stakes; a random-operation test keeps `sum(heads) + hint_pool + pot` constant while running.
+  `referee-sim` applies every scenario's verdicts as the contract does and requires the replay
+  to pass and pay exactly the referee's heads. The web replay runs the same replay in the browser
+  and shows "Refunded: rule violation" when it fails.
+- **Limit.** It proves who hunted whom and whom each hint was about, not that the proximity
+  evidence was real. A referee that breaks the rules cannot take money with it, but it can still
+  force a refund. Checks that come before the replay (signature, `prev`, consistency proof, the
+  VRF reveal opening its commitment) refuse the End instead, and the match then settles by
+  `abort`, also as a refund.
 
 ### 8. The verdict history cannot fork (after the upgrade)
 
@@ -316,7 +349,7 @@ Paths are relative to the repo root. "Referee" means `crates/referee-core` (the 
   - each tick's refusals in the clear: player, seq and `RejectCode` for refused batches (for
     example `FixFlags` or `Teleport`), and player, strike or hint, and `RefuseCode` for refused
     actions (for example `Lock` or `NoContact`);
-  - who asked for a hint;
+  - who asked for a hint (the Hint verdict on NEAR says so too, but not about whom);
   - how many log entries each tick adds, from which it can work out how many new contacts the
     tick found (but not between whom);
   - with mesh carry, which account carried whose request.
@@ -375,7 +408,7 @@ account today, `tail-dev-a38d13.testnet`. That account is us.
 | Party                       | Trusted for                                                       | Not trusted for                                        | What bounds it                                                                                                                                                                                                                                                         |
 | --------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Phone (attested app)        | Honest sensor readings from a real device                         | Anything else                                          | App Attest (claims 1, 2). Each phone's report is checked against the other's (claim 4).                                                                                                                                                                                |
-| Relay (`apps/server`)       | Liveness: forwarding, ticking, paying gas                         | Secrets, positions, verdicts, money                    | Sealing (12), signed verdicts (8), the contract's checks. A stalled match refunds by `abort` after 15 min.                                                                                                                                                             |
+| Relay (`apps/server`)       | Liveness: forwarding, ticking, paying gas                         | Secrets, positions, verdicts, money                    | Sealing (12), signed verdicts (8), the contract's checks. A stalled match refunds every stake by `abort` after 15 min.                                                                                                                                                 |
 | Referee                     | The rules, the secrecy of the ring and the trails, honest entries | Money (the contract checks order, chain, ring, proofs) | Code identity through the per-call attestation record (14). With the local test referee pinned now: nothing but the machine's operator.                                                                                                                                |
 | Contract (`contracts/tail`) | Custody and settlement                                            | —                                                      | Public code and state. Its full-access key (ours) can redeploy it, and the owner key (the relay's account) can pin a different referee or VRF key for matches created afterwards. `get_match` shows each match's own keys, and the replay compares them with its pins. |
 | NEAR AI Cloud               | Flavour text                                                      | Facts, money                                           | The model sees one coarse fact (13). The signature shows who signed, not the hardware.                                                                                                                                                                                 |
@@ -387,17 +420,17 @@ account today, `tail-dev-a38d13.testnet`. That account is us.
 | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GPS spoofing app, simulator                                | The source flags refuse the batch. A modified app fails App Attest. Even with a fake position, a tag needs mutual radio contact.                                                                                                                      |
 | Relay enrols a software key to fake a player               | The v2 referee refuses a device without an Apple attestation, unless `ALLOW_UNATTESTED=1` (testnet), and then logs it as `attested: false` and the replay labels it. The relay owns the OutLayer project, so it can set that flag, but not hide it.   |
-| Relay forges a tag or a verdict                            | It cannot sign verdicts. With the local test referee, the relay's machine holds the verdict key, so it can.                                                                                                                                           |
+| Relay forges a tag or a verdict                            | It cannot sign verdicts. With the local test referee, the relay's machine holds the verdict key, so it can sign, but an off-ring Tag or a wrong hint target is refunded at End (claim 7, after the upgrade).                                          |
 | Relay drops batches                                        | It can prevent tags but not create them. The phone finds the gap in its receipts (claim 10). Sustained drops count as dark for the protected player.                                                                                                  |
 | Relay replays or forks the sealed state                    | The referee refuses a blob whose last seq is not the caller's `last_seq`. Two forks give two verdicts with one seq, and the contract takes one.                                                                                                       |
 | Referee rewrites logged history                            | Refused on-chain once a covering root is anchored (claim 9, after the upgrade). The replay catches it from the roots either way.                                                                                                                      |
 | Wormhole: an accomplice relays both phones' Bluetooth live | Not closed: there is no distance bounding. It needs a two-way relay within about 30 s (claim 3) and fixes within 40 m plus accuracies, so one side's GPS must also be spoofed on an attested phone. The `relayed-live-token` scenario shows the hole. |
 | Replaying a recorded token later                           | Refused after about one epoch (claim 3), and contact must be mutual.                                                                                                                                                                                  |
-| Reading NEAR during play                                   | Hint, Tag and Forfeit verdicts name both players by index, and `get_match` lists the players. Each such verdict reveals a hunter → target pair while the match runs. A target who reads the chain learns who bought a hint on them. Not fixed.        |
+| Reading NEAR during play                                   | A Hint names only its asker, so the chain does not say who hunts whom (after the upgrade). A Tag or Forfeit still names both players as it lands, and its credit, set against earlier hint amounts, can show who was hunting the loser before.        |
 | Relay traffic analysis                                     | It learns what claim 12 lists: timing, sizes, refusal codes, who asked a hint, the number of new contacts per tick, and who carried whose batch.                                                                                                      |
 | Target kills the app or turns on airplane mode             | Dark rules: the hunter gets a 100 m cell after 45 s, and 180 s of total dark time forfeits the head. Mesh carry (off by default) would reduce honest dark time.                                                                                       |
 | Riding a car or train                                      | The speed rule freezes contact.                                                                                                                                                                                                                       |
-| Referee or relay stalls                                    | `abort` after 15 min of silence, or 15 min past `end_ms`, refunds the current heads.                                                                                                                                                                  |
+| Referee or relay stalls                                    | `abort` after 15 min of silence, or 15 min past `end_ms`, refunds every original stake (after the upgrade; the deployed contract refunds the current heads).                                                                                          |
 | Operator swaps the referee code on OutLayer                | The key survives new versions, so a swap is caught after the fact by the attestation record (claim 14), not prevented. This is bounded by OutLayer's governance.                                                                                      |
 | Owner pins another referee key                             | Only for matches created afterwards. Each match keeps its key, and the replay names the referee by NEAR's key for that match. This is how the local test referee is pinned now.                                                                       |
 | Prompt injection against the Handler                       | The model sees one coarse fact and has no say over money.                                                                                                                                                                                             |

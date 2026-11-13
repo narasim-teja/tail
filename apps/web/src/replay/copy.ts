@@ -3,6 +3,7 @@
 import type { Match, MatchEvent } from "../model/match.ts";
 import { snapshotAt } from "../model/match.ts";
 import type { VerdictStatus } from "../verify/report.ts";
+import type { Settlement } from "../verify/settle.ts";
 import type { Signer } from "../verify/signer.ts";
 
 const name = (m: Match, i: number | undefined) =>
@@ -55,4 +56,53 @@ export function drawSource(s: Signer, endInEnclave: boolean): string {
   if (s === "enclave" && endInEnclave) return "the enclave's random source";
   if (s === "local" || s === "fixture") return "the test referee's random source";
   return "the referee's random source";
+}
+
+/** The principle behind every settlement line. */
+const CHECKED_FIRST =
+  "Money only becomes withdrawable after the contract has replayed and checked the whole match.";
+
+/** What the contract's End replay of the match concludes, as a proof line. */
+export function settlementProof(s: Settlement): {
+  check: "pass" | "fail" | "info";
+  title: string;
+  detail: string;
+} {
+  switch (s.kind) {
+    case "payout":
+      return {
+        check: "pass",
+        title: "Every rule held, so it pays out",
+        detail: `${CHECKED_FIRST} This page ran the same replay: every hint was about its asker's target, every tag and forfeit followed the hunting order, and every credit is the hint money paid onto that player.`,
+      };
+    case "refunded":
+      return {
+        check: "fail",
+        title: "Refunded: rule violation",
+        detail: `${CHECKED_FIRST} This page ran the same replay and found a broken rule (${s.text}), so every player gets their stake back and every sponsor their contribution.`,
+      };
+    case "not-run":
+      return {
+        check: "info",
+        title: "The settlement wasn't replayed",
+        detail:
+          s.why === "no-end"
+            ? "This replay has no end verdict, which names the hunting order and whom each hint was about, so the check the contract runs at the end can't be run here."
+            : "A verdict here isn't the referee's, so these aren't the verdicts the contract applied, and replaying them would say nothing about how it settled.",
+      };
+    case "v1":
+      return {
+        check: "info",
+        title: "No settlement replay (before protocol v2)",
+        detail:
+          "This match was recorded before protocol v2: each hint paid its target straight away and the contract didn't replay the match at the end, so there is nothing to re-run.",
+      };
+  }
+}
+
+/** The finale's line under the headline when the match was refunded, else null. */
+export function refundLine(s: Settlement): string | null {
+  return s.kind === "refunded"
+    ? `Refunded: rule violation. Replaying the whole match finds that ${s.text.replace(/^event \d+: /, "")}, so every player gets their stake back.`
+    : null;
 }

@@ -178,9 +178,11 @@ const bodies: Verdict[] = [
     startMs: 1_794_514_000_000n,
     endMs: 1_794_517_600_000n,
   },
-  { kind: "Hint", from: 0, to: 1, amount: 20_000n, hintId: 3, hint: HintKind.Near },
-  { kind: "Tag", hunter: 2, target: 0 },
-  { kind: "Forfeit", player: 1, to: 2 },
+  // Player 1 pays 20 000 into the pool for a hint about player 0; 0's head takes that credit
+  // just before it goes to 2; 1 then forfeits to 2 with nothing pending. End names hint 0's target.
+  { kind: "Hint", from: 1, amount: 20_000n, hintId: 3, hint: HintKind.Near },
+  { kind: "Tag", hunter: 2, target: 0, credit: 20_000n },
+  { kind: "Forfeit", player: 1, to: 2, credit: 0n },
   { kind: "Checkpoint", logSize: 1234n, root: seed("root") },
   {
     kind: "End",
@@ -188,6 +190,7 @@ const bodies: Verdict[] = [
     vrfSignature,
     logSize: 99_999n,
     root: seed("root2"),
+    hintTargets: [0],
   },
 ];
 let prev = new Uint8Array(32);

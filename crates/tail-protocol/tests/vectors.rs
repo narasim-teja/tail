@@ -159,8 +159,7 @@ fn verdicts_chain_digest_sign_and_verify_like_ts() {
     assert_eq!(
         hint.body,
         Verdict::Hint {
-            from: 0,
-            to: 1,
+            from: 1,
             amount: 20_000,
             hint_id: 3,
             hint: hint_kind::NEAR
@@ -168,7 +167,16 @@ fn verdicts_chain_digest_sign_and_verify_like_ts() {
     );
     assert_eq!(hint_price(1_000_000, hint_kind::NEAR), Some(20_000));
     let mut tag = SignedVerdict::try_from_slice(&bytes(&v["verdicts"][2]["signed"])).unwrap();
-    assert_eq!(tag.body, Verdict::Tag { hunter: 2, target: 0 });
+    assert_eq!(
+        tag.body,
+        Verdict::Tag {
+            hunter: 2,
+            target: 0,
+            credit: 20_000
+        }
+    );
+    let end = SignedVerdict::try_from_slice(&bytes(&v["verdicts"][5]["signed"])).unwrap();
+    assert!(matches!(end.body, Verdict::End { ref hint_targets, .. } if hint_targets == &[0]));
     tag.prev = [0; 32];
     assert!(!verify::signed_verdict(&tag, &pk.to_bytes()), "prev is signed");
 }

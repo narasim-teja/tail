@@ -4,6 +4,7 @@
 import type { Anchor, Binding, MatchLevel } from "./anchor.ts";
 import { type LocalVerdictCheck, localOk } from "./checks.ts";
 import type { ConsistencyCheck, VerdictChainCheck } from "./history.ts";
+import type { Settlement } from "./settle.ts";
 
 /**
  * verified: every check passed and NEAR holds the same root.
@@ -54,6 +55,7 @@ export function matchProblem(
   binding: Binding,
   level: MatchLevel | null,
   history: { verdictChain: VerdictChainCheck; consistency: ConsistencyCheck } | null = null,
+  settlement: Settlement | null = null,
 ): MatchProblem | null {
   if (!binding.ok) {
     if (binding.why === "contract")
@@ -101,6 +103,12 @@ export function matchProblem(
     return {
       line: "Payouts don't match NEAR",
       detail: "What NEAR paid out isn't what these verdicts add up to.",
+    };
+  // The contract working as designed, but the referee broke a rule: nobody won this match.
+  if (settlement?.kind === "refunded")
+    return {
+      line: "Refunded: rule violation",
+      detail: `Replaying the whole match the way the contract does finds a broken rule (${settlement.text}), so every player gets their stake back instead of a payout.`,
     };
   return null;
 }

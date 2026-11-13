@@ -128,6 +128,8 @@ function notFinishedLine(m: ChainMatch | null): string {
   if (m.phase === "running" && m.end_ms)
     return `It ends at ${timeOfDay(m.end_ms)}. The replay opens a minute or so after that, once the referee settles it.`;
   if (m.phase === "aborted")
-    return "This match was called off before it ended, so there's nothing to replay.";
+    return m.settled_as === "refunded_abort"
+      ? "This match was called off before it ended and every stake was refunded, so there's nothing to replay."
+      : "This match was called off before it ended, so there's nothing to replay.";
   return "It has just ended. The replay opens once the referee settles it, usually within a minute.";
 }

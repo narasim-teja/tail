@@ -178,8 +178,11 @@ describe("verdicts", () => {
 
   test("a verdict with any changed field no longer verifies", () => {
     const sv = chain[2] as (typeof chain)[0];
-    expect(sv.body).toEqual({ kind: "Tag", hunter: 2, target: 0 });
-    const swapped = { ...sv, body: { kind: "Tag" as const, hunter: 0, target: 2 } };
+    expect(sv.body).toEqual({ kind: "Tag", hunter: 2, target: 0, credit: 20_000n });
+    const swapped = { ...sv, body: { kind: "Tag" as const, hunter: 0, target: 2, credit: 20_000n } };
+    expect(verifySignedVerdict(swapped, pk)).toBe(false);
+    const recredited = { ...sv, body: { kind: "Tag" as const, hunter: 2, target: 0, credit: 0n } };
+    expect(verifySignedVerdict(recredited, pk)).toBe(false);
     expect(verifySignedVerdict(swapped, pk)).toBe(false);
     expect(verifySignedVerdict({ ...sv, seq: sv.seq + 1 }, pk)).toBe(false);
     expect(verifySignedVerdict({ ...sv, prev: new Uint8Array(32) }, pk)).toBe(false);
@@ -187,8 +190,13 @@ describe("verdicts", () => {
 
   test("a hint verdict carries its kind, and the price follows from it", () => {
     const hint = chain[1]?.body;
-    expect(hint).toEqual({ kind: "Hint", from: 0, to: 1, amount: 20_000n, hintId: 3, hint: HintKind.Near });
+    expect(hint).toEqual({ kind: "Hint", from: 1, amount: 20_000n, hintId: 3, hint: HintKind.Near });
     if (hint?.kind === "Hint") expect(hint.amount).toBe(hintPrice(1_000_000n, hint.hint as HintKind));
+  });
+
+  test("End reveals one target per hint, in order", () => {
+    const end = chain[5]?.body;
+    expect(end?.kind === "End" && end.hintTargets).toEqual([0]);
   });
 
   test("unknown verdict tags are rejected", () => {

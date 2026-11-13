@@ -139,10 +139,17 @@ deferred strikes go before the new tick's actions. The coin is secret until `End
 VRF signature; after that the replay can recompute it. An action by a player who is already out
 is refused with `PlayerOut`.
 
-**Hints (4.7).** `price = hint_price(stake, kind)`, moved from the asker's head to the target's.
-A hint is refused, and costs nothing, for: an unknown kind, text over 140 characters, a
-cooldown (`HINT_COOLDOWN_MS` on the referee clock `now_ms`), a head below the price, or no usable fix
-for the asker or the target. The fact comes from the latest usable fixes. NEAR: the distance
+**Hints (4.7).** `price = hint_price(stake, kind)`, moved from the asker's head into the
+contract's hint pool. The `Hint` verdict names only the asker (it is public during play); the
+referee keeps the target, adds the price to the target's `hint_credit` and appends the target to
+`hint_targets`. The `Tag` or `Forfeit` that puts a player out carries their `hint_credit` as its
+`credit` (it moves onto their head just before the head goes to the winner); at End each
+survivor's `hint_credit` joins their head, and `End.hint_targets` reveals every hint's target so
+the contract can replay the match (TECHNICAL 4.10). The HUD's `head` is the head the contract
+holds, so a target never sees hint money about them before then. A hint is refused, and costs
+nothing, for: an unknown kind, the match already at `MAX_HINTS` (240, `HintLimit`), text over 140
+characters, a cooldown (`HINT_COOLDOWN_MS` on the referee clock `now_ms`), a head below the
+price, or no usable fix for the asker or the target. The fact comes from the latest usable fixes. NEAR: the distance
 is at most `HINT_NEAR_M` (0/1). BEARING: 8-way direction from asker to target (0 = N, clockwise).
 TREND: the distance now against the distance between both players' fixes nearest `t − HINT_TREND_MS`
 (each within `FIX_WINDOW_MS`): 1 closer, 0 farther, 2 same (within `TREND_SAME_M`).
@@ -171,8 +178,9 @@ not held; it drains as the window slides.
 becomes `WON`. HUD v2 also carries `match_id`, `player`, `next_seq` and `chain_tip` (the hash
 of the last authenticated batch), cumulative `dark_ms`, `tags` (Tag verdicts this player won),
 and `log_size` / `root` of the log at the end of the tick. An out player's HUD carries `tagged_by`, the account that took their head: the
-hunter for a `Tag`, the receiver for a `Forfeit`. The sum of heads is constant from `Start` to `End`, and the simulator checks
-that after every tick.
+hunter for a `Tag`, the receiver for a `Forfeit`. The sum of heads and pending hint credit is constant from `Start` to `End`, and the simulator checks
+that after every tick. It also applies every verdict the way the contract does and requires the
+contract's End replay to pass and pay exactly the referee's final heads.
 
 ## Constants
 

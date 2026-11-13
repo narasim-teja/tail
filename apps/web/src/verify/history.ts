@@ -17,6 +17,7 @@ import {
   consistencyProofFromFrontier,
   equal,
   fromHex,
+  type SignedVerdict,
   verdictChainBreak,
   verifyConsistency,
 } from "@tail/protocol";
@@ -52,7 +53,8 @@ export function checkVerdictChain(d: DecodedBundle, chain: ChainState | null): V
   const firstBad = d.verdicts.findIndex((x) => !x.v || !x.digest);
   const decoded = d.verdicts
     .slice(0, firstBad < 0 ? undefined : firstBad)
-    .map((x) => x.v as NonNullable<typeof x.v>);
+    // A v2 bundle decodes only v2 verdicts (bundle.ts).
+    .map((x) => x.v as SignedVerdict);
   const brk = verdictChainBreak(decoded, d.refereePk);
   const breakAt = brk ?? (firstBad < 0 ? null : firstBad);
   const last = d.verdicts.at(-1);

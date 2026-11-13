@@ -9,8 +9,10 @@ import {
   initialsFor,
   lockAt,
   logClock,
+  type MatchEvent,
   positionAt,
   snapshotAt,
+  snapshotBefore,
 } from "../src/model/match.ts";
 import { decodeBundle } from "../src/verify/bundle.ts";
 import { checkBatches, checkHandler } from "../src/verify/checks.ts";
@@ -31,7 +33,14 @@ describe("the match model", () => {
     const lines = m.events
       .filter((e) => e.kind === "tag" || e.kind === "forfeit" || e.kind === "hint")
       .map((e) => `${e.kind}:${name(e.a)}>${name(e.b)}`);
-    expect(lines).toEqual(["hint:Eli>Ana", "tag:Ana>Bo", "forfeit:Cy>Ana", "hint:Eli>Ana", "tag:Eli>Ana"]);
+    expect(lines).toEqual([
+      "hint:Eli>Ana",
+      "tag:Ana>Bo",
+      "forfeit:Cy>Ana",
+      "hint:Eli>Ana",
+      "tag:Eli>Ana",
+      "hint:Eli>Dee",
+    ]);
     const ts = m.events.map((e) => e.t);
     expect([...ts].sort((a, b) => a - b)).toEqual(ts);
   });
@@ -45,8 +54,36 @@ describe("the match model", () => {
   test("moves heads like the contract: the stake is conserved, the winner ends with it", () => {
     const end = snapshotAt(m, m.durationMs);
     expect(end.heads.reduce((a, b) => a + b, 0n)).toBe(m.stake * BigInt(m.players.length));
-    expect(money(end.heads[m.players.findIndex((p) => p.name === "Eli")] ?? 0n, 6)).toBe("20.00");
+    // Eli paid 0.25 for a hint about Dee after taking Ana's head; End credits it to Dee.
+    expect(money(end.heads[m.players.findIndex((p) => p.name === "Eli")] ?? 0n, 6)).toBe("19.75");
+    expect(money(end.heads[m.players.findIndex((p) => p.name === "Dee")] ?? 0n, 6)).toBe("5.25");
     expect(end.alive.filter(Boolean).length).toBe(2);
+    expect(end.pool).toBe(0n);
+  });
+
+  test("a hint pays into the pool, the loser is credited first, End credits a survivor", () => {
+    const eli = m.players.findIndex((p) => p.name === "Eli");
+    const ana = m.players.findIndex((p) => p.name === "Ana");
+    const dee = m.players.findIndex((p) => p.name === "Dee");
+    const hints = m.events.filter((e) => e.kind === "hint");
+    const first = hints[0] as MatchEvent;
+    const before = snapshotBefore(m, first);
+    const after = snapshotAt(m, first.t);
+    // Only the asker's head moves; the money waits in the pool.
+    expect(after.heads[eli]).toBe((before.heads[eli] as bigint) - (first.amount as bigint));
+    expect(after.heads.filter((h, i) => h !== before.heads[i]).length).toBe(1);
+    expect(after.pool).toBe(first.amount as bigint);
+    // Eli's tag on Ana carries both hints about her as credit, and empties the pool of them.
+    const tag = m.events.find((e) => e.kind === "tag" && e.b === ana) as MatchEvent;
+    expect(tag.credit).toBe((hints[0]?.amount as bigint) + (hints[1]?.amount as bigint));
+    expect(snapshotAt(m, tag.t).pool).toBe(0n);
+    // The hint about Dee is still in the pool until End credits it to her.
+    const end = m.events.find((e) => e.kind === "end") as MatchEvent;
+    expect(snapshotBefore(m, end).pool).toBe(hints[2]?.amount as bigint);
+    expect(m.settlement).toEqual({
+      kind: "payout",
+      owed: m.players.map((_, i) => (i === dee ? (hints[2]?.amount as bigint) : 0n)),
+    });
   });
 
   test("every tag was preceded by a full lock from the log's contacts", () => {
@@ -63,7 +100,7 @@ describe("the match model", () => {
 
   test("a v1 replay quotes the Handler's verified line", () => {
     const hints = build(JSON.parse(JSON.stringify(fx.v1))).events.filter((e) => e.kind === "hint");
-    expect(hints.length).toBe(2);
+    expect(hints.length).toBe(3);
     expect(hints.every((h) => h.handler?.text && h.handler.verified === true)).toBe(true);
   });
 

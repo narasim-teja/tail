@@ -9,7 +9,7 @@ import { Button } from "../components/ui/button.tsx";
 import { clock, money, short } from "../lib/format.ts";
 import { useStore } from "../lib/store.ts";
 import { lockAt, type MatchEvent, snapshotAt, snapshotBefore, walked } from "../model/match.ts";
-import { drawSource, eventLine, list, statusLabel, TEST_PLAYER } from "../replay/copy.ts";
+import { drawSource, eventLine, list, settlementProof, statusLabel, TEST_PLAYER } from "../replay/copy.ts";
 import type { Selection } from "../replay/state.ts";
 import { attestationUrl, isEnclave } from "../verify/attestation.ts";
 import { explorerTx } from "../verify/chain.ts";
@@ -268,9 +268,7 @@ function EventBody({ index }: { index: number }) {
               The Handler's answer was sealed to {name(ev.a)}'s phone, so only {name(ev.a)} read it.
             </p>
           )}
-          <p className="numeral mt-5 text-[0.9375rem] text-text-2">
-            {name(ev.a)} paid {money(ev.amount ?? 0n, decimals)} USDC to {name(ev.b)}, the target.
-          </p>
+          <HintMoney ev={ev} decimals={decimals} v1={decoded.version === 1} />
         </>
       )}
       {ev.kind === "forfeit" && <ForfeitStory ev={ev} />}
@@ -321,21 +319,8 @@ function EventBody({ index }: { index: number }) {
               {ev.kind === "start" ? "The draw was sealed" : "The draw was fair"}
             </ProofLine>
           )}
-          {ev.kind === "end" && level && (
-            <ProofLine
-              check={level.payouts === null ? "info" : level.payouts ? "pass" : "fail"}
-              near
-              detail={
-                level.payouts === null
-                  ? "The match hasn't ended on NEAR, so nothing was paid out to compare."
-                  : level.payouts
-                    ? "What NEAR paid out is what these verdicts add up to."
-                    : "What NEAR paid out isn't what these verdicts add up to."
-              }
-            >
-              Payouts match NEAR
-            </ProofLine>
-          )}
+          {ev.kind === "end" && <SettlementLine />}
+          {ev.kind === "end" && level && <PayoutsLine payouts={level.payouts} />}
           <SignedAndSettled index={index} />
         </ul>
       </Section>
@@ -363,13 +348,15 @@ function TagStory({ ev }: { ev: MatchEvent }) {
   const before = snapshotBefore(match, ev);
   const h = ev.a ?? 0;
   const t = ev.b ?? 0;
-  const moved = before.heads[t] ?? 0n;
+  const credit = ev.credit ?? 0n;
+  const moved = (before.heads[t] ?? 0n) + credit;
   const next = after.target[h] ?? -1;
   return (
     <div className="mt-6 space-y-3 text-[0.9375rem] text-text-2">
       <p className="numeral">
-        <span className="text-text">{match.players[t]?.name}</span>’s head, {money(moved, decimals)} USDC,
-        went to <span className="text-text">{match.players[h]?.name}</span>, who now holds{" "}
+        <span className="text-text">{match.players[t]?.name}</span>’s head, {money(moved, decimals)} USDC
+        {credit > 0n && <CreditNote credit={credit} who={match.players[t]?.name} decimals={decimals} />}, went
+        to <span className="text-text">{match.players[h]?.name}</span>, who now holds{" "}
         <span className="font-semibold text-persimmon">{money(after.heads[h] ?? 0n, decimals)}</span>.
       </p>
       {next >= 0 && (
@@ -439,12 +426,92 @@ function ForfeitStory({ ev }: { ev: MatchEvent }) {
   const before = match.snapshots[match.snapshots.indexOf(after) - 1] ?? after;
   const who = match.players[ev.a ?? 0]?.name;
   const to = match.players[ev.b ?? 0]?.name;
+  const credit = ev.credit ?? 0n;
   return (
     <p className="numeral mt-6 text-[0.9375rem] text-text-2">
       {ev.leftZone ? `${who} was outside the zone` : `${who}'s phone stopped reporting`} for three minutes, so{" "}
-      {who} is out. Their head, {money(before.heads[ev.a ?? 0] ?? 0n, decimals)} USDC, went to {to}, who was
+      {who} is out. Their head, {money((before.heads[ev.a ?? 0] ?? 0n) + credit, decimals)} USDC
+      {credit > 0n && <CreditNote credit={credit} who={who} decimals={decimals} />}, went to {to}, who was
       hunting them.
     </p>
+  );
+}
+
+/** A loser's head includes the hint money paid onto them, credited from the pool as they go out. */
+function CreditNote({
+  credit,
+  who,
+  decimals,
+}: {
+  credit: bigint;
+  who: string | undefined;
+  decimals: number;
+}) {
+  return (
+    <>
+      {" "}
+      (with {money(credit, decimals)} from hints asked about {who})
+    </>
+  );
+}
+
+/**
+ * Where a hint's price went. v2: into the match's hint pool; the verdict didn't name whom the
+ * hint was about, End does, and the money goes onto that player's head when they go out or the
+ * match ends. v1: straight to the target the verdict named.
+ */
+function HintMoney({ ev, decimals, v1 }: { ev: MatchEvent; decimals: number; v1: boolean }) {
+  const { match } = useReplay();
+  const asker = match.players[ev.a ?? -1]?.name ?? "?";
+  const about = ev.b === undefined ? null : (match.players[ev.b]?.name ?? null);
+  const price = money(ev.amount ?? 0n, decimals);
+  if (v1)
+    return (
+      <p className="numeral mt-5 text-[0.9375rem] text-text-2">
+        {asker} paid {price} USDC to {about ?? "?"}, the target.
+      </p>
+    );
+  return (
+    <p className="numeral mt-5 text-[0.9375rem] text-text-2">
+      {asker} paid {price} USDC into the hint pool.{" "}
+      {about
+        ? `Whom the hint was about stayed secret until the end, which names ${about}. The money goes onto ${about}'s head when ${about} goes out or the match ends.`
+        : "Whom the hint was about is named only by the end verdict, which this replay doesn't have."}
+    </p>
+  );
+}
+
+/** The contract's End replay, re-run here (verify/settle.ts). */
+function SettlementLine() {
+  const { match } = useReplay();
+  const p = settlementProof(match.settlement);
+  return (
+    <ProofLine check={p.check} detail={p.detail}>
+      {p.title}
+    </ProofLine>
+  );
+}
+
+/** NEAR's `settled_as` and `paid` against the replay. */
+function PayoutsLine({ payouts }: { payouts: boolean | null }) {
+  const { match } = useReplay();
+  const refunded = match.settlement.kind === "refunded";
+  return (
+    <ProofLine
+      check={payouts === null ? "info" : payouts ? "pass" : "fail"}
+      near
+      detail={
+        payouts === null
+          ? "The match hasn't ended on NEAR, so nothing was paid out to compare."
+          : payouts
+            ? refunded
+              ? "NEAR refunded every stake too, for the same broken rule."
+              : "NEAR settled it the same way and paid each player what the replay gives."
+            : "What NEAR paid out, or how it settled, isn't what this replay gives."
+      }
+    >
+      Payouts match NEAR
+    </ProofLine>
   );
 }
 
@@ -672,7 +739,7 @@ function SummaryBody() {
   const endInEnclave = useEndInEnclave();
   const sum = summarize(statuses);
   const history = useStore(verify, (s) => s.history);
-  const problem = matchProblem(binding, level, history);
+  const problem = matchProblem(binding, level, history, match.settlement);
   const n = decoded.verdicts.length;
   const done = local.filter(Boolean).length;
   const signed = local.filter((l) => l?.decodes && l.signature && l.order).length;
@@ -785,19 +852,8 @@ function SummaryBody() {
           >
             Matches NEAR
           </ProofLine>
-          {level && (
-            <ProofLine
-              check={level.payouts === null ? "info" : level.payouts ? "pass" : "fail"}
-              near
-              detail={
-                level.payouts === null
-                  ? "The match hasn't ended on NEAR, so nothing was paid out to compare."
-                  : "Every payout equals what the verdicts add up to."
-              }
-            >
-              Payouts match NEAR
-            </ProofLine>
-          )}
+          <SettlementLine />
+          {level && <PayoutsLine payouts={level.payouts} />}
           {ring && (
             <ProofLine
               check={ringOk(ring) ? "pass" : "fail"}

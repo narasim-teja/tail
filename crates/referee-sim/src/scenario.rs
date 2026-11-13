@@ -204,8 +204,9 @@ fn one_u32() -> u32 {
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Expect {
-    /// Exact verdict sequence: `Start`, `Tag h t`, `Hint from to amount`, `Forfeit p to`,
-    /// `Checkpoint` (only with `checkpoints`), `End`.
+    /// Exact verdict sequence: `Start`, `Tag h t`, `Hint from amount`, `Forfeit p to` (Tag and
+    /// Forfeit with ` +credit` when they credit hint money), `Checkpoint` (only with
+    /// `checkpoints`), `End` followed by each hint's target in hint order.
     pub verdicts: Option<Vec<String>>,
     #[serde(default)]
     pub checkpoints: bool,

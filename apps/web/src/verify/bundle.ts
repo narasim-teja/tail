@@ -23,7 +23,7 @@ import {
   sha256,
   verdictDigest,
 } from "@tail/protocol";
-import { decodeLogEntryV1, decodeSignedVerdictV1, verdictDigestV1 } from "./v1.ts";
+import { decodeLogEntryV1, decodeSignedVerdictV1, type SignedVerdictV1, verdictDigestV1 } from "./v1.ts";
 
 export class BundleError extends Error {
   override name = "BundleError";
@@ -31,10 +31,14 @@ export class BundleError extends Error {
 
 export type AnyBundle = AnyReplayBundle;
 
+/** A decoded verdict of either version; `body` shapes differ where v2 changed them (see v1.ts). */
+export type AnySignedVerdict = SignedVerdict | SignedVerdictV1;
+export type AnyVerdict = AnySignedVerdict["body"];
+
 export interface DecodedVerdict {
   index: number;
   bytes: Uint8Array;
-  v: SignedVerdict | null;
+  v: AnySignedVerdict | null;
   /** The digest the referee signed, in this bundle's verdict format; null if undecodable. */
   digest: Uint8Array | null;
   txHash: string | null;
@@ -155,17 +159,23 @@ export function decodeBundle(json: unknown): DecodedBundle {
   if (version === 2) need(strings(json["leaves"]), "leaves");
   const raw = json as unknown as AnyBundle;
 
-  const decodeVerdict = version === 2 ? decodeSignedVerdict : decodeSignedVerdictV1;
-  const digestOf = version === 2 ? verdictDigest : verdictDigestV1;
+  const decodeVerdict = (bytes: Uint8Array): { v: AnySignedVerdict; digest: Uint8Array } => {
+    if (version === 2) {
+      const v = decodeSignedVerdict(bytes);
+      return { v, digest: verdictDigest(v) };
+    }
+    const v = decodeSignedVerdictV1(bytes);
+    return { v, digest: verdictDigestV1(v) };
+  };
   const verdicts = raw.verdicts.map((x, index): DecodedVerdict => {
     need(isObj(x) && typeof x.signed === "string", "verdict");
     const bytes = attempt(() => fromB64(x.signed)) ?? new Uint8Array(0);
-    const v = attempt(() => decodeVerdict(bytes));
+    const got = attempt(() => decodeVerdict(bytes));
     return {
       index,
       bytes,
-      v,
-      digest: v ? digestOf(v) : null,
+      v: got?.v ?? null,
+      digest: got?.digest ?? null,
       txHash: typeof x.txHash === "string" && x.txHash.length > 0 ? x.txHash : null,
     };
   });

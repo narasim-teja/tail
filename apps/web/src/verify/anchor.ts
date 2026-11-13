@@ -10,9 +10,10 @@
 // a bundle that names another contract or network, or another match than the link asked for. A
 // relay with its own contract copy therefore cannot earn "Matches NEAR".
 
-import { equal, fromHex, type SignedVerdict, toHex } from "@tail/protocol";
-import type { DecodedBundle } from "./bundle.ts";
+import { equal, fromHex, toHex } from "@tail/protocol";
+import type { AnySignedVerdict, DecodedBundle } from "./bundle.ts";
 import type { LocalContext } from "./checks.ts";
+import { expectedPaid, settledAs, settlementOf } from "./settle.ts";
 
 export interface ChainPlayer {
   account_id: string;
@@ -38,6 +39,16 @@ export interface ChainMatch {
   alpha: string | null;
   vrf_signature: string | null;
   public_replay: boolean;
+  /**
+   * How the contract settled the match: "payout" after End's replay passed, a refund of every
+   * stake after it found a broken rule or after an abort, null while lobby or running. Absent
+   * from contracts deployed before protocol v2.
+   */
+  settled_as?: "payout" | "refunded_rule_violation" | "refunded_abort" | null;
+  /** On "refunded_rule_violation": the contract's words for the rule End's replay found broken. */
+  violation?: string | null;
+  /** Hint money held for the match and not yet credited (decimal string); 0 once settled. */
+  hint_pool?: string;
 }
 
 export interface ChainRoots {
@@ -97,7 +108,7 @@ export interface MatchLevel {
    * applied. Without it a bundle cut short would still show only verdicts that match.
    */
   complete: boolean;
-  /** Expected payouts from replaying the verdicts equal what the contract paid. */
+  /** NEAR settled the match the way the page's replay of it does, and paid the same (settle.ts). */
   payouts: boolean | null;
   ended: boolean;
 }
@@ -106,7 +117,7 @@ export function matchLevel(
   d: DecodedBundle,
   chain: ChainMatch,
   roots: ChainRoots,
-  verdicts: (SignedVerdict | null)[],
+  verdicts: (AnySignedVerdict | null)[],
 ): MatchLevel {
   const ended = chain.phase === "ended";
   const checkpoints = verdicts.filter((v) => v?.body.kind === "Checkpoint").length;
@@ -118,45 +129,24 @@ export function matchLevel(
     chain.players.every((p, i) => p.account_id === d.players[i]) &&
     chain.token === d.raw.match.token &&
     chain.stake === d.raw.match.stake;
-  return { identity, complete, ended, payouts: ended ? payoutsMatch(d, chain, verdicts) : null };
+  return { identity, complete, ended, payouts: ended ? payoutsMatch(d, chain) : null };
 }
 
-/** Replays heads like the contract's apply_one and settle_end, and compares with `paid`. */
-export function expectedPayouts(d: DecodedBundle, verdicts: (SignedVerdict | null)[], pot: bigint): bigint[] {
-  const heads = d.players.map(() => d.stake);
-  const out = d.players.map(() => false);
-  for (const v of verdicts) {
-    const b = v?.body;
-    if (!b) continue;
-    if (b.kind === "Hint") {
-      heads[b.from] = (heads[b.from] ?? 0n) - b.amount;
-      heads[b.to] = (heads[b.to] ?? 0n) + b.amount;
-    } else if (b.kind === "Tag" || b.kind === "Forfeit") {
-      const [loser, winner] = b.kind === "Tag" ? [b.target, b.hunter] : [b.player, b.to];
-      heads[winner] = (heads[winner] ?? 0n) + (heads[loser] ?? 0n);
-      heads[loser] = 0n;
-      out[loser] = true;
-    }
-  }
-  const survivors = BigInt(out.filter((o) => !o).length);
-  if (survivors === 0n) return heads;
-  const share = pot / survivors;
-  let extra = pot % survivors;
-  return heads.map((h, i) => {
-    if (out[i]) return h;
-    let paid = h + share;
-    if (extra > 0n) {
-      paid += 1n;
-      extra -= 1n;
-    }
-    return paid;
-  });
-}
-
-function payoutsMatch(d: DecodedBundle, chain: ChainMatch, verdicts: (SignedVerdict | null)[]): boolean {
-  const pot = chain.sponsors.reduce((s, x) => s + BigInt(x.amount), 0n);
-  const want = expectedPayouts(d, verdicts, pot);
-  return chain.players.every((p, i) => BigInt(p.paid) === want[i]);
+/**
+ * NEAR's payouts against the page's own replay of the match (settle.ts): the same outcome
+ * (`settled_as`, and the violation's words on a refund, when the contract reports them) and the
+ * same `paid` for every player. A contract from before protocol v2 reports no `settled_as`; then
+ * only `paid` is compared.
+ */
+function payoutsMatch(d: DecodedBundle, chain: ChainMatch): boolean {
+  const s = settlementOf(d);
+  const pot = chain.sponsors.reduce((sum, x) => sum + BigInt(x.amount), 0n);
+  const want = expectedPaid(d, s, pot);
+  if (!want) return false;
+  if (chain.settled_as != null && chain.settled_as !== settledAs(s)) return false;
+  if (s.kind === "refunded" && typeof chain.violation === "string" && chain.violation !== s.text)
+    return false;
+  return chain.players.length === want.length && chain.players.every((p, i) => BigInt(p.paid) === want[i]);
 }
 
 /**
@@ -166,7 +156,7 @@ function payoutsMatch(d: DecodedBundle, chain: ChainMatch, verdicts: (SignedVerd
 export function anchorVerdicts(
   d: DecodedBundle,
   ctx: LocalContext,
-  local: { v: SignedVerdict | null; logIndex: number | null }[],
+  local: { v: AnySignedVerdict | null; logIndex: number | null }[],
   state: ChainState,
   binding: Binding,
 ): Anchor[] {

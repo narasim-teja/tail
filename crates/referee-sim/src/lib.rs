@@ -9,7 +9,9 @@
 //! with a consistency proof from the previous anchor that verifies and equals the full-log
 //! proof; every tick's log starts with its `Tick`; every refused batch has a `Rejected` entry
 //! with its hash and code; every Tag follows an `Evidence` entry whose epochs justify the lock;
-//! and every HUD names the log as it stands after its tick.
+//! every HUD names the log as it stands after its tick; and the verdicts, applied the way the
+//! contract applies them, pass the contract's End replay (`settle::replay`) and pay out exactly
+//! the heads the referee holds.
 // Sim positions are metres and seconds; their f64 conversions are well inside 2^52.
 #![allow(
     clippy::cast_precision_loss,
@@ -30,6 +32,7 @@ use std::collections::BTreeMap;
 use std::f64::consts::PI;
 use std::time::Instant;
 use tail_protocol::digest::{batch_hash, sha256, verdict_digest};
+use tail_protocol::settle::{self, PlayEvent};
 use tail_protocol::{
     constants::hint_kind, merkle, ring, target_status, CallId, Fix, Hash, Hud, LogEntry, Verdict,
     VerdictPayload, LOCK_EPOCHS, WINDOW_EPOCHS,
@@ -75,17 +78,41 @@ impl Report {
         &self.names[i as usize]
     }
 
-    /// `Start`, `Tag alice bob`, `Hint alice bob 20000`, `Forfeit bob alice`, `Checkpoint`, `End`.
+    /// `Start`, `Hint alice 20000` (the asker and the price: the verdict names nobody else),
+    /// `Tag alice bob`, `Forfeit bob alice`, each with ` +credit` when it credits hint money,
+    /// `Checkpoint`, and `End` followed by whom each hint was about, in hint order.
     pub fn verdict_text(&self, v: &Verdict) -> String {
+        let credited = |credit: u128| {
+            if credit == 0 {
+                String::new()
+            } else {
+                format!(" +{credit}")
+            }
+        };
         match v {
             Verdict::Start { .. } => "Start".into(),
-            Verdict::Hint { from, to, amount, .. } => {
-                format!("Hint {} {} {amount}", self.name(*from), self.name(*to))
-            }
-            Verdict::Tag { hunter, target } => format!("Tag {} {}", self.name(*hunter), self.name(*target)),
-            Verdict::Forfeit { player, to } => format!("Forfeit {} {}", self.name(*player), self.name(*to)),
+            Verdict::Hint { from, amount, .. } => format!("Hint {} {amount}", self.name(*from)),
+            Verdict::Tag {
+                hunter,
+                target,
+                credit,
+            } => format!(
+                "Tag {} {}{}",
+                self.name(*hunter),
+                self.name(*target),
+                credited(*credit)
+            ),
+            Verdict::Forfeit { player, to, credit } => format!(
+                "Forfeit {} {}{}",
+                self.name(*player),
+                self.name(*to),
+                credited(*credit)
+            ),
             Verdict::Checkpoint { .. } => "Checkpoint".into(),
-            Verdict::End { .. } => "End".into(),
+            Verdict::End { hint_targets, .. } => std::iter::once("End")
+                .chain(hint_targets.iter().map(|&t| self.name(t)))
+                .collect::<Vec<_>>()
+                .join(" "),
         }
     }
 
@@ -235,8 +262,71 @@ struct Sim<'a> {
     anchored: (u64, Hash),
     /// Tags each player has made, by referee index.
     tags: Vec<u8>,
+    /// The match as the contract holds it: heads, hint pool and play events, applied verdict by
+    /// verdict, and the heads its End credits.
+    chain: Chain,
     /// `derive_log_key(K_m)`, to check every salt as a verifier does after declassify.
     k_log: Hash,
+}
+
+/// The contract's money rules, verdict by verdict (`contracts/tail`): a Hint pays into the pool, a
+/// Tag or Forfeit credits the loser from it and moves the loser's head, and End replays the match
+/// and credits each survivor what they are owed.
+struct Chain {
+    heads: Vec<u128>,
+    pool: u128,
+    events: Vec<PlayEvent>,
+}
+
+impl Chain {
+    fn apply(&mut self, v: &Verdict, ring: impl FnOnce() -> Vec<u16>) -> Result<(), String> {
+        match *v {
+            Verdict::Hint { from, amount, .. } => {
+                let head = &mut self.heads[usize::from(from)];
+                *head = head
+                    .checked_sub(amount)
+                    .ok_or("a hint costs more than the head")?;
+                self.pool += amount;
+                self.events.push(PlayEvent::Hint { from, amount });
+            }
+            Verdict::Tag {
+                hunter: w,
+                target: l,
+                credit,
+            }
+            | Verdict::Forfeit {
+                player: l,
+                to: w,
+                credit,
+            } => {
+                self.pool = self.pool.checked_sub(credit).ok_or("a credit beyond the pool")?;
+                let head = std::mem::take(&mut self.heads[usize::from(l)]) + credit;
+                self.heads[usize::from(w)] += head;
+                self.events.push(match *v {
+                    Verdict::Tag { .. } => PlayEvent::Tag {
+                        hunter: w,
+                        target: l,
+                        credit,
+                    },
+                    _ => PlayEvent::Forfeit {
+                        player: l,
+                        to: w,
+                        credit,
+                    },
+                });
+            }
+            Verdict::End { ref hint_targets, .. } => {
+                let owed = settle::replay(&ring(), &self.events, hint_targets, self.pool)
+                    .map_err(|v| format!("the contract would refund the match: {}", v.describe()))?;
+                for (h, o) in self.heads.iter_mut().zip(owed) {
+                    *h += o;
+                }
+                self.pool = 0;
+            }
+            Verdict::Start { .. } | Verdict::Checkpoint { .. } => {}
+        }
+        Ok(())
+    }
 }
 
 /// Which call produced a batch of verdicts and log entries.
@@ -340,6 +430,11 @@ pub fn run_seeded(sc: &Scenario, seed: u64) -> Result<Report, String> {
         last_digest: [0; 32],
         anchored: (0, merkle::empty_root()),
         tags: vec![0; n],
+        chain: Chain {
+            heads: vec![u128::from(sc.stake); n],
+            pool: 0,
+            events: Vec::new(),
+        },
         k_log: tail_protocol::beacon::derive_log_key(&k_m),
     };
     sim.check_enrolled(&started.log)?;
@@ -682,6 +777,12 @@ impl Sim<'_> {
                 )?;
                 self.check_heads(&fin.state)?;
                 self.report.final_heads = fin.state.players().iter().map(|p| p.head).collect();
+                if self.chain.heads != self.report.final_heads {
+                    return Err(format!(
+                        "the contract would pay {:?}, the referee holds {:?}",
+                        self.chain.heads, self.report.final_heads
+                    ));
+                }
                 return Ok(());
             }
         }
@@ -792,12 +893,22 @@ impl Sim<'_> {
                     let p = proofs.next().ok_or(format!("verdict {} has no proof", v.seq))?;
                     self.check_proof(v.seq, *log_size, root, p)?;
                 }
-                Verdict::Tag { hunter, target } => {
-                    self.check_evidence(*hunter, *target, at)?;
-                    self.tags[*hunter as usize] += 1;
-                }
                 _ => {}
             }
+            if let Verdict::Tag { hunter, target, .. } = &v.body {
+                self.check_evidence(*hunter, *target, at)?;
+                self.tags[*hunter as usize] += 1;
+            }
+            let names = &self.report.names;
+            let vrf: [u8; 64] = self
+                .report
+                .vrf_signature
+                .as_slice()
+                .try_into()
+                .map_err(|_| "vrf length")?;
+            self.chain
+                .apply(&v.body, || ring::ring_order(names, &vrf))
+                .map_err(|e| format!("verdict {}: {e}", v.seq))?;
             self.report.verdicts.push((s, tick_no, v.clone()));
         }
         if proofs.next().is_some() {

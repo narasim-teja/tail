@@ -130,14 +130,111 @@ fn consistency(seq: u32, m: u64, n: u64) -> ConsistencyArg {
         path: path.into_iter().map(|h| Base64VecU8(h.to_vec())).collect(),
     }
 }
-/// A hint from `from` to `to` of `kind`, at its price in a `STAKE` match.
-fn hint_of(from: u16, to: u16, kind: u8) -> Verdict {
+/// A hint by `from` of `kind`, at its price in a `STAKE` match.
+fn hint_of(from: u16, kind: u8) -> Verdict {
     Verdict::Hint {
         from,
-        to,
         amount: hint_price(STAKE, kind).unwrap(),
         hint_id: 1,
         hint: kind,
+    }
+}
+
+/// A NEAR hint by `from` in a match whose stake prices it at 0.
+fn free_hint(from: u16) -> Verdict {
+    Verdict::Hint {
+        from,
+        amount: 0,
+        hint_id: 1,
+        hint: NEAR,
+    }
+}
+
+/// In a Tag or Forfeit body: the fixture fills in the credit the honest referee would sign (the
+/// hints paid onto the loser and not yet credited) when it signs the verdict.
+const HONEST_CREDIT: u128 = u128::MAX;
+/// In an End body: the fixture fills in the honest hint targets when it signs the verdict.
+fn honest_targets() -> Vec<u16> {
+    vec![u16::MAX]
+}
+fn tag(hunter: u16, target: u16) -> Verdict {
+    Verdict::Tag {
+        hunter,
+        target,
+        credit: HONEST_CREDIT,
+    }
+}
+fn forfeit(player: u16, to: u16) -> Verdict {
+    Verdict::Forfeit {
+        player,
+        to,
+        credit: HONEST_CREDIT,
+    }
+}
+
+/// The honest referee's view of a match: who hunts whom now, the hints pending on each player and
+/// whom each hint so far was about.
+struct Honest {
+    targets: Vec<Option<u16>>,
+    pending: Vec<u128>,
+    about: Vec<u16>,
+}
+
+impl Honest {
+    fn new(ring: &[u16]) -> Self {
+        let mut targets = vec![None; ring.len()];
+        for (k, &h) in ring.iter().enumerate() {
+            targets[usize::from(h)] = Some(ring[(k + 1) % ring.len()]);
+        }
+        Self {
+            targets,
+            pending: vec![0; ring.len()],
+            about: Vec::new(),
+        }
+    }
+
+    /// Fills in the honest credit or hint targets of `body`, then follows it.
+    fn sign(&mut self, mut body: Verdict) -> Verdict {
+        match &mut body {
+            Verdict::Hint { from, amount, .. } => {
+                // A hint by a player the ring has no target for is refused anyway; 0 stands in.
+                let t = self
+                    .targets
+                    .get(usize::from(*from))
+                    .copied()
+                    .flatten()
+                    .unwrap_or(0);
+                self.about.push(t);
+                self.pending[usize::from(t)] += *amount;
+            }
+            Verdict::Tag {
+                hunter: w,
+                target: l,
+                credit,
+            }
+            | Verdict::Forfeit {
+                player: l,
+                to: w,
+                credit,
+            } => {
+                let (w, l) = (usize::from(*w), usize::from(*l));
+                if l < self.pending.len() && w < self.targets.len() {
+                    if *credit == HONEST_CREDIT {
+                        *credit = self.pending[l];
+                    }
+                    self.pending[l] = 0;
+                    let next = self.targets[l].take();
+                    self.targets[w] = next.filter(|&n| usize::from(n) != w);
+                } else if *credit == HONEST_CREDIT {
+                    *credit = 0;
+                }
+            }
+            Verdict::End { hint_targets, .. } if *hint_targets == honest_targets() => {
+                hint_targets.clone_from(&self.about);
+            }
+            _ => {}
+        }
+        body
     }
 }
 
@@ -198,24 +295,22 @@ fn cfg(token: AccountId, stake: u128) -> MatchConfig {
     }
 }
 
-/// End at `n` entries of the stand-in log, revealing the VRF signature over `alpha`.
+/// End at `n` entries of the stand-in log, revealing the VRF signature over `alpha`, with the
+/// honest hint targets.
 fn end_at(alpha: &str, n: u64) -> Verdict {
     Verdict::End {
         vrf_signature: vrf_sig(alpha),
         alpha: alpha.to_owned(),
         log_size: n,
         root: log_root(n),
+        hint_targets: honest_targets(),
     }
 }
 
-/// Player indices in ring order for the VRF output `alpha_for(id)` commits to: `ring[k]` hunts
-/// `ring[k+1 mod n]`.
-fn ring_of(v: &MatchView, id: MatchId) -> Vec<u16> {
+/// Player indices in ring order for the VRF output over `alpha`: `ring[k]` hunts `ring[k+1 mod n]`.
+fn ring_of(v: &MatchView, alpha: &str) -> Vec<u16> {
     let ids: Vec<&str> = v.players.iter().map(|p| p.account_id.as_str()).collect();
-    build_ring(&ids, &vrf_sig(&alpha_for(id)))
-        .iter()
-        .map(|a| ids.iter().position(|i| i == a).unwrap() as u16)
-        .collect()
+    ring_order(&ids, &vrf_sig(alpha))
 }
 
 /// A contract with alice, bob and carol registered and topped up, and one lobby they joined.
@@ -223,11 +318,14 @@ fn ring_of(v: &MatchView, id: MatchId) -> Vec<u16> {
 ///
 /// The fixture plays the honest referee: it reads the verdict head and the last anchored log size
 /// from the contract, signs each verdict on top of them and proves each Checkpoint and End
-/// against the stand-in log (`log_leaves`).
+/// against the stand-in log (`log_leaves`). It fills in `HONEST_CREDIT` and `honest_targets()`
+/// from the events the contract recorded, replayed against the ring of `alpha()`.
 struct Fx {
     c: Tail,
     now: u64,
     id: MatchId,
+    /// The alpha the match's Start committed to, when it is not `alpha_for(id)`.
+    alpha: Option<String>,
 }
 
 const PLAYERS: [&str; 3] = ["alice.testnet", "bob.testnet", "carol.testnet"];
@@ -242,6 +340,7 @@ impl Fx {
             c,
             now: T0,
             id: [0; 16],
+            alpha: None,
         }
     }
 
@@ -343,8 +442,52 @@ impl Fx {
         self.verdict(body);
     }
 
+    fn alpha(&self) -> String {
+        self.alpha.clone().unwrap_or_else(|| alpha_for(self.id))
+    }
+
     fn ring(&self) -> Vec<u16> {
-        ring_of(&self.view(), self.id)
+        ring_of(&self.view(), &self.alpha())
+    }
+
+    /// The honest referee's view after every event the contract recorded for the match.
+    fn honest(&self) -> Honest {
+        let mut h = Honest::new(&self.ring());
+        let events = self
+            .c
+            .plays
+            .get(&self.id)
+            .map_or_else(Vec::new, |r| r.events.clone());
+        for e in events {
+            let body = match e {
+                PlayEvent::Hint { from, amount } => Verdict::Hint {
+                    from,
+                    amount,
+                    hint_id: 0,
+                    hint: 0,
+                },
+                PlayEvent::Tag {
+                    hunter,
+                    target,
+                    credit,
+                } => Verdict::Tag {
+                    hunter,
+                    target,
+                    credit,
+                },
+                PlayEvent::Forfeit { player, to, credit } => Verdict::Forfeit { player, to, credit },
+            };
+            h.sign(body);
+        }
+        h
+    }
+
+    fn pool(&self) -> u128 {
+        self.view().hint_pool.0
+    }
+
+    fn paid(&self) -> Vec<u128> {
+        self.view().players.iter().map(|p| p.paid.0).collect()
     }
 
     /// Who hunts player `i` at the start of the match.
@@ -377,8 +520,10 @@ impl Fx {
     fn chain_with(&self, k: &SigningKey, bodies: Vec<Verdict>) -> (Vec<Base64VecU8>, Vec<ConsistencyArg>) {
         let (mut seq, mut prev) = self.head();
         let mut anchored = self.anchored();
+        let mut honest = self.honest();
         let (mut verdicts, mut proofs) = (Vec::new(), Vec::new());
         for body in bodies {
+            let body = honest.sign(body);
             seq += 1;
             if let Verdict::Checkpoint { log_size, .. } | Verdict::End { log_size, .. } = body {
                 proofs.push(consistency(seq, anchored, log_size));
@@ -823,9 +968,9 @@ fn create_match_in_a_token_that_is_not_allowed_is_refused() {
 fn verdicts_apply_in_sequence_within_one_call() {
     let mut fx = Fx::locked();
     let body = fx.start_body();
-    fx.verdicts(vec![body, hint_of(0, 1, NEAR)]);
+    fx.verdicts(vec![body, hint_of(0, NEAR)]);
     assert_eq!(fx.view().seq, 2);
-    assert_eq!(fx.heads(), vec![STAKE - NEAR_PRICE, STAKE + NEAR_PRICE, STAKE]);
+    assert_eq!(fx.heads(), vec![STAKE - NEAR_PRICE, STAKE, STAKE]);
 }
 
 #[test]
@@ -833,7 +978,7 @@ fn verdicts_apply_in_sequence_within_one_call() {
 fn a_verdict_that_skips_a_seq_is_refused() {
     let mut fx = Fx::running();
     let (_, prev) = fx.head();
-    let (v, _) = sign(&referee(), fx.id, 3, prev, hint_of(0, 1, NEAR));
+    let (v, _) = sign(&referee(), fx.id, 3, prev, hint_of(0, NEAR));
     fx.apply(vec![v]);
 }
 
@@ -841,7 +986,7 @@ fn a_verdict_that_skips_a_seq_is_refused() {
 #[should_panic(expected = "verdict out of order")]
 fn a_replayed_verdict_is_refused() {
     let mut fx = Fx::running();
-    let v = fx.next_signed_by(&referee(), hint_of(0, 1, NEAR));
+    let v = fx.next_signed_by(&referee(), hint_of(0, NEAR));
     fx.apply(vec![v.clone()]);
     fx.apply(vec![v]);
 }
@@ -858,7 +1003,7 @@ fn a_verdict_signed_by_another_key_is_refused() {
 #[should_panic(expected = "bad referee signature")]
 fn a_verdict_whose_body_was_changed_after_signing_is_refused() {
     let mut fx = Fx::running();
-    let mut raw = fx.next_signed_by(&referee(), hint_of(0, 1, NEAR)).0;
+    let mut raw = fx.next_signed_by(&referee(), hint_of(0, NEAR)).0;
     // The amount's low byte sits after match_id(16) seq(4) prev(32) call_id(16) tag(1) from(2)
     // to(2).
     raw[73] ^= 1;
@@ -869,7 +1014,7 @@ fn a_verdict_whose_body_was_changed_after_signing_is_refused() {
 #[should_panic(expected = "verdict is not a borsh SignedVerdict")]
 fn a_verdict_with_trailing_bytes_is_refused() {
     let mut fx = Fx::running();
-    let mut raw = fx.next_signed_by(&referee(), hint_of(0, 1, NEAR)).0;
+    let mut raw = fx.next_signed_by(&referee(), hint_of(0, NEAR)).0;
     raw.push(0);
     fx.apply(vec![Base64VecU8(raw)]);
 }
@@ -885,7 +1030,7 @@ fn the_verdict_head_starts_at_zeros_and_follows_every_applied_verdict() {
             digest: hex::encode([0u8; 32])
         }
     );
-    let (verdicts, _) = fx.chain(vec![fx.start_body(), hint_of(0, 1, NEAR)]);
+    let (verdicts, _) = fx.chain(vec![fx.start_body(), hint_of(0, NEAR)]);
     let second = SignedVerdict::try_from_slice(&verdicts[1].0).unwrap();
     fx.apply(verdicts);
     let head = fx.c.get_verdict_head(hex::encode(fx.id)).unwrap();
@@ -907,7 +1052,7 @@ fn a_verdict_whose_prev_is_not_the_last_applied_digest_is_refused() {
     let mut fx = Fx::running();
     let (seq, mut prev) = fx.head();
     prev[0] ^= 1;
-    let (v, _) = sign(&referee(), fx.id, seq + 1, prev, hint_of(0, 1, NEAR));
+    let (v, _) = sign(&referee(), fx.id, seq + 1, prev, hint_of(0, NEAR));
     fx.apply(vec![v]);
 }
 
@@ -926,16 +1071,16 @@ fn refusal(f: impl FnOnce()) -> String {
 fn a_forked_verdict_stream_cannot_land() {
     let mut fx = Fx::running();
     let (seq, prev) = fx.head();
-    let (a, a_digest) = sign(&referee(), fx.id, seq + 1, prev, hint_of(0, 1, NEAR));
-    let (b, b_digest) = sign(&referee(), fx.id, seq + 1, prev, hint_of(1, 0, NEAR));
-    let (b_next, _) = sign(&referee(), fx.id, seq + 2, b_digest, hint_of(2, 0, NEAR));
+    let (a, a_digest) = sign(&referee(), fx.id, seq + 1, prev, hint_of(0, NEAR));
+    let (b, b_digest) = sign(&referee(), fx.id, seq + 1, prev, hint_of(1, NEAR));
+    let (b_next, _) = sign(&referee(), fx.id, seq + 2, b_digest, hint_of(2, NEAR));
     fx.apply(vec![a]);
     assert!(refusal(|| fx.apply(vec![b])).contains("verdict out of order"));
     assert!(refusal(|| fx.apply(vec![b_next])).contains("verdict prev is not the digest"));
     // The honest chain continues from the verdict that landed.
-    let (next, _) = sign(&referee(), fx.id, seq + 2, a_digest, hint_of(2, 0, NEAR));
+    let (next, _) = sign(&referee(), fx.id, seq + 2, a_digest, hint_of(2, NEAR));
     fx.apply(vec![next]);
-    assert_eq!(fx.heads(), vec![STAKE, STAKE + NEAR_PRICE, STAKE - NEAR_PRICE]);
+    assert_eq!(fx.heads(), vec![STAKE - NEAR_PRICE, STAKE, STAKE - NEAR_PRICE]);
 }
 
 // ── Key rotation ────────────────────────────────────────────────────────────────────────────
@@ -950,8 +1095,8 @@ fn a_running_match_keeps_the_referee_key_it_was_created_with() {
     let mut fx = Fx::running();
     rotate_to(&mut fx, &key(2));
     assert_eq!(fx.c.get_config().referee_pk, pk_hex(&key(2)));
-    fx.verdict(hint_of(0, 1, NEAR));
-    assert_eq!(fx.heads()[1], STAKE + NEAR_PRICE);
+    fx.verdict(hint_of(0, NEAR));
+    assert_eq!(fx.heads()[0], STAKE - NEAR_PRICE);
 }
 
 #[test]
@@ -959,7 +1104,7 @@ fn a_running_match_keeps_the_referee_key_it_was_created_with() {
 fn the_rotated_key_is_refused_by_a_match_created_before_rotation() {
     let mut fx = Fx::running();
     rotate_to(&mut fx, &key(2));
-    let v = fx.next_signed_by(&key(2), hint_of(0, 1, NEAR));
+    let v = fx.next_signed_by(&key(2), hint_of(0, NEAR));
     fx.apply(vec![v]);
 }
 
@@ -1081,39 +1226,34 @@ fn a_second_start_is_refused() {
 #[should_panic(expected = "match not running")]
 fn a_hint_before_start_is_refused() {
     let mut fx = Fx::lobby();
-    fx.verdict(hint_of(0, 1, NEAR));
+    fx.verdict(hint_of(0, NEAR));
 }
 
 // ── Hint, Tag, Forfeit ──────────────────────────────────────────────────────────────────────
 
 #[test]
-fn each_hint_kind_moves_its_price_from_the_asker_to_the_target() {
+fn each_hint_kind_moves_its_price_from_the_asker_into_the_pool() {
     let mut fx = Fx::running();
-    fx.verdicts(vec![
-        hint_of(0, 1, NEAR),
-        hint_of(0, 2, BEARING),
-        hint_of(1, 2, TREND),
-    ]);
+    fx.verdicts(vec![hint_of(0, NEAR), hint_of(0, BEARING), hint_of(1, TREND)]);
+    // Nobody's head goes up: whom a hint was about stays secret until End.
     assert_eq!(
         fx.heads(),
-        vec![
-            STAKE - NEAR_PRICE - BEARING_PRICE,
-            STAKE + NEAR_PRICE - NEAR_PRICE,
-            STAKE + BEARING_PRICE + NEAR_PRICE
-        ]
+        vec![STAKE - NEAR_PRICE - BEARING_PRICE, STAKE - NEAR_PRICE, STAKE]
     );
+    assert_eq!(fx.pool(), 2 * NEAR_PRICE + BEARING_PRICE);
 }
 
 /// Twenty BEARING hints at 5 % each spend a whole head.
 fn spend_player_2s_head(fx: &mut Fx) {
-    fx.verdicts((0..20).map(|_| hint_of(2, 0, BEARING)).collect());
+    fx.verdicts((0..20).map(|_| hint_of(2, BEARING)).collect());
 }
 
 #[test]
 fn hints_can_spend_the_whole_head() {
     let mut fx = Fx::running();
     spend_player_2s_head(&mut fx);
-    assert_eq!(fx.heads(), vec![2 * STAKE, STAKE, 0]);
+    assert_eq!(fx.heads(), vec![STAKE, STAKE, 0]);
+    assert_eq!(fx.pool(), STAKE);
 }
 
 #[test]
@@ -1121,20 +1261,48 @@ fn hints_can_spend_the_whole_head() {
 fn a_hint_over_the_payers_head_is_refused() {
     let mut fx = Fx::running();
     spend_player_2s_head(&mut fx);
-    fx.verdict(hint_of(2, 0, NEAR));
+    fx.verdict(hint_of(2, NEAR));
 }
 
 #[test]
-#[should_panic(expected = "players must differ")]
-fn a_hint_to_oneself_is_refused() {
+#[should_panic(expected = "player is out")]
+fn a_hint_by_an_out_player_is_refused() {
     let mut fx = Fx::running();
-    fx.verdict(hint_of(1, 1, NEAR));
+    let ring = fx.ring();
+    fx.verdict(tag(ring[0], ring[1]));
+    fx.verdict(hint_of(ring[1], NEAR));
+}
+
+/// A running match with `stake`, players alice, bob and carol.
+fn running_at_stake(stake: u128) -> Fx {
+    let mut fx = Fx::lobby();
+    fx.id = fx.create(cfg(usdc(), stake));
+    for p in PLAYERS {
+        fx.join(p);
+    }
+    fx.lock();
+    let body = fx.start_body();
+    fx.verdict(body);
+    fx
+}
+
+/// The bound that sizes the match's storage deposit holds by rule, not by the referee's grace.
+#[test]
+fn the_hint_after_max_hints_is_refused() {
+    let mut fx = running_at_stake(0);
+    let ring = fx.ring();
+    for _ in 0..MAX_HINTS / 40 {
+        fx.verdicts((0..40).map(|_| free_hint(ring[0])).collect());
+    }
+    let why = refusal(|| fx.verdict(free_hint(ring[0])));
+    assert!(why.contains("MAX_HINTS"), "{why}");
+    fx.end();
+    assert_eq!(fx.view().settled_as, Some(SettledAs::Payout));
 }
 
 fn hint_paying(amount: u128, kind: u8) -> Verdict {
     Verdict::Hint {
         from: 0,
-        to: 1,
         amount,
         hint_id: 1,
         hint: kind,
@@ -1181,37 +1349,57 @@ fn a_hint_price_rounds_down() {
     fx.lock();
     let body = fx.start_body();
     fx.verdicts(vec![body, hint_paying(20, NEAR)]);
-    assert_eq!(fx.heads(), vec![1_029, 1_069, 1_049]);
+    assert_eq!(fx.heads(), vec![1_029, 1_049, 1_049]);
+    assert_eq!(fx.pool(), 20);
 }
 
 #[test]
-fn a_tag_moves_the_whole_target_head_to_the_hunter_and_marks_the_target_out() {
+fn a_tag_credits_the_target_with_its_hints_then_moves_the_whole_head_to_the_hunter() {
     let mut fx = Fx::running();
-    fx.verdict(hint_of(0, 1, NEAR));
-    fx.verdict(Verdict::Tag { hunter: 2, target: 1 });
-    assert_eq!(fx.heads(), vec![STAKE - NEAR_PRICE, 0, 2 * STAKE + NEAR_PRICE]);
-    assert!(fx.view().players[1].out);
+    let ring = fx.ring();
+    let (h, t, other) = (ring[0], ring[1], ring[2]);
+    fx.verdict(hint_of(h, NEAR));
+    fx.verdict(tag(h, t));
+    let mut want = vec![0; 3];
+    want[usize::from(h)] = 2 * STAKE;
+    want[usize::from(other)] = STAKE;
+    assert_eq!(fx.heads(), want);
+    assert_eq!(fx.pool(), 0);
+    assert!(fx.view().players[usize::from(t)].out);
+}
+
+#[test]
+#[should_panic(expected = "credit is more than the hint pool holds")]
+fn a_credit_beyond_the_pool_is_refused() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    fx.verdict(hint_of(ring[0], NEAR));
+    fx.verdict(Verdict::Tag {
+        hunter: ring[0],
+        target: ring[1],
+        credit: NEAR_PRICE + 1,
+    });
 }
 
 #[test]
 #[should_panic(expected = "player is out")]
 fn a_tag_of_an_out_player_is_refused() {
     let mut fx = Fx::running();
-    fx.verdict(Verdict::Tag { hunter: 2, target: 1 });
-    fx.verdict(Verdict::Tag { hunter: 0, target: 1 });
+    fx.verdict(tag(2, 1));
+    fx.verdict(tag(0, 1));
 }
 
 #[test]
 #[should_panic(expected = "player index out of range")]
 fn a_tag_naming_a_player_index_past_the_list_is_refused() {
     let mut fx = Fx::running();
-    fx.verdict(Verdict::Tag { hunter: 0, target: 3 });
+    fx.verdict(tag(0, 3));
 }
 
 #[test]
 fn a_forfeit_moves_the_head_and_marks_the_player_out() {
     let mut fx = Fx::running();
-    fx.verdict(Verdict::Forfeit { player: 0, to: 2 });
+    fx.verdict(forfeit(0, 2));
     assert_eq!(fx.heads(), vec![0, STAKE, 2 * STAKE]);
     assert!(fx.view().players[0].out);
 }
@@ -1220,8 +1408,8 @@ fn a_forfeit_moves_the_head_and_marks_the_player_out() {
 #[should_panic(expected = "player is out")]
 fn a_forfeit_to_an_out_player_is_refused() {
     let mut fx = Fx::running();
-    fx.verdict(Verdict::Forfeit { player: 0, to: 2 });
-    fx.verdict(Verdict::Forfeit { player: 1, to: 0 });
+    fx.verdict(forfeit(0, 2));
+    fx.verdict(forfeit(1, 0));
 }
 
 // ── Checkpoints ─────────────────────────────────────────────────────────────────────────────
@@ -1456,6 +1644,7 @@ fn an_end_at_the_last_checkpoints_size_with_another_root_is_refused() {
         vrf_signature,
         log_size: 10,
         root: log_root(11),
+        hint_targets: vec![],
     });
 }
 
@@ -1471,7 +1660,7 @@ fn two_proofs_for_one_seq_are_refused() {
 #[should_panic(expected = "consistency proof for seq 3 matches no Checkpoint or End in this call")]
 fn a_proof_for_a_verdict_that_is_not_an_anchor_is_refused() {
     let mut fx = with_one_checkpoint();
-    let (v, _) = fx.chain(vec![hint_of(0, 1, NEAR)]);
+    let (v, _) = fx.chain(vec![hint_of(0, NEAR)]);
     fx.apply_proved(v, vec![consistency(3, 10, 20)]);
 }
 
@@ -1486,7 +1675,7 @@ fn valid_proofs_across_a_match_of_many_checkpoints_are_accepted() {
     for chunk in sizes.chunks(7) {
         nth += chunk.len() as u64;
         at_checkpoint(&mut fx, nth);
-        let mut bodies = vec![hint_of(0, 1, NEAR)];
+        let mut bodies = vec![hint_of(0, NEAR)];
         bodies.extend(chunk.iter().map(|&n| cp(n)));
         fx.verdicts(bodies);
     }
@@ -1550,7 +1739,7 @@ fn a_checkpoint_with_a_proof_over_a_fifteen_thousand_entry_log_stays_cheap() {
     };
     fx.as_("relay.testnet");
     let with_proof = host_gas(|| fx.c.apply(v, Some(vec![proof])));
-    let (hint, _) = fx.chain(vec![hint_of(0, 1, NEAR)]);
+    let (hint, _) = fx.chain(vec![hint_of(0, NEAR)]);
     fx.as_("relay.testnet");
     let hint_only = host_gas(|| fx.c.apply(hint, None));
     let entry = Base64VecU8(borsh::to_vec(&log_entry(9_876)).unwrap());
@@ -1685,21 +1874,27 @@ fn an_unknown_match_proves_nothing() {
 // ── End ─────────────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn end_with_the_committed_vrf_reveal_credits_every_survivor_their_head() {
+fn end_with_the_committed_vrf_reveal_credits_every_survivor_their_head_and_their_hints() {
     let mut fx = Fx::running();
+    let ring = fx.ring();
+    let (h, t, o) = (ring[0], ring[1], ring[2]);
     at_checkpoint(&mut fx, 1);
     fx.verdict(cp(10));
-    fx.verdict(hint_of(0, 1, NEAR));
-    let hunter = fx.hunter_of(1);
-    fx.verdict(Verdict::Tag { hunter, target: 1 });
+    // h asks about t, o about h; t's hint money reaches t just before h takes t's head, and h's
+    // reaches h at End.
+    fx.verdicts(vec![hint_of(h, NEAR), hint_of(o, BEARING), tag(h, t)]);
+    assert_eq!(fx.pool(), BEARING_PRICE);
     fx.end();
     let v = fx.view();
     assert_eq!(v.phase, Phase::Ended);
+    assert_eq!(v.settled_as, Some(SettledAs::Payout));
+    assert_eq!(v.violation, None);
     assert_eq!(fx.heads(), vec![0, 0, 0]);
-    let paid: Vec<u128> = v.players.iter().map(|p| p.paid.0).collect();
-    let mut want = vec![STAKE - NEAR_PRICE, 0, STAKE];
-    want[usize::from(hunter)] += STAKE + NEAR_PRICE;
-    assert_eq!(paid, want);
+    assert_eq!(fx.pool(), 0);
+    let mut want = vec![0; 3];
+    want[usize::from(h)] = 2 * STAKE + BEARING_PRICE;
+    want[usize::from(o)] = STAKE - BEARING_PRICE;
+    assert_eq!(fx.paid(), want);
     for (i, p) in PLAYERS.iter().enumerate() {
         // Each started with 2 stakes and put one in.
         assert_eq!(fx.bal(p), STAKE + want[i]);
@@ -1750,6 +1945,7 @@ fn end_with_a_committed_signature_that_is_not_from_the_vrf_key_is_refused() {
         vrf_signature: forged,
         log_size: 1,
         root: log_root(1),
+        hint_targets: vec![],
     });
 }
 
@@ -1779,6 +1975,7 @@ fn end_with_a_vrf_drawn_for_another_seed_is_refused() {
         vrf_signature: sig,
         log_size: 1,
         root: log_root(1),
+        hint_targets: vec![],
     });
 }
 
@@ -1787,7 +1984,7 @@ fn end_with_a_vrf_drawn_for_another_seed_is_refused() {
 fn a_verdict_after_end_is_refused() {
     let mut fx = Fx::running();
     fx.end();
-    fx.verdict(Verdict::Tag { hunter: 0, target: 1 });
+    fx.verdict(tag(0, 1));
 }
 
 #[test]
@@ -1814,7 +2011,7 @@ fn end_gives_the_pot_only_to_survivors() {
     let body = fx.start_body();
     fx.verdict(body);
     let hunter = fx.hunter_of(0);
-    fx.verdict(Verdict::Tag { hunter, target: 0 });
+    fx.verdict(tag(hunter, 0));
     fx.end();
     // Survivors are players 1 and 2: 5 each, the remainder 1 to player 1.
     let paid: Vec<u128> = fx.view().players.iter().map(|p| p.paid.0).collect();
@@ -1825,18 +2022,23 @@ fn end_gives_the_pot_only_to_survivors() {
 
 // ── Abort ───────────────────────────────────────────────────────────────────────────────────
 
+/// Nothing that happened during play was checked against the ring, so an abort pays none of it:
+/// every stake comes back, hint money with it, and a Tag's transfer does not stand.
 #[test]
-fn a_running_match_aborted_after_the_referee_timeout_refunds_current_heads() {
+fn a_running_match_aborted_after_the_referee_timeout_refunds_the_original_stakes() {
     let mut fx = Fx::running();
-    fx.verdict(Verdict::Tag { hunter: 2, target: 1 });
+    fx.verdicts(vec![hint_of(0, BEARING), tag(2, 1)]);
     fx.now += REFEREE_TIMEOUT_MS;
     fx.abort();
     let v = fx.view();
     assert_eq!(v.phase, Phase::Aborted);
+    assert_eq!(v.settled_as, Some(SettledAs::RefundedAbort));
     assert_eq!(fx.heads(), vec![0, 0, 0]);
-    assert_eq!(fx.bal("alice.testnet"), 2 * STAKE);
-    assert_eq!(fx.bal("bob.testnet"), STAKE);
-    assert_eq!(fx.bal("carol.testnet"), 3 * STAKE);
+    assert_eq!(fx.pool(), 0);
+    assert_eq!(fx.paid(), vec![STAKE; 3]);
+    for p in PLAYERS {
+        assert_eq!(fx.bal(p), 2 * STAKE);
+    }
 }
 
 #[test]
@@ -1973,8 +2175,8 @@ fn vector_match() -> (Fx, near_sdk::serde_json::Value) {
     m.end_ms = Some(end_ms);
     fx.c.matches.remove(&fx.id);
     fx.c.matches.insert(id, m);
-    let ring = fx.c.rings.remove(&fx.id).unwrap();
-    fx.c.rings.insert(id, ring);
+    let ring = fx.c.plays.remove(&fx.id).unwrap();
+    fx.c.plays.insert(id, ring);
     fx.c.verdict_heads.remove(&fx.id);
     fx.c.verdict_heads.insert(id, vhex(&v["verdicts"][0]["digest"]));
     fx.id = id;
@@ -2027,7 +2229,7 @@ fn the_golden_vector_start_is_refused_for_players_it_does_not_name() {
 #[test]
 #[should_panic(expected = "alpha seed is not this match id")]
 fn the_golden_vector_end_meets_its_ring_commit_but_its_alpha_seed_is_not_the_match_id() {
-    // The vector's End reveals the signature its Start committed to (ring check passes); its
+    // The vector's End reveals the signature its Start committed to (the reveal checks pass); its
     // alpha seed is a placeholder, which the contract refuses.
     let (mut fx, v) = vector_match();
     fx.apply_proved(
@@ -2094,25 +2296,35 @@ fn a_maximal_match_fits_in_the_storage_its_deposit_paid_for() {
         };
         MAX_CHECKPOINTS
     ];
-    let ring = RingRecord {
+    let hints = (0..MAX_HINTS).map(|_| PlayEvent::Hint {
+        from: 0,
+        amount: u128::MAX,
+    });
+    let eliminations = (1..MAX_PLAYERS).map(|i| PlayEvent::Tag {
+        hunter: 0,
+        target: u16::from(i),
+        credit: u128::MAX,
+    });
+    let ring = PlayRecord {
         vrf_sender: long("vrf"),
-        eliminations: (1..MAX_PLAYERS)
-            .map(|i| Elimination::Tag {
-                hunter: 0,
-                target: u16::from(i),
-            })
-            .collect(),
+        events: hints.chain(eliminations).collect(),
+        hint_pool: u128::MAX,
+        violation: Some(Violation {
+            check: tail_protocol::settle::Check::Pool,
+            event: Some(u32::MAX),
+        }),
     };
     let before = env::storage_usage();
     fx.c.matches.insert([9; 16], m);
     fx.c.matches.flush();
     fx.c.checkpoints.insert([9; 16], checkpoints);
     fx.c.checkpoints.flush();
-    fx.c.rings.insert([9; 16], ring);
-    fx.c.rings.flush();
+    fx.c.plays.insert([9; 16], ring);
+    fx.c.plays.flush();
     fx.c.verdict_heads.insert([9; 16], [8; 32]);
     fx.c.verdict_heads.flush();
     let used = u128::from(env::storage_usage() - before);
+    println!("a maximal match stores {used} bytes");
     assert!(used <= MATCH_STORAGE_BYTES, "a maximal match uses {used} bytes");
     // The bound is not wildly loose either: the deposit is for this, not a guess.
     assert!(
@@ -2763,10 +2975,11 @@ fn stored_bytes() -> u128 {
     n
 }
 
-/// Start, 11 tags (the first hunter in the ring takes everyone else, the longest elimination
-/// record), 120 checkpoints and End with a maximal alpha.
+/// Start, `MAX_HINTS` hints and 11 tags (the first hunter in the ring asks about and takes everyone
+/// else: the longest play record), 120 checkpoints and End with a maximal alpha.
 fn play_a_maximal_match(fx: &mut Fx, players: &[AccountId]) {
     let alpha = long_alpha(fx.id, MAX_ALPHA_LEN);
+    fx.alpha = Some(alpha.clone());
     let ids: Vec<&str> = players.iter().map(|a| a.as_str()).collect();
     let start_ms = fx.now;
     fx.verdict(Verdict::Start {
@@ -2775,19 +2988,28 @@ fn play_a_maximal_match(fx: &mut Fx, players: &[AccountId]) {
         start_ms,
         end_ms: start_ms + DURATION,
     });
-    let order = build_ring(&ids, &vrf_sig(&alpha));
-    let index = |a: &String| ids.iter().position(|i| i == a).unwrap() as u16;
-    for target in &order[1..] {
-        fx.verdict(Verdict::Tag {
-            hunter: index(&order[0]),
-            target: index(target),
-        });
+    let order = ring_order(&ids, &vrf_sig(&alpha));
+    for _ in 0..MAX_HINTS / 40 {
+        fx.verdicts((0..40).map(|_| free_hint(order[0])).collect());
+    }
+    for &target in &order[1..] {
+        fx.verdict(tag(order[0], target));
     }
     for i in 0..MAX_CHECKPOINTS as u64 {
         fx.now = start_ms + (i + 1) * CHECKPOINT_SPACING_MS;
         fx.verdict(cp(i + 1));
     }
-    fx.verdict(end_at(&alpha, MAX_CHECKPOINTS as u64 + 1));
+    let (end, proofs) = fx.chain(vec![end_at(&alpha, MAX_CHECKPOINTS as u64 + 1)]);
+    fx.as_("relay.testnet");
+    let gas = host_gas(|| fx.c.apply(end, Some(proofs)));
+    // The replay of 240 hints and 11 tags, the ring rebuilt with host SHA-256 and the payout. The
+    // mock counts host functions only (not wasm instructions, not the map writes at the end of
+    // the call), so this is a floor; the e2e measures the real cost.
+    println!(
+        "host gas: apply(End of a maximal match) {} Ggas",
+        gas / 1_000_000_000
+    );
+    assert!(gas < 30_000_000_000_000, "End of a maximal match used {gas} gas");
 }
 
 /// Re-review port: through the real methods with every id at 64 characters (one token too),
@@ -2861,7 +3083,7 @@ fn storage_never_exceeds_the_deposits_with_maximal_ids() {
         fx.c.balances.flush();
         fx.c.matches.flush();
         fx.c.checkpoints.flush();
-        fx.c.rings.flush();
+        fx.c.plays.flush();
         fx.c.verdict_heads.flush();
         let used = stored_bytes();
         assert!(
@@ -2944,9 +3166,12 @@ struct Model {
     at_start: std::collections::HashMap<MatchId, u128>,
     /// Net tokens held per token: accepted by ft_on_transfer minus paid out by withdraw.
     held: std::collections::HashMap<AccountId, u128>,
-    /// Each running match's current target per player, from the committed ring, so the model
-    /// only generates Tags and Forfeits the ring check at End accepts.
-    targets: std::collections::HashMap<MatchId, Vec<Option<u16>>>,
+    /// Each running match as the honest referee sees it (targets from the committed ring, pending
+    /// hints, hint targets), so the model signs the credits and hint targets the replay accepts.
+    honest: std::collections::HashMap<MatchId, Honest>,
+    /// Matches that got one off-ring Tag: they take only Checkpoints and End from then on, and
+    /// End must refund them.
+    cheated: std::collections::HashSet<MatchId>,
 }
 
 impl Model {
@@ -2967,19 +3192,31 @@ impl Model {
                 if &v.token != token {
                     continue;
                 }
-                let live = v.players.iter().map(|p| p.head.0).sum::<u128>() + v.sponsor_pot.0;
+                let live = v.players.iter().map(|p| p.head.0).sum::<u128>() + v.sponsor_pot.0 + v.hint_pool.0;
                 in_matches += live;
                 match v.phase {
                     Phase::Running => assert_eq!(live, self.at_start[id], "match total moved while running"),
                     Phase::Ended | Phase::Aborted => assert_eq!(live, 0, "settled match still holds money"),
                     Phase::Lobby => {}
                 }
-                if let (Phase::Ended, Some(total)) = (v.phase, self.at_start.get(id)) {
-                    assert_eq!(
-                        v.players.iter().map(|p| p.paid.0).sum::<u128>(),
-                        *total,
-                        "End paid out a different total"
-                    );
+                let paid: u128 = v.players.iter().map(|p| p.paid.0).sum();
+                let refunded = v.players.iter().all(|p| p.paid == v.stake);
+                match v.settled_as {
+                    Some(SettledAs::Payout) => {
+                        assert!(
+                            !self.cheated.contains(id),
+                            "a match with an off-ring Tag paid out"
+                        );
+                        assert_eq!(paid, self.at_start[id], "End paid out a different total");
+                    }
+                    Some(SettledAs::RefundedRuleViolation) => {
+                        assert!(self.cheated.contains(id), "an honest match was refunded");
+                        assert!(refunded, "a refund paid something other than the stakes");
+                    }
+                    Some(SettledAs::RefundedAbort) => {
+                        assert!(refunded, "abort paid something other than the stakes");
+                    }
+                    None => {}
                 }
             }
             let held = self.held.get(token).copied().unwrap_or(0);
@@ -3177,12 +3414,12 @@ impl Model {
                 let (start_ms, end_ms) = (v.start_ms.unwrap(), v.end_ms.unwrap());
                 let now = self.fx.now;
                 let in_play = now <= end_ms + VERDICT_GRACE_MS;
-                let targets = &self.targets[&id];
+                let targets = &self.honest[&id].targets;
                 let a = *rng.pick(&live).unwrap();
                 let others: Vec<u16> = live.iter().copied().filter(|&b| b != a).collect();
+                let honest = in_play && !others.is_empty() && !self.cheated.contains(&id);
                 match rng.below(10) {
-                    0..=3 if in_play && !others.is_empty() => {
-                        let b = *rng.pick(&others).unwrap();
+                    0..=3 if honest => {
                         let kind = rng.below(3) as u8;
                         let amount = hint_price(v.stake.0, kind).unwrap();
                         if amount > v.players[usize::from(a)].head.0 {
@@ -3190,20 +3427,24 @@ impl Model {
                         }
                         Verdict::Hint {
                             from: a,
-                            to: b,
                             amount,
                             hint_id: 0,
                             hint: kind,
                         }
                     }
-                    4 | 5 if in_play && !others.is_empty() => Verdict::Tag {
-                        hunter: a,
-                        target: targets[usize::from(a)].unwrap(),
-                    },
-                    6 if in_play && !others.is_empty() => Verdict::Forfeit {
-                        player: a,
-                        to: targets.iter().position(|&t| t == Some(a)).unwrap() as u16,
-                    },
+                    4 | 5 if honest => {
+                        let target = targets[usize::from(a)].unwrap();
+                        // One Tag in five takes someone other than the target: End must refund.
+                        let wrong = others.iter().copied().find(|&b| b != target);
+                        match wrong {
+                            Some(b) if rng.below(5) == 0 => {
+                                self.cheated.insert(id);
+                                tag(a, b)
+                            }
+                            _ => tag(a, target),
+                        }
+                    }
+                    6 if honest => forfeit(a, targets.iter().position(|&t| t == Some(a)).unwrap() as u16),
                     7 | 8 => {
                         let kept = self.fx.c.get_roots(hex::encode(id)).unwrap().checkpoints.len() as u64;
                         if (kept + 1) * CHECKPOINT_SPACING_MS > now.min(end_ms).saturating_sub(start_ms) {
@@ -3218,37 +3459,22 @@ impl Model {
             Phase::Ended | Phase::Aborted => return,
         };
         self.fx.id = id;
-        self.fx.verdict(body.clone());
-        self.track(id, &body);
+        let signed = self
+            .honest
+            .get_mut(&id)
+            .map_or(body.clone(), |h| h.sign(body.clone()));
+        self.fx.verdict(body);
+        self.track(id, &signed);
     }
 
-    /// Follows an applied verdict in the model: the match total at Start, and every target change.
+    /// Follows an applied verdict in the model: the match total at Start and the honest referee's
+    /// view (`Honest::sign` already followed every other verdict).
     fn track(&mut self, id: MatchId, body: &Verdict) {
-        match *body {
-            Verdict::Start { .. } => {
-                let v = self.view(id);
-                let total = v.players.iter().map(|p| p.head.0).sum::<u128>() + v.sponsor_pot.0;
-                self.at_start.insert(id, total);
-                let order = ring_of(&v, id);
-                let mut targets = vec![None; order.len()];
-                for (k, &h) in order.iter().enumerate() {
-                    targets[usize::from(h)] = Some(order[(k + 1) % order.len()]);
-                }
-                self.targets.insert(id, targets);
-            }
-            Verdict::Tag {
-                hunter: winner,
-                target: loser,
-            }
-            | Verdict::Forfeit {
-                player: loser,
-                to: winner,
-            } => {
-                let t = self.targets.get_mut(&id).unwrap();
-                let next = t[usize::from(loser)].take();
-                t[usize::from(winner)] = next.filter(|&n| n != winner);
-            }
-            _ => {}
+        if let Verdict::Start { .. } = body {
+            let v = self.view(id);
+            let total = v.players.iter().map(|p| p.head.0).sum::<u128>() + v.sponsor_pot.0;
+            self.at_start.insert(id, total);
+            self.honest.insert(id, Honest::new(&ring_of(&v, &alpha_for(id))));
         }
     }
 }
@@ -3259,6 +3485,7 @@ fn money_is_conserved_over_random_operation_sequences() {
         .map(|i| format!("p{i}.testnet"))
         .chain(["dao.testnet".to_owned()])
         .collect();
+    let mut refunded = 0;
     for seed in 1..=6u64 {
         let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         let mut model = Model {
@@ -3268,7 +3495,8 @@ fn money_is_conserved_over_random_operation_sequences() {
             matches: Vec::new(),
             at_start: std::collections::HashMap::new(),
             held: std::collections::HashMap::new(),
-            targets: std::collections::HashMap::new(),
+            honest: std::collections::HashMap::new(),
+            cheated: std::collections::HashSet::new(),
         };
         for a in &accounts {
             model.fx.register(a);
@@ -3291,10 +3519,16 @@ fn money_is_conserved_over_random_operation_sequences() {
             ended > 0 && aborted > 0,
             "seed {seed}: the run never ended ({ended}) or aborted ({aborted}) a match"
         );
+        refunded += model
+            .matches
+            .iter()
+            .filter(|id| model.view(**id).settled_as == Some(SettledAs::RefundedRuleViolation))
+            .count();
     }
+    assert!(refunded > 0, "no run refunded a match for an off-ring Tag");
 }
 
-// ── Hardening: payout through withdraw, config, VRF alpha, timing, ring check, migration ──────
+// ── Hardening: payout through withdraw, config, VRF alpha, timing, End replay, migration ─────
 
 /// Audit D2: the relay registers a player with itself as payout, and the player account holds only
 /// a function-call key, so tokens paid there were stranded.
@@ -3549,7 +3783,7 @@ fn rotating_the_vrf_sender_by_anyone_but_the_owner_is_refused() {
 // Timing.
 
 fn hint() -> Verdict {
-    hint_of(0, 1, NEAR)
+    hint_of(0, NEAR)
 }
 
 #[test]
@@ -3558,14 +3792,8 @@ fn a_hint_tag_and_forfeit_land_up_to_the_grace_after_end() {
     fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS;
     fx.verdict(hint());
     let ring = fx.ring();
-    fx.verdict(Verdict::Tag {
-        hunter: ring[0],
-        target: ring[1],
-    });
-    fx.verdict(Verdict::Forfeit {
-        player: ring[2],
-        to: ring[0],
-    });
+    fx.verdict(tag(ring[0], ring[1]));
+    fx.verdict(forfeit(ring[2], ring[0]));
     assert_eq!(fx.view().players.iter().filter(|p| !p.out).count(), 1);
 }
 
@@ -3583,10 +3811,7 @@ fn a_tag_after_the_grace_is_refused() {
     let mut fx = Fx::running();
     fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS + 1;
     let ring = fx.ring();
-    fx.verdict(Verdict::Tag {
-        hunter: ring[0],
-        target: ring[1],
-    });
+    fx.verdict(tag(ring[0], ring[1]));
 }
 
 #[test]
@@ -3595,10 +3820,7 @@ fn a_forfeit_after_the_grace_is_refused() {
     let mut fx = Fx::running();
     fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS + 1;
     let ring = fx.ring();
-    fx.verdict(Verdict::Forfeit {
-        player: ring[1],
-        to: ring[0],
-    });
+    fx.verdict(forfeit(ring[1], ring[0]));
 }
 
 #[test]
@@ -3606,10 +3828,7 @@ fn a_forfeit_after_the_grace_is_refused() {
 fn an_early_end_with_two_survivors_is_refused() {
     let mut fx = Fx::running();
     let ring = fx.ring();
-    fx.verdict(Verdict::Tag {
-        hunter: ring[0],
-        target: ring[1],
-    });
+    fx.verdict(tag(ring[0], ring[1]));
     fx.now = fx.view().end_ms.unwrap() - 1;
     let body = fx.end_body();
     fx.verdict(body);
@@ -3620,14 +3839,8 @@ fn an_early_end_with_one_survivor_settles_and_pays_it_everything() {
     let mut fx = Fx::running();
     let ring = fx.ring();
     // The winner of the first tag inherits the loser's target and takes it too.
-    fx.verdict(Verdict::Tag {
-        hunter: ring[0],
-        target: ring[1],
-    });
-    fx.verdict(Verdict::Tag {
-        hunter: ring[0],
-        target: ring[2],
-    });
+    fx.verdict(tag(ring[0], ring[1]));
+    fx.verdict(tag(ring[0], ring[2]));
     let body = fx.end_body();
     fx.verdict(body);
     let v = fx.view();
@@ -3635,37 +3848,141 @@ fn an_early_end_with_one_survivor_settles_and_pays_it_everything() {
     assert_eq!(v.players[usize::from(ring[0])].paid, U128(3 * STAKE));
 }
 
-// Ring check at End.
+// The replay at End, and the refund when it fails.
 
-/// The referee could tag anyone: the contract only checked that both players were in.
-#[test]
-#[should_panic(expected = "a Tag did not follow the ring")]
-fn a_match_whose_tag_does_not_follow_the_ring_is_refused_at_end() {
-    let mut fx = Fx::running();
-    let ring = fx.ring();
-    // ring[0] hunts ring[1], not ring[2]. The Tag itself applies; End refuses the match.
-    fx.verdict(Verdict::Tag {
-        hunter: ring[0],
-        target: ring[2],
-    });
-    fx.end();
+/// A match refunded because its End replay failed at `violation`: phase Ended, every stake and the
+/// sponsor back, nothing left in the match.
+fn assert_refunded(fx: &Fx, violation: &str) {
+    let v = fx.view();
+    assert_eq!(v.phase, Phase::Ended);
+    assert_eq!(v.settled_as, Some(SettledAs::RefundedRuleViolation));
+    assert_eq!(v.violation.as_deref(), Some(violation));
+    assert_eq!(fx.heads(), vec![0; v.players.len()]);
+    assert_eq!(fx.pool(), 0);
+    assert_eq!(v.sponsor_pot, U128(0));
+    assert_eq!(fx.paid(), vec![STAKE; v.players.len()]);
+    for p in &v.players {
+        // Each started with 2 stakes and put one in.
+        assert_eq!(fx.bal(p.account_id.as_str()), 2 * STAKE);
+    }
 }
 
+/// End with these hint targets instead of the honest ones.
+fn end_naming(fx: &mut Fx, hint_targets: Vec<u16>) {
+    fx.now = fx.now.max(fx.view().end_ms.unwrap());
+    let Verdict::End {
+        alpha,
+        vrf_signature,
+        log_size,
+        root,
+        ..
+    } = fx.end_body()
+    else {
+        unreachable!()
+    };
+    fx.verdict(Verdict::End {
+        alpha,
+        vrf_signature,
+        log_size,
+        root,
+        hint_targets,
+    });
+}
+
+/// The referee could tag anyone: the contract only checked that both players were in. The Tag
+/// applies during play (the ring is secret then); End's replay catches it and nobody keeps it.
 #[test]
-fn a_refused_end_leaves_the_match_to_abort_with_heads_refunded() {
+fn a_match_whose_tag_does_not_follow_the_ring_is_refunded_at_end() {
+    let mut fx = Fx::locked();
+    fx.register("dao.testnet");
+    let msg = format!(r#"{{"sponsor":"{}"}}"#, hex::encode(fx.id));
+    assert_eq!(fx.transfer(&usdc(), "dao.testnet", 11, &msg), 0);
+    let body = fx.start_body();
+    fx.verdict(body);
+    let ring = fx.ring();
+    // ring[0] hunts ring[1], not ring[2].
+    fx.verdict(tag(ring[0], ring[2]));
+    fx.end();
+    assert_refunded(&fx, "event 0: a Tag did not follow the ring");
+    assert_eq!(fx.bal("dao.testnet"), 11);
+    let logs = near_sdk::test_utils::get_logs();
+    let event = logs
+        .iter()
+        .find(|l| l.starts_with("EVENT_JSON:"))
+        .expect("a refund event");
+    assert!(event.contains(r#""event":"match_refunded""#), "{event}");
+    assert!(
+        event.contains(r#""settled_as":"refunded_rule_violation""#),
+        "{event}"
+    );
+    // Settled for good: no abort, no further verdict.
+    fx.now += REFEREE_TIMEOUT_MS;
+    let why = refusal(|| fx.abort());
+    assert!(why.contains("match already settled"), "{why}");
+}
+
+/// Without End there is no replay, so the off-ring transfer cannot stand through abort either.
+#[test]
+fn an_off_ring_tag_whose_end_never_comes_is_refunded_by_abort() {
     let mut fx = Fx::running();
     let ring = fx.ring();
-    fx.verdict(Verdict::Tag {
-        hunter: ring[0],
-        target: ring[2],
-    });
-    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fx.end()));
-    assert!(r.is_err());
+    fx.verdict(tag(ring[0], ring[2]));
     fx.now = fx.view().end_ms.unwrap() + REFEREE_TIMEOUT_MS;
     fx.abort();
     assert_eq!(fx.view().phase, Phase::Aborted);
-    let total: u128 = PLAYERS.iter().map(|p| fx.bal(p)).sum();
-    assert_eq!(total, 6 * STAKE, "every unit is back in a balance");
+    for p in PLAYERS {
+        assert_eq!(fx.bal(p), 2 * STAKE);
+    }
+}
+
+/// The hint target the referee reveals at End must be the asker's target when the hint was paid.
+#[test]
+fn a_hint_whose_revealed_target_is_not_the_askers_target_is_refunded_at_end() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    fx.verdict(hint_of(ring[0], NEAR));
+    end_naming(&mut fx, vec![ring[2]]);
+    assert_refunded(&fx, "event 0: a hint was not about its asker's target");
+}
+
+#[test]
+fn an_end_naming_fewer_hint_targets_than_hints_is_refunded() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    fx.verdicts(vec![hint_of(ring[0], NEAR), hint_of(ring[1], NEAR)]);
+    end_naming(&mut fx, vec![ring[1]]);
+    assert_refunded(
+        &fx,
+        "End names a different number of hint targets than there were hints",
+    );
+}
+
+/// A credit below what the target's hints paid in fits the pool, so it applies during play; the
+/// replay finds it short.
+#[test]
+fn a_tag_whose_credit_is_not_the_targets_pending_hints_is_refunded_at_end() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    fx.verdict(hint_of(ring[0], NEAR));
+    fx.verdict(Verdict::Tag {
+        hunter: ring[0],
+        target: ring[1],
+        credit: NEAR_PRICE - 1,
+    });
+    fx.end();
+    assert_refunded(&fx, "event 1: a credit is not the hints paid onto its target");
+}
+
+/// The contract's own pool follows the same credits the replay checks, so it cannot drift; this
+/// pins that the End check is wired, by corrupting the stored pool.
+#[test]
+fn a_pool_that_does_not_end_at_zero_is_refunded() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    fx.verdict(hint_of(ring[0], NEAR));
+    fx.c.plays.get_mut(&fx.id).unwrap().hint_pool += 1;
+    fx.end();
+    assert_refunded(&fx, "the hint pool does not end at 0");
 }
 
 /// A running four-player match (alice, bob, carol, dave).
@@ -3704,10 +4021,7 @@ fn each_winner_hunts_the_losers_target_next_and_the_last_one_standing_settles() 
     let mut fx = running_with_four();
     let ring = fx.ring();
     for (hunter, target) in [(0, 1), (0, 2), (3, 0)] {
-        fx.verdict(Verdict::Tag {
-            hunter: ring[hunter],
-            target: ring[target],
-        });
+        fx.verdict(tag(ring[hunter], ring[target]));
     }
     let body = fx.end_body();
     fx.verdict(body);
@@ -3717,48 +4031,53 @@ fn each_winner_hunts_the_losers_target_next_and_the_last_one_standing_settles() 
 }
 
 #[test]
-#[should_panic(expected = "a Tag did not follow the ring")]
-fn a_tag_of_someone_elses_inherited_target_is_refused_at_end() {
+fn a_tag_of_someone_elses_inherited_target_is_refunded_at_end() {
     let mut fx = running_with_four();
     let ring = fx.ring();
     // ring[0] takes ring[1] and with it ring[2]; ring[3] still hunts ring[0], not ring[2].
-    fx.verdict(Verdict::Tag {
-        hunter: ring[0],
-        target: ring[1],
-    });
-    fx.verdict(Verdict::Tag {
-        hunter: ring[3],
-        target: ring[2],
-    });
+    fx.verdict(tag(ring[0], ring[1]));
+    fx.verdict(tag(ring[3], ring[2]));
     fx.end();
+    assert_refunded(&fx, "event 1: a Tag did not follow the ring");
 }
 
 #[test]
-#[should_panic(expected = "a Forfeit did not pay the forfeiter's hunter")]
-fn a_match_whose_forfeit_paid_someone_other_than_the_hunter_is_refused_at_end() {
+fn a_match_whose_forfeit_paid_someone_other_than_the_hunter_is_refunded_at_end() {
     let mut fx = Fx::running();
     let ring = fx.ring();
     // ring[0] hunts ring[1]; a forfeit by ring[1] must go to ring[0].
-    fx.verdict(Verdict::Forfeit {
-        player: ring[1],
-        to: ring[2],
-    });
+    fx.verdict(forfeit(ring[1], ring[2]));
     fx.end();
+    assert_refunded(&fx, "event 0: a Forfeit did not pay the forfeiter's hunter");
+}
+
+/// After a Forfeit the winner inherits the forfeiter's target, and hints by the winner are about
+/// that player from then on.
+#[test]
+fn hints_follow_the_target_a_forfeit_handed_on() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    fx.verdicts(vec![
+        hint_of(ring[1], NEAR),
+        forfeit(ring[1], ring[0]),
+        hint_of(ring[0], BEARING),
+    ]);
+    fx.end();
+    assert_eq!(fx.view().settled_as, Some(SettledAs::Payout));
+    let mut want = vec![0; 3];
+    // ring[1]'s hint was about ring[2], who survives with it; ring[0]'s too.
+    want[usize::from(ring[0])] = 2 * STAKE - NEAR_PRICE - BEARING_PRICE;
+    want[usize::from(ring[2])] = STAKE + NEAR_PRICE + BEARING_PRICE;
+    assert_eq!(fx.paid(), want);
 }
 
 #[test]
 fn a_forfeit_to_the_hunter_then_a_tag_of_the_inherited_target_settles() {
     let mut fx = Fx::running();
     let ring = fx.ring();
-    fx.verdict(Verdict::Forfeit {
-        player: ring[1],
-        to: ring[0],
-    });
+    fx.verdict(forfeit(ring[1], ring[0]));
     // ring[0] now hunts ring[1]'s target, ring[2].
-    fx.verdict(Verdict::Tag {
-        hunter: ring[0],
-        target: ring[2],
-    });
+    fx.verdict(tag(ring[0], ring[2]));
     let body = fx.end_body();
     fx.verdict(body);
     assert_eq!(fx.view().phase, Phase::Ended);
@@ -3773,8 +4092,8 @@ fn downgrade_to_v1(fx: &mut Fx) {
     fx.c.balances.flush();
     fx.c.matches.flush();
     fx.c.checkpoints.flush();
-    fx.c.rings.remove(&fx.id);
-    fx.c.rings.flush();
+    fx.c.plays.remove(&fx.id);
+    fx.c.plays.flush();
     fx.c.verdict_heads.remove(&fx.id);
     fx.c.verdict_heads.flush();
     let v1 = migrate::TailV1 {
@@ -3818,7 +4137,7 @@ fn migrate_keeps_balances_payouts_and_matches_and_pins_the_vrf_sender() {
     assert_eq!(old.players.len(), 3);
     assert_eq!(old.vrf_sender, None);
     assert_eq!(fx.c.get_verdict_head(hex::encode(fx.id)), None);
-    // The nonce carried over: the next match gets a new id, a ring record and a verdict head.
+    // The nonce carried over: the next match gets a new id, a play record and a verdict head.
     let old_id = fx.id;
     fx.id = fx.create(cfg(usdc(), 0));
     assert_ne!(fx.id, old_id);
@@ -3845,10 +4164,7 @@ fn a_match_created_after_migrate_runs_to_end_with_the_ring_checked() {
     let body = fx.start_body();
     fx.verdict(body);
     let ring = fx.ring();
-    fx.verdict(Verdict::Tag {
-        hunter: ring[2],
-        target: ring[0],
-    });
+    fx.verdict(tag(ring[2], ring[0]));
     fx.end();
     assert_eq!(fx.view().phase, Phase::Ended);
 }
@@ -3876,11 +4192,11 @@ fn a_lobby_from_before_migrate_aborts_with_a_refund_once_its_lock_runs_out() {
 }
 
 #[test]
-fn a_running_match_from_before_migrate_takes_no_verdict_and_aborts_with_its_heads_refunded() {
+fn a_running_match_from_before_migrate_takes_no_verdict_and_aborts_with_its_stakes_refunded() {
     let mut fx = Fx::running();
     fx.verdict(hint());
     let mut fx = migrated(fx);
-    for body in [hint(), Verdict::Tag { hunter: 0, target: 1 }, cp(1)] {
+    for body in [hint(), tag(0, 1), cp(1)] {
         let why = refusal(|| fx.verdict(body));
         assert!(why.contains("match was created before the upgrade"), "{why}");
     }
@@ -3888,9 +4204,10 @@ fn a_running_match_from_before_migrate_takes_no_verdict_and_aborts_with_its_head
     assert!(why.contains("match was created before the upgrade"), "{why}");
     fx.now += REFEREE_TIMEOUT_MS;
     fx.abort();
-    let total: u128 = PLAYERS.iter().map(|p| fx.bal(p)).sum();
-    assert_eq!(total, 6 * STAKE);
-    assert_eq!(fx.bal("alice.testnet"), 2 * STAKE - NEAR_PRICE);
+    // Every stake back, whatever the old code moved between heads.
+    for p in PLAYERS {
+        assert_eq!(fx.bal(p), 2 * STAKE);
+    }
 }
 
 #[test]

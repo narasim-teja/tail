@@ -6,9 +6,17 @@
 //! creation. Each verdict names the digest of the one before it (`prev`), so the contract holds one
 //! chain of verdicts per match and a forked stream cannot land. Every Checkpoint and End comes with
 //! an RFC 9162 consistency proof from the last anchored log root, so the anchored roots are one
-//! append-only log. `abort` is the refund path when the referee goes silent. At `End` the contract
-//! rebuilds the ring from the revealed VRF output and refuses the match unless every Tag and
-//! Forfeit it applied followed that ring.
+//! append-only log.
+//!
+//! Money only becomes withdrawable after the contract has replayed and checked the whole match.
+//! During play heads move as verdicts land, but they stay inside the match: a Hint pays the
+//! asker's price into the match's hint pool (the verdict does not say whom it was about), and a
+//! Tag or Forfeit first credits the loser with what hints about them paid in, then moves the
+//! loser's head to the winner. At `End` the contract rebuilds the ring from the revealed VRF
+//! output and replays every Hint, Tag and Forfeit against it and the revealed hint targets
+//! (`tail_protocol::settle`). Only if every step holds does it pay out the heads. If any step
+//! fails, it refunds every original stake and records the first broken rule. `abort`, the path
+//! when the referee goes silent, refunds the original stakes too.
 //!
 //! Storage is always paid for up front: `register_for` pays for an account's payout record and one
 //! balance per allowed token, and `create_match` pays for the largest a match can grow. Nothing
@@ -24,9 +32,10 @@ use near_sdk::{
 };
 use tail_protocol::digest::verdict_digest;
 use tail_protocol::merkle::{verify_consistency_with, verify_with};
-use tail_protocol::ring::{build_ring, players_hash, ring_commit};
+use tail_protocol::ring::{players_hash, ring_commit, ring_order};
+use tail_protocol::settle::{replay, PlayEvent, Violation};
 use tail_protocol::{
-    hint_price, Hash, LogEntry, MatchId, SignedVerdict, Verdict, CHECKPOINT_MS, REFEREE_TIMEOUT_MS,
+    hint_price, Hash, LogEntry, MatchId, SignedVerdict, Verdict, CHECKPOINT_MS, MAX_HINTS, REFEREE_TIMEOUT_MS,
 };
 
 mod migrate;
@@ -72,9 +81,10 @@ pub const START_SKEW_MS: u64 = 300_000;
 /// can move once the overdue abort is open.
 pub const VERDICT_GRACE_MS: u64 = 300_000;
 /// Upper bound on what one match ever stores (the match record at its largest, a full checkpoint
-/// list, a full ring record and the verdict head, with NEAR's 40-byte per-record overhead).
-/// `create_match` charges it up front. A unit test checks the bound against a maximal match.
-pub const MATCH_STORAGE_BYTES: u128 = 8_300;
+/// list, a full play record with `MAX_HINTS` hints and every elimination, and the verdict head,
+/// with NEAR's 40-byte per-record overhead). `create_match` charges it up front. A unit test
+/// checks the bound against a maximal match.
+pub const MATCH_STORAGE_BYTES: u128 = 13_200;
 /// One payout record with 64-character account ids, including the 40-byte record overhead.
 pub const PAYOUT_RECORD_BYTES: u128 = 180;
 /// One (account, token) balance record with 64-character ids, including the record overhead.
@@ -181,35 +191,31 @@ impl Match {
     }
 }
 
-/// A Tag or Forfeit as it was applied, kept so `End` can replay them against the revealed ring.
-#[near(serializers = [borsh])]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Elimination {
-    Tag { hunter: u16, target: u16 },
-    Forfeit { player: u16, to: u16 },
-}
-
-impl Elimination {
-    /// `(winner, loser)`: the player who took the head and the player who went out.
-    fn winner_loser(self) -> (u16, u16) {
-        match self {
-            Self::Tag { hunter, target } => (hunter, target),
-            Self::Forfeit { player, to } => (to, player),
-        }
-    }
-}
-
-/// What `End` needs to check the ring, kept apart from `Match` so the match records of an earlier
-/// deployment stay readable after an in-place upgrade. Written by `create_match`; a match created
-/// before the upgrade has none and can only settle by `abort`.
+/// What `End` needs to replay the match, kept apart from `Match` so the match records of an
+/// earlier deployment stay readable after an in-place upgrade. Written by `create_match`; a match
+/// created before the upgrade has none and can only settle by `abort`.
 #[near(serializers = [borsh])]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RingRecord {
+pub struct PlayRecord {
     /// The OutLayer caller the VRF alpha must name, copied from the contract at creation.
     pub vrf_sender: AccountId,
-    /// Every applied Tag and Forfeit in order; at most `MAX_PLAYERS - 1`, since each needs two
-    /// players still in and puts one out.
-    pub eliminations: Vec<Elimination>,
+    /// Every applied Hint, Tag and Forfeit in verdict order: at most `MAX_HINTS` hints, and at
+    /// most `MAX_PLAYERS - 1` eliminations, since each needs two players still in and puts one out.
+    pub events: Vec<PlayEvent>,
+    /// Hint money not yet credited to anyone: what hints paid in, less the credits Tags and
+    /// Forfeits moved onto their losers. `sum(heads) + hint_pool + pot` is constant while running.
+    pub hint_pool: u128,
+    /// The first rule the `End` replay found broken, when the match was refunded for it.
+    pub violation: Option<Violation>,
+}
+
+impl PlayRecord {
+    fn hints(&self) -> usize {
+        self.events
+            .iter()
+            .filter(|e| matches!(e, PlayEvent::Hint { .. }))
+            .count()
+    }
 }
 
 /// `ft_transfer_call` message: `{"credit":"<account>"}` or `{"sponsor":"<match id hex>"}`.
@@ -243,7 +249,7 @@ pub struct Tail {
     /// The account OutLayer names as `sender` in the VRF alpha: the referee's OutLayer caller.
     /// New matches pin it; running matches keep theirs. Appended by `migrate` (v1 → v2).
     vrf_sender: AccountId,
-    rings: LookupMap<MatchId, RingRecord>,
+    plays: LookupMap<MatchId, PlayRecord>,
     /// The `verdict_digest` of each match's last applied verdict (zeros before the first): the
     /// next verdict's `prev` must equal it. Written by `create_match`, so it never allocates later.
     verdict_heads: LookupMap<MatchId, Hash>,
@@ -277,16 +283,16 @@ impl Tail {
             checkpoints: LookupMap::new(b"c"),
             match_nonce: 0,
             vrf_sender: check_vrf_sender(vrf_sender),
-            rings: LookupMap::new(migrate::RINGS_PREFIX),
+            plays: LookupMap::new(migrate::PLAYS_PREFIX),
             verdict_heads: LookupMap::new(migrate::VERDICT_HEADS_PREFIX),
         }
     }
 
-    /// In-place upgrade from the first state layout (before `vrf_sender`, the ring records and the
+    /// In-place upgrade from the first state layout (before `vrf_sender`, the play records and the
     /// verdict heads). Deploy the new code and call this in the same transaction, signed by the
     /// contract account itself, or have the owner call it right after the deploy. It reads the old
     /// state, so a second call (on the new layout) fails. Balances, payouts, matches and
-    /// checkpoints keep their records; matches created before it have neither a ring record nor a
+    /// checkpoints keep their records; matches created before it have neither a play record nor a
     /// verdict head, take no more verdicts and settle by `abort`.
     #[init(ignore_state)]
     pub fn migrate(vrf_sender: AccountId) -> Self {
@@ -525,11 +531,13 @@ impl Tail {
             reveal: None,
         };
         self.matches.insert(id, m);
-        self.rings.insert(
+        self.plays.insert(
             id,
-            RingRecord {
+            PlayRecord {
                 vrf_sender: self.vrf_sender.clone(),
-                eliminations: Vec::new(),
+                events: Vec::new(),
+                hint_pool: 0,
+                violation: None,
             },
         );
         self.verdict_heads.insert(id, [0; 32]);
@@ -646,13 +654,12 @@ impl Tail {
     /// - a running match is still running `REFEREE_TIMEOUT_MS` after its `end_ms` (a referee
     ///   that keeps talking but never sends `End` must not hold the money either).
     ///
-    /// Every head goes to its player and every sponsor gets their contribution back, all as
-    /// internal balances.
+    /// Every player gets their original stake back and every sponsor their contribution, all as
+    /// internal balances. Not the current heads: nothing that happened during play was checked
+    /// against the ring, so none of it counts. Hint money in the pool goes back with the stakes.
     pub fn abort(&mut self, match_id: String) {
-        let m = self
-            .matches
-            .get_mut(&parse_hex(&match_id, "match_id"))
-            .unwrap_or_else(no_match);
+        let id = parse_hex(&match_id, "match_id");
+        let m = self.matches.get_mut(&id).unwrap_or_else(no_match);
         let now = env::block_timestamp_ms();
         match m.phase {
             Phase::Lobby => {
@@ -668,16 +675,13 @@ impl Tail {
             }
             Phase::Ended | Phase::Aborted => env::panic_str("match already settled"),
         }
-        for p in &mut m.players {
-            credit(&mut self.balances, &p.account_id, &m.token, p.head);
-            p.paid = p.head;
-            p.head = 0;
-        }
-        for s in &m.sponsors {
-            credit(&mut self.balances, &s.account_id, &m.token, s.amount);
-        }
-        m.pot = 0;
+        let play = self.plays.get_mut(&id);
+        let was_running = m.phase == Phase::Running;
+        refund_stakes(m, play, &mut self.balances);
         m.phase = Phase::Aborted;
+        if was_running {
+            emit_refund(&id, SettledAs::RefundedAbort, None);
+        }
     }
 
     // ── Views ────────────────────────────────────────────────────────────────────────────────
@@ -709,8 +713,8 @@ impl Tail {
 
     pub fn get_match(&self, match_id: String) -> Option<MatchView> {
         let id = parse_hex(&match_id, "match_id");
-        let ring = self.rings.get(&id);
-        self.matches.get(&id).map(|m| match_view(&id, m, ring))
+        let play = self.plays.get(&id);
+        self.matches.get(&id).map(|m| match_view(&id, m, play))
     }
 
     /// Heads in player-index order.
@@ -909,19 +913,30 @@ impl Tail {
                 end_ms,
             } => start(m, ph, rc, start_ms, end_ms, now),
             Verdict::Hint {
-                from,
-                to,
-                amount,
-                hint,
-                ..
-            } => pay_hint(m, from, to, amount, hint),
-            Verdict::Tag { hunter, target } => {
-                let ring = self.rings.get_mut(&id).unwrap_or_else(created_before_upgrade);
-                eliminate(m, ring, Elimination::Tag { hunter, target });
+                from, amount, hint, ..
+            } => {
+                let play = self.plays.get_mut(&id).unwrap_or_else(created_before_upgrade);
+                pay_hint(m, play, from, amount, hint);
             }
-            Verdict::Forfeit { player, to } => {
-                let ring = self.rings.get_mut(&id).unwrap_or_else(created_before_upgrade);
-                eliminate(m, ring, Elimination::Forfeit { player, to });
+            Verdict::Tag {
+                hunter,
+                target,
+                credit,
+            } => {
+                let play = self.plays.get_mut(&id).unwrap_or_else(created_before_upgrade);
+                eliminate(
+                    m,
+                    play,
+                    PlayEvent::Tag {
+                        hunter,
+                        target,
+                        credit,
+                    },
+                );
+            }
+            Verdict::Forfeit { player, to, credit } => {
+                let play = self.plays.get_mut(&id).unwrap_or_else(created_before_upgrade);
+                eliminate(m, play, PlayEvent::Forfeit { player, to, credit });
             }
             Verdict::Checkpoint { log_size, root } => {
                 let list = self.checkpoints.entry(id).or_default();
@@ -935,23 +950,10 @@ impl Tail {
                 vrf_signature,
                 log_size,
                 root,
+                hint_targets,
             } => {
-                require!(
-                    m.ring_commit == Some(ring_commit(&vrf_signature)),
-                    "vrf_signature does not match ring_commit"
-                );
-                require!(alpha.len() <= MAX_ALPHA_LEN, "alpha too long");
-                let ring = self.rings.get(&id).unwrap_or_else(created_before_upgrade);
-                check_alpha(&alpha, &id, &ring.vrf_sender);
-                require!(
-                    env::ed25519_verify(&vrf_signature, alpha.as_bytes(), &m.vrf_pk),
-                    "bad VRF signature"
-                );
-                let survivors = m.players.iter().filter(|p| !p.out).count();
-                require!(
-                    now >= m.window().1 || survivors == 1,
-                    "End before end_ms needs exactly one survivor"
-                );
+                let play = self.plays.get_mut(&id).unwrap_or_else(created_before_upgrade);
+                check_reveal(m, &play.vrf_sender, &alpha, &vrf_signature, &id, now);
                 let last = last_anchor(self.checkpoints.get(&id).map_or(&[], Vec::as_slice));
                 require!(
                     log_size >= last.log_size,
@@ -959,8 +961,7 @@ impl Tail {
                 );
                 let final_root = Root { log_size, root };
                 check_consistency(last, final_root, &proofs.take(sv.seq));
-                check_ring(m, &vrf_signature, &ring.eliminations);
-                settle_end(m, &mut self.balances);
+                settle(m, play, &vrf_signature, &hint_targets, &mut self.balances, &id);
                 m.reveal = Some(Reveal {
                     alpha,
                     vrf_signature,
@@ -1095,9 +1096,14 @@ fn start(m: &mut Match, ph: Hash, rc: Hash, start_ms: u64, end_ms: u64, now: u64
 }
 
 /// A hint costs exactly its kind's price (`HINT_BPS[kind] × stake / 10 000`, the same rule the
-/// referee and the app use), paid from the asker's head to the target's.
-fn pay_hint(m: &mut Match, from: u16, to: u16, amount: u128, kind: u8) {
-    let (f, t) = live_pair(m, from, to);
+/// referee and the app use), paid from the asker's head into the hint pool. Whom it was about stays
+/// secret until `End`; the Tag or Forfeit that puts that player out credits it to them first.
+fn pay_hint(m: &mut Match, play: &mut PlayRecord, from: u16, amount: u128, kind: u8) {
+    let f = live(m, from);
+    require!(
+        play.hints() < MAX_HINTS,
+        "the match already charged MAX_HINTS hints"
+    );
     let price = hint_price(m.stake, kind).unwrap_or_else(|| env::panic_str("unknown hint kind"));
     require!(
         amount == price,
@@ -1108,7 +1114,8 @@ fn pay_hint(m: &mut Match, from: u16, to: u16, amount: u128, kind: u8) {
         "hint costs more than the payer's head"
     );
     m.players[f].head -= amount;
-    m.players[t].head += amount;
+    play.hint_pool += amount;
+    play.events.push(PlayEvent::Hint { from, amount });
 }
 
 /// The k-th checkpoint needs k spacings of match time, and each one commits to a longer log than
@@ -1127,24 +1134,66 @@ fn check_checkpoint(list: &[Root], m: &Match, cp: Root, now: u64) {
     );
 }
 
-/// `create_match` writes a ring record and a verdict head for every match since the upgrade that
+/// `create_match` writes a play record and a verdict head for every match since the upgrade that
 /// introduced them; a match from before it takes no verdicts.
 fn created_before_upgrade<T>() -> T {
     env::panic_str(
-        "match was created before the upgrade (no verdict head or ring record); it settles by abort",
+        "match was created before the upgrade (no verdict head or play record); it settles by abort",
     )
 }
 
-/// Tag and Forfeit: the loser's whole head goes to the winner, the loser is out, and the pair is
-/// recorded for the ring check at `End`.
-fn eliminate(m: &mut Match, ring: &mut RingRecord, e: Elimination) {
-    let (winner, loser) = e.winner_loser();
+/// Tag and Forfeit: the credit moves from the hint pool onto the loser's head, the loser's whole
+/// head goes to the winner, the loser is out, and the event is recorded for the replay at `End`.
+/// Whether the credit is right is checked there; here it can only be no more than the pool holds.
+fn eliminate(m: &mut Match, play: &mut PlayRecord, e: PlayEvent) {
+    let (winner, loser, credit) = match e {
+        PlayEvent::Tag {
+            hunter,
+            target,
+            credit,
+        } => (hunter, target, credit),
+        PlayEvent::Forfeit { player, to, credit } => (to, player, credit),
+        PlayEvent::Hint { .. } => unreachable!("hints are paid by pay_hint"),
+    };
     let (w, l) = live_pair(m, winner, loser);
-    let head = std::mem::take(&mut m.players[l].head);
+    require!(
+        credit <= play.hint_pool,
+        "credit is more than the hint pool holds"
+    );
+    play.hint_pool -= credit;
+    let head = std::mem::take(&mut m.players[l].head) + credit;
     m.players[l].out = true;
     m.players[w].head += head;
     // Each one puts a live player out, so there are at most MAX_PLAYERS - 1 (storage paid for).
-    ring.eliminations.push(e);
+    play.events.push(e);
+}
+
+/// What `End` must get right before the match is replayed at all: the reveal opens the Start
+/// commitment and is OutLayer's VRF output for this match, and the match is over (time is up, or
+/// one player is left). Failing one of these refuses the End; nothing can be replayed without them.
+fn check_reveal(
+    m: &Match,
+    vrf_sender: &AccountId,
+    alpha: &str,
+    vrf_signature: &[u8; 64],
+    id: &MatchId,
+    now: u64,
+) {
+    require!(
+        m.ring_commit == Some(ring_commit(vrf_signature)),
+        "vrf_signature does not match ring_commit"
+    );
+    require!(alpha.len() <= MAX_ALPHA_LEN, "alpha too long");
+    check_alpha(alpha, id, vrf_sender);
+    require!(
+        env::ed25519_verify(vrf_signature, alpha.as_bytes(), &m.vrf_pk),
+        "bad VRF signature"
+    );
+    let survivors = m.players.iter().filter(|p| !p.out).count();
+    require!(
+        now >= m.window().1 || survivors == 1,
+        "End before end_ms needs exactly one survivor"
+    );
 }
 
 /// OutLayer's alpha is `vrf:{request_id}:{sender}:{seed}` (TECHNICAL 4.8). The seed must be this
@@ -1170,36 +1219,72 @@ fn check_alpha(alpha: &str, id: &MatchId, vrf_sender: &AccountId) {
     );
 }
 
-/// Rebuilds the ring from the revealed VRF signature (`ring[k]` hunts `ring[k+1 mod n]`) and
-/// replays the recorded eliminations: each winner must be hunting the loser at that point (a Tag
-/// by the hunter of its current target, a Forfeit paid to the forfeiter's hunter), and the winner
-/// then hunts the loser's target. This makes "tags follow the ring" checked, not trusted.
-fn check_ring(m: &Match, vrf_signature: &[u8; 64], eliminations: &[Elimination]) {
+/// End, once the reveal and the log are checked: rebuilds the ring from the revealed VRF signature
+/// and replays every Hint, Tag and Forfeit against it and `hint_targets` (`settle::replay`). If
+/// every step holds, each survivor gets what hints about them paid in and the match pays out. If
+/// one fails, the signed End is not refused (that would only stall the match until `abort`): the
+/// match settles at once as a refund of every original stake, with the broken rule on record.
+fn settle(
+    m: &mut Match,
+    play: &mut PlayRecord,
+    vrf_signature: &[u8; 64],
+    hint_targets: &[u16],
+    balances: &mut LookupMap<(AccountId, AccountId), u128>,
+    id: &MatchId,
+) {
+    // `players` is sorted by account id, so a position in it is the player index.
     let ids: Vec<&str> = m.players.iter().map(|p| p.account_id.as_str()).collect();
-    // `players` is sorted by account id, the order `build_ring` starts from, so a position in it
-    // is the player index.
-    let index = |account: &str| {
-        ids.binary_search(&account)
-            .unwrap_or_else(|_| env::panic_str("ring names an account outside the match"))
-    };
-    let ring = build_ring(&ids, vrf_signature);
-    let n = ring.len();
-    let mut target: Vec<Option<usize>> = vec![None; n];
-    for (k, hunter) in ring.iter().enumerate() {
-        target[index(hunter)] = Some(index(&ring[(k + 1) % n]));
-    }
-    for e in eliminations {
-        let (winner, loser) = e.winner_loser();
-        let (w, l) = (usize::from(winner), usize::from(loser));
-        require!(
-            target[w] == Some(l),
-            match e {
-                Elimination::Tag { .. } => "a Tag did not follow the ring",
-                Elimination::Forfeit { .. } => "a Forfeit did not pay the forfeiter's hunter",
+    let ring = ring_order(&ids, vrf_signature);
+    match replay(&ring, &play.events, hint_targets, play.hint_pool) {
+        Ok(owed) => {
+            for (p, o) in m.players.iter_mut().zip(owed) {
+                p.head += o;
             }
-        );
-        target[w] = target[l].take().filter(|&t| t != w);
+            play.hint_pool = 0;
+            settle_end(m, balances);
+        }
+        Err(v) => {
+            refund_stakes(m, Some(play), balances);
+            play.violation = Some(v);
+            m.phase = Phase::Ended;
+            emit_refund(id, SettledAs::RefundedRuleViolation, Some(&v));
+        }
     }
+}
+
+/// Every player gets back exactly the stake they joined with and every sponsor their contribution.
+/// While a match runs `sum(heads) + hint_pool` is the stakes and `pot` is the sponsors', so this
+/// pays out exactly what the match holds.
+fn refund_stakes(
+    m: &mut Match,
+    play: Option<&mut PlayRecord>,
+    balances: &mut LookupMap<(AccountId, AccountId), u128>,
+) {
+    for p in &mut m.players {
+        credit(balances, &p.account_id, &m.token, m.stake);
+        p.paid = m.stake;
+        p.head = 0;
+    }
+    for s in &m.sponsors {
+        credit(balances, &s.account_id, &m.token, s.amount);
+    }
+    m.pot = 0;
+    if let Some(play) = play {
+        play.hint_pool = 0;
+    }
+}
+
+/// NEP-297 event for a match settled as a refund, so indexers see why without reading state.
+fn emit_refund(id: &MatchId, settled_as: SettledAs, violation: Option<&Violation>) {
+    let data = json!([{
+        "match_id": hex::encode(id),
+        "settled_as": settled_as,
+        "violation": violation.map(Violation::describe),
+    }]);
+    env::log_str(&format!(
+        "EVENT_JSON:{}",
+        json!({ "standard": "tail", "version": "1.0.0", "event": "match_refunded", "data": data })
+    ));
 }
 
 /// End: every player's head goes to their balance (an out player's head is already 0), and the
@@ -1225,6 +1310,14 @@ fn settle_end(m: &mut Match, balances: &mut LookupMap<(AccountId, AccountId), u1
     }
     m.pot = 0;
     m.phase = Phase::Ended;
+}
+
+/// A player who is still in, as an index.
+fn live(m: &Match, p: u16) -> usize {
+    let p = usize::from(p);
+    require!(p < m.players.len(), "player index out of range");
+    require!(!m.players[p].out, "player is out");
+    p
 }
 
 /// Two distinct players who are both still in, as indices.
@@ -1337,7 +1430,7 @@ fn root_view(r: &Root) -> RootView {
     }
 }
 
-fn match_view(id: &MatchId, m: &Match, ring: Option<&RingRecord>) -> MatchView {
+fn match_view(id: &MatchId, m: &Match, play: Option<&PlayRecord>) -> MatchView {
     MatchView {
         match_id: hex::encode(id),
         host: m.host.clone(),
@@ -1381,6 +1474,16 @@ fn match_view(id: &MatchId, m: &Match, ring: Option<&RingRecord>) -> MatchView {
         end_ms: m.end_ms,
         alpha: m.reveal.as_ref().map(|r| r.alpha.clone()),
         vrf_signature: m.reveal.as_ref().map(|r| hex::encode(r.vrf_signature)),
-        vrf_sender: ring.map(|r| r.vrf_sender.clone()),
+        vrf_sender: play.map(|r| r.vrf_sender.clone()),
+        hint_pool: U128(play.map_or(0, |r| r.hint_pool)),
+        settled_as: match m.phase {
+            Phase::Lobby | Phase::Running => None,
+            Phase::Aborted => Some(SettledAs::RefundedAbort),
+            Phase::Ended if play.is_some_and(|r| r.violation.is_some()) => {
+                Some(SettledAs::RefundedRuleViolation)
+            }
+            Phase::Ended => Some(SettledAs::Payout),
+        },
+        violation: play.and_then(|r| r.violation.as_ref()).map(Violation::describe),
     }
 }

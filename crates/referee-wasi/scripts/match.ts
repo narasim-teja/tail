@@ -435,15 +435,17 @@ check(
   hinted &&
     hintV?.kind === "Hint" &&
     hintV.from === hunter.index &&
-    hintV.to === target.index &&
     hintV.amount === price &&
     hintV.hint === 0,
-  `Hint verdict: ${hunter.index} → ${target.index}, ${price}`,
+  `Hint verdict: by ${hunter.index}, ${price} into the pool`,
 );
 const tagV = verdicts.find(({ v }) => v.body.kind === "Tag")?.v.body;
 check(
-  tagV?.kind === "Tag" && tagV.hunter === hunter.index && tagV.target === target.index,
-  `Tag verdict: ${hunter.index} tags ${target.index}`,
+  tagV?.kind === "Tag" &&
+    tagV.hunter === hunter.index &&
+    tagV.target === target.index &&
+    tagV.credit === (hinted ? price : 0n),
+  `Tag verdict: ${hunter.index} tags ${target.index}, crediting the hint about them first`,
 );
 const locks = hunter.huds.map((h) => h.lock);
 const heats = target.huds.map((h) => h.heat);
@@ -482,6 +484,10 @@ check(
   "End root = Merkle root of every returned log entry before End",
 );
 check(endV.alpha.endsWith(`:${toHex(matchId)}`), "VRF alpha ends with ':' + match id hex");
+check(
+  JSON.stringify(endV.hintTargets) === JSON.stringify(hinted ? [target.index] : []),
+  "End reveals whom the hint was about",
+);
 check(
   ed25519Verify(fromHex(keys.vrf_pk), utf8(endV.alpha), endV.vrfSignature),
   "VRF signature verifies with the OutLayer VRF key",

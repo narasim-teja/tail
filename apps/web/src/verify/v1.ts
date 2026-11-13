@@ -3,6 +3,10 @@
 // borsh(match_id, seq, call_id, body)). A v1 log has only the first four entry kinds, and its
 // Contact and HintReceipt carry no salt. Nothing new is ever signed or logged this way: the
 // encoders exist so the tests can build a v1 bundle.
+//
+// v1 bodies keep their own shape (VerdictV1): a v1 Hint named its target and paid it at once, and
+// v1 Tags, Forfeits and End carried no credits or hint targets. Nothing fills those in, so code
+// that needs them has to tell the two apart and say the v2 settlement replay didn't run.
 
 import {
   concat,
@@ -17,10 +21,23 @@ import {
 
 const DOMAIN_V1 = "tail/verdict/v1";
 
+/** A verdict body as protocol v1 signed it. */
+export type VerdictV1 =
+  | Extract<Verdict, { kind: "Start" | "Checkpoint" }>
+  /** `hint` is HINT_KIND_UNKNOWN: v1 did not sign the kind. `to` was paid `amount` at once. */
+  | { kind: "Hint"; from: number; to: number; amount: bigint; hintId: number; hint: number }
+  | { kind: "Tag"; hunter: number; target: number }
+  | { kind: "Forfeit"; player: number; to: number }
+  | { kind: "End"; alpha: string; vrfSignature: Uint8Array; logSize: bigint; root: Uint8Array };
+
+export interface SignedVerdictV1 extends Omit<SignedVerdict, "body"> {
+  body: VerdictV1;
+}
+
 /** A v1 Hint did not carry its kind; the decoded body says so with -1. */
 export const HINT_KIND_UNKNOWN = -1;
 
-function readBodyV1(r: Reader): Verdict {
+function readBodyV1(r: Reader): VerdictV1 {
   const tag = r.u8();
   switch (tag) {
     case 0:
@@ -59,7 +76,7 @@ function readBodyV1(r: Reader): Verdict {
   }
 }
 
-function writeBodyV1(w: Writer, v: Verdict): Writer {
+function writeBodyV1(w: Writer, v: VerdictV1): Writer {
   switch (v.kind) {
     case "Start":
       return w.u8(0).fixed(v.playersHash, 32).fixed(v.ringCommit, 32).u64(v.startMs).u64(v.endMs);
@@ -76,15 +93,15 @@ function writeBodyV1(w: Writer, v: Verdict): Writer {
   }
 }
 
-const payloadV1 = (v: Omit<SignedVerdict, "prev" | "sig">) =>
+const payloadV1 = (v: Omit<SignedVerdictV1, "prev" | "sig">) =>
   writeBodyV1(new Writer().fixed(v.matchId, 16).u32(v.seq).fixed(v.callId, 16), v.body);
 
 /** The v1 verdict digest the referee signed and the log's Verdict entry holds. */
-export const verdictDigestV1 = (v: Omit<SignedVerdict, "prev" | "sig">) =>
+export const verdictDigestV1 = (v: Omit<SignedVerdictV1, "prev" | "sig">) =>
   sha256(concat(utf8(DOMAIN_V1), payloadV1(v).bytes()));
 
 /** A v1 SignedVerdict. `prev` is zeros: v1 had no link, and nothing checks it for v1. */
-export function decodeSignedVerdictV1(bytes: Uint8Array): SignedVerdict {
+export function decodeSignedVerdictV1(bytes: Uint8Array): SignedVerdictV1 {
   const r = new Reader(bytes);
   const matchId = r.fixed(16);
   const seq = r.u32();
@@ -95,7 +112,7 @@ export function decodeSignedVerdictV1(bytes: Uint8Array): SignedVerdict {
   return { matchId, seq, prev: new Uint8Array(32), callId, body, sig };
 }
 
-export const encodeSignedVerdictV1 = (v: Omit<SignedVerdict, "prev">) =>
+export const encodeSignedVerdictV1 = (v: Omit<SignedVerdictV1, "prev">) =>
   payloadV1(v).fixed(v.sig, 64).bytes();
 
 /**

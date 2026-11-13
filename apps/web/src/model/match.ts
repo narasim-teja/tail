@@ -4,10 +4,16 @@
 // The log has no clock of its own, so event times are reconstructed from its order: batch
 // entries carry their batch's time (when trails were released), contacts their epoch, the k-th
 // checkpoint its minute, and everything between is placed by position in the log.
+//
+// Heads move as the contract moves them (verify/settle.ts): in protocol v2 a hint's price leaves
+// the asker for the hint pool, a Tag or Forfeit first credits the loser with the hints paid onto
+// them, and End credits each survivor what the pool still owes them, or refunds every stake if
+// the contract's replay finds a broken rule. Whom a v2 hint was about is known only from End.
 
-import { buildRing, EPOCH_MS, type SignedVerdict, WINDOW_EPOCHS } from "@tail/protocol";
-import type { DecodedBundle } from "../verify/bundle.ts";
+import { EPOCH_MS, ringOrder, WINDOW_EPOCHS } from "@tail/protocol";
+import type { AnyVerdict, DecodedBundle } from "../verify/bundle.ts";
 import { batchKey, enrolments, type HandlerCheck } from "../verify/checks.ts";
+import { applyPlay, type Settlement, settlementOf, startLedger } from "../verify/settle.ts";
 
 export interface PlayerInfo {
   index: number;
@@ -31,10 +37,15 @@ export interface MatchEvent {
   /** ms after the start. */
   t: number;
   logIndex: number | null;
-  /** tag: hunter → target; forfeit: player → to (the hunter); hint: from → to. */
+  /**
+   * tag: hunter → target; forfeit: player → to (the hunter); hint: from → whom it was about (v2:
+   * from End's hint targets, absent without them; v1: the target the verdict named and paid).
+   */
   a?: number;
   b?: number;
   amount?: bigint;
+  /** tag, forfeit (v2): hints paid onto the loser, credited to their head before it moved. */
+  credit?: bigint;
   hintId?: number;
   hintKind?: number;
   question?: string;
@@ -59,6 +70,8 @@ export interface Snapshot {
   alive: boolean[];
   /** Current target of each player, -1 if none or unknown. */
   target: number[];
+  /** Hint money paid in and not yet credited to anyone (v2; 0 for v1). */
+  pool: bigint;
 }
 
 export interface Contact {
@@ -86,7 +99,7 @@ export interface Match {
   contract: string;
   players: PlayerInfo[];
   events: MatchEvent[];
-  /** snapshots[0] is the start; one more after each tag, forfeit and hint. */
+  /** snapshots[0] is the start; one more after each tag, forfeit, hint and the end. */
   snapshots: Snapshot[];
   contacts: Contact[];
   tracks: (Track | null)[];
@@ -95,6 +108,8 @@ export interface Match {
   safehouses: { lon: number; lat: number; radiusM: number }[];
   /** Hunting order from the revealed VRF, empty if the End verdict is missing. */
   ring: number[];
+  /** The contract's End replay of the match: payout, refund, or why it wasn't run. */
+  settlement: Settlement;
 }
 
 // ── Names ────────────────────────────────────────────────────────────────────────
@@ -129,7 +144,7 @@ export function initialsFor(names: string[]): string[] {
 
 // ── Build ────────────────────────────────────────────────────────────────────────
 
-const KINDS: Record<SignedVerdict["body"]["kind"], EventKind> = {
+const KINDS: Record<AnyVerdict["kind"], EventKind> = {
   Start: "start",
   Hint: "hint",
   Tag: "tag",
@@ -228,20 +243,23 @@ export function buildMatch(
   const hintsAsked = d.players.map(() => 0);
 
   // Events and snapshots.
-  const ring = (() => {
-    const end = d.verdicts.find((x) => x.v?.body.kind === "End")?.v?.body;
-    if (end?.kind !== "End") return [];
-    return buildRing(d.players, end.vrfSignature).map((a) => d.players.indexOf(a));
-  })();
+  const endBody = d.verdicts.find((x) => x.v?.body.kind === "End")?.v?.body;
+  const ring = endBody?.kind === "End" ? ringOrder(d.players, endBody.vrfSignature) : [];
+  // v2: whom the k-th hint was about, revealed by End; v1 hints name it themselves.
+  const hintTargets = endBody?.kind === "End" && "hintTargets" in endBody ? endBody.hintTargets : [];
+  let hintNo = 0;
+  const settlement = settlementOf(d);
   const target = d.players.map(() => -1);
   ring.forEach((p, k) => {
     target[p] = ring[(k + 1) % ring.length] as number;
   });
+  const ledger = startLedger(d.players.length, d.stake);
   const snap0: Snapshot = {
     t: 0,
-    heads: d.players.map(() => d.stake),
+    heads: [...ledger.heads],
     alive: d.players.map(() => true),
     target,
+    pool: 0n,
   };
   const snapshots: Snapshot[] = [snap0];
   const events: MatchEvent[] = [];
@@ -262,15 +280,20 @@ export function buildMatch(
       callId: v.callId,
     };
     const last = snapshots[snapshots.length - 1] as Snapshot;
+    const b = v.body;
+    applyPlay(ledger, b);
     const next = (): Snapshot => ({
       t,
-      heads: [...last.heads],
-      alive: [...last.alive],
+      heads: [...ledger.heads],
+      alive: ledger.out.map((o) => !o),
       target: [...last.target],
+      pool: ledger.pool,
     });
-    const b = v.body;
     if (b.kind === "Hint") {
-      Object.assign(ev, { a: b.from, b: b.to, amount: b.amount, hintId: b.hintId });
+      const about = "to" in b ? b.to : hintTargets[hintNo];
+      hintNo++;
+      Object.assign(ev, { a: b.from, amount: b.amount, hintId: b.hintId });
+      if (about !== undefined) ev.b = about;
       const n = hintsAsked[b.from] ?? 0;
       hintsAsked[b.from] = n + 1;
       const q = hintAction.get(`${b.from}:${n}`);
@@ -285,14 +308,12 @@ export function buildMatch(
           signature: check,
         };
       }
-      const s = next();
-      s.heads[b.from] = (s.heads[b.from] ?? 0n) - b.amount;
-      s.heads[b.to] = (s.heads[b.to] ?? 0n) + b.amount;
-      snapshots.push(s);
+      snapshots.push(next());
     } else if (b.kind === "Tag" || b.kind === "Forfeit") {
       const [loser, winner] = b.kind === "Tag" ? [b.target, b.hunter] : [b.player, b.to];
       ev.a = winner;
       ev.b = loser;
+      if ("credit" in b) ev.credit = b.credit;
       if (b.kind === "Forfeit") {
         ev.a = loser;
         ev.b = winner;
@@ -305,12 +326,17 @@ export function buildMatch(
         }
       }
       const s = next();
-      s.heads[winner] = (s.heads[winner] ?? 0n) + (s.heads[loser] ?? 0n);
-      s.heads[loser] = 0n;
-      s.alive[loser] = false;
       const inherited = s.target[loser] ?? -1;
       s.target[winner] = inherited === winner ? -1 : inherited;
       s.target[loser] = -1;
+      snapshots.push(s);
+    } else if (b.kind === "End") {
+      // Settlement: the pool's debts go onto the survivors' heads, or every stake is refunded.
+      const s = next();
+      if (settlement.kind === "payout")
+        s.heads = s.heads.map((h, i) => (s.alive[i] ? h + (settlement.owed[i] ?? 0n) : h));
+      if (settlement.kind === "refunded") s.heads = s.heads.map(() => d.stake);
+      if (settlement.kind === "payout" || settlement.kind === "refunded") s.pool = 0n;
       snapshots.push(s);
     }
     events.push(ev);
@@ -333,6 +359,7 @@ export function buildMatch(
     zone: { lon: m.zone.lonE7 / 1e7, lat: m.zone.latE7 / 1e7, radiusM: m.zone.radiusM },
     safehouses: m.safehouses.map((s) => ({ lon: s.lonE7 / 1e7, lat: s.latE7 / 1e7, radiusM: s.radiusM })),
     ring,
+    settlement,
   };
 }
 
@@ -377,10 +404,12 @@ export function snapshotAt(m: Match, t: number): Snapshot {
   return s;
 }
 
-/** Heads, targets and who is alive just before an event (snapshots advance per hint, tag, forfeit). */
+/** Heads, targets and who is alive just before an event (snapshots advance per hint, tag, forfeit, end). */
 export function snapshotBefore(m: Match, ev: MatchEvent): Snapshot {
   const k = m.events.filter(
-    (e) => e.index < ev.index && (e.kind === "hint" || e.kind === "tag" || e.kind === "forfeit"),
+    (e) =>
+      e.index < ev.index &&
+      (e.kind === "hint" || e.kind === "tag" || e.kind === "forfeit" || e.kind === "end"),
   ).length;
   return m.snapshots[k] ?? (m.snapshots[0] as Snapshot);
 }

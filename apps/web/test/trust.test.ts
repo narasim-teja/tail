@@ -300,7 +300,7 @@ describe("the Handler's NEAR AI signature", () => {
 
   test("every fixture line is signed by the logged address", () => {
     const r = checkHandler(good);
-    expect(r.size).toBe(2);
+    expect(r.size).toBe(3);
     for (const c of r.values()) {
       expect(c.signature).toBe("signed");
       expect(c.signer).toMatch(/^0x[0-9a-f]{40}$/);

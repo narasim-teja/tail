@@ -47,6 +47,12 @@ export const CHECKPOINT_MS = 60_000;
 export const REFEREE_TIMEOUT_MS = 900_000;
 /** Max length of a player's free-text question to the Handler. */
 export const HINT_TEXT_MAX = 140;
+/**
+ * Most hints one match may charge. The contract keeps one record per hint until End replays them
+ * and pays for that storage at creation, so the count needs a bound: 20 per player at 12 players.
+ * The referee refuses the next one (RefuseCode.HintLimit).
+ */
+export const MAX_HINTS = 240;
 
 export const HintKind = { Near: 0, Bearing: 1, Trend: 2 } as const;
 export type HintKind = (typeof HintKind)[keyof typeof HintKind];
@@ -110,6 +116,8 @@ export const RefuseCode = {
   Funds: 9,
   /** Hint: no usable fix for the asker or the target. */
   NoFix: 10,
+  /** Hint: the match already charged MAX_HINTS. */
+  HintLimit: 11,
 } as const;
 
 /** Domain strings. Every hash or MAC input starts with one, so no two contexts collide. */

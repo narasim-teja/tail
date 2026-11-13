@@ -278,6 +278,8 @@ interface FakeMatch {
   nextSeq: number[];
   chainTip: Uint8Array[];
   nextHintId: number;
+  /** Whom each hint was about, in order: End's hintTargets. */
+  hintTargets: number[];
 }
 
 /**
@@ -425,6 +427,7 @@ export class FakeReferee implements Referee {
       nextSeq: players.map(() => 0),
       chainTip: players.map(() => new Uint8Array(32)),
       nextHintId: 0,
+      hintTargets: [],
     };
     this.matches.set(toHex(i.matchId), m);
     const log: LogEntry[] = players.map((account, player) => ({
@@ -509,11 +512,11 @@ export class FakeReferee implements Referee {
         m.chainTip[batch.player] = batchHash(batch);
         for (const a of batch.actions) {
           if (a.kind !== "Hint") continue;
-          const to = (batch.player + 1) % m.players.length;
+          m.hintTargets.push((batch.player + 1) % m.players.length);
           verdicts.push(
             this.verdict(
               m,
-              { kind: "Hint", from: batch.player, to, amount: 100n, hintId: m.nextHintId, hint: a.hint },
+              { kind: "Hint", from: batch.player, amount: 100n, hintId: m.nextHintId, hint: a.hint },
               log,
             ),
           );
@@ -521,8 +524,9 @@ export class FakeReferee implements Referee {
         }
       }
       if (tickNo === this.hintAtTick) {
+        m.hintTargets.push(1);
         verdicts.push(
-          this.verdict(m, { kind: "Hint", from: 0, to: 1, amount: 100n, hintId: m.nextHintId, hint: 0 }, log),
+          this.verdict(m, { kind: "Hint", from: 0, amount: 100n, hintId: m.nextHintId, hint: 0 }, log),
         );
         hints.push({ player: 0, blob: this.hintBlob(m, 0) });
       }
@@ -634,7 +638,14 @@ export class FakeReferee implements Referee {
     const a = this.anchor(m, m.seq + 1);
     const v = this.verdict(
       m,
-      { kind: "End", alpha: "vrf:1:x:y", vrfSignature: new Uint8Array(64), logSize: a.size, root: a.root },
+      {
+        kind: "End",
+        alpha: "vrf:1:x:y",
+        vrfSignature: new Uint8Array(64),
+        logSize: a.size,
+        root: a.root,
+        hintTargets: m.hintTargets,
+      },
       log,
     );
     return {

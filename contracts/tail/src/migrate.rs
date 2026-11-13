@@ -7,11 +7,11 @@ use tail_protocol::MatchId;
 
 use crate::{check_vrf_sender, Match, Root, Tail};
 
-/// Ring records and verdict heads live under their own prefixes, so no existing key moves.
-pub const RINGS_PREFIX: &[u8] = b"r";
+/// Play records and verdict heads live under their own prefixes, so no existing key moves.
+pub const PLAYS_PREFIX: &[u8] = b"r";
 pub const VERDICT_HEADS_PREFIX: &[u8] = b"h";
 
-/// The state layout before `vrf_sender`, the ring records and the verdict heads (deployed until
+/// The state layout before `vrf_sender`, the play records and the verdict heads (deployed until
 /// the hardening round). It is the only layout ever deployed, so this is the one migration path.
 /// Field order is the borsh order of that deployment and must not change.
 #[near(serializers = [borsh])]
@@ -30,7 +30,7 @@ pub struct TailV1 {
 }
 
 /// Reads the v1 record and returns the current state; near-sdk writes it back when `migrate`
-/// returns. Matches from v1 get neither a ring record nor a verdict head, so they take no further
+/// returns. Matches from v1 get neither a play record nor a verdict head, so they take no further
 /// verdicts and settle by `abort`.
 /// The owner may call it, and so may the contract account itself, so the deploy and the
 /// migration can be one transaction and no call ever sees new code over old state.
@@ -54,7 +54,7 @@ pub fn from_v1(vrf_sender: AccountId) -> Tail {
         checkpoints: old.checkpoints,
         match_nonce: old.match_nonce,
         vrf_sender: check_vrf_sender(vrf_sender),
-        rings: LookupMap::new(RINGS_PREFIX),
+        plays: LookupMap::new(PLAYS_PREFIX),
         verdict_heads: LookupMap::new(VERDICT_HEADS_PREFIX),
     }
 }

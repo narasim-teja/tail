@@ -5,6 +5,7 @@ import {
   merkleRoot,
   type ReplayBundle,
   type ReplayBundleV2,
+  type SignedVerdict,
   toHex,
 } from "@tail/protocol";
 import { makeFixtures } from "../scripts/fixture.ts";
@@ -57,7 +58,7 @@ describe("the fixture verifies", () => {
     expect(r.batches.failed).toEqual([]);
     expect(r.batches.verified.size).toBe(good.batches.length);
     expect([...r.handler.values()].every((h) => h.text === null && h.signature === "signed")).toBe(true);
-    expect(r.handler.size).toBe(2);
+    expect(r.handler.size).toBe(3);
   });
 
   test("the frontier root equals the full Merkle root at every size", () => {
@@ -188,7 +189,7 @@ describe("one changed byte fails", () => {
   test("a Tag re-signed by another key is refused", async () => {
     const { ed25519 } = await import("@noble/curves/ed25519.js");
     const { verdictDigest } = await import("@tail/protocol");
-    const v = good.verdicts[tagAt]?.v;
+    const v = good.verdicts[tagAt]?.v as SignedVerdict | undefined;
     if (!v) throw new Error("no tag");
     const sk = ed25519.utils.randomSecretKey();
     const body = { ...v, sig: ed25519.sign(verdictDigest(v), sk) };

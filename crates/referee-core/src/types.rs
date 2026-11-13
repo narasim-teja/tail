@@ -228,6 +228,8 @@ pub enum Refuse {
     },
     /// Hint: the referee has no usable fix for the asker or the target (TREND: also 60 s ago).
     NoFix,
+    /// Hint: the match already charged `MAX_HINTS`, all the contract keeps records for.
+    HintLimit,
 }
 
 impl Refuse {
@@ -245,6 +247,7 @@ impl Refuse {
             Refuse::Cooldown { .. } => refuse_code::COOLDOWN,
             Refuse::InsufficientHead { .. } => refuse_code::FUNDS,
             Refuse::NoFix => refuse_code::NO_FIX,
+            Refuse::HintLimit => refuse_code::HINT_LIMIT,
         }
     }
 }
@@ -263,7 +266,8 @@ pub struct Refusal {
     pub reason: Refuse,
 }
 
-/// A hint that was charged this tick; `voice` turns it into a Handler line.
+/// A hint that was charged this tick; `voice` turns it into a Handler line. `to` stays with the
+/// referee (the Hint verdict does not name it) until End reveals every hint's target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HintIssued {
     pub hint_id: u32,

@@ -10,8 +10,11 @@
 // not on NEAR.
 //
 // Protocol v2: verdicts chained by `prev`, Tick entries opening every tick, Enrolled entries at
-// start, an Evidence entry before each Tag, the leaf hashes beside the log. One variant is built
-// in the v1 format (matches recorded before protocol v2), which the page reads read only.
+// start, an Evidence entry before each Tag, the leaf hashes beside the log. Money moves like the
+// referee and contract move it: a Hint pays into the hint pool and doesn't say whom it was about,
+// a Tag or Forfeit carries the hints paid onto its loser as `credit`, and End lists every hint's
+// target. One variant is built in the v1 format (matches recorded before protocol v2), which the
+// page reads read only; there a hint names its target and pays it directly.
 //
 // Pure and deterministic: the same bytes on every call. The tests build their bundles from it in
 // memory; scripts/make-fixture.ts writes them to public/fixtures for the page.
@@ -57,7 +60,14 @@ import {
   verdictDigest,
   WINDOW_EPOCHS,
 } from "@tail/protocol";
-import { encodeLogEntryV1, encodeSignedVerdictV1, NO_SALT, verdictDigestV1 } from "../src/verify/v1.ts";
+import {
+  encodeLogEntryV1,
+  encodeSignedVerdictV1,
+  NO_SALT,
+  type SignedVerdictV1,
+  type VerdictV1,
+  verdictDigestV1,
+} from "../src/verify/v1.ts";
 import paths from "./data/common-paths.json" with { type: "json" };
 
 export interface Fixtures {
@@ -73,6 +83,12 @@ export interface Fixtures {
    * 4th is no longer a prefix of the 5th, nor the 5th of the 6th.
    */
   tamperedLog: ReplayBundleV2;
+  /**
+   * Signed and anchored like the honest match, but End names Bo as the first hint's target while
+   * Eli, who asked it, was hunting Ana. The contract's End replay finds the hint off its asker's
+   * target and refunds every stake.
+   */
+  refunded: ReplayBundleV2;
   /** The same match in the v1 format, as recorded before protocol v2. */
   v1: ReplayBundle;
   /** A few lines describing what was built. */
@@ -85,6 +101,7 @@ export const FIXTURE_FILES: Record<Exclude<keyof Fixtures, "summary">, string> =
   noTrails: "boston-common-no-trails.json",
   tampered: "boston-common-tampered.json",
   tamperedLog: "boston-common-tampered-log.json",
+  refunded: "boston-common-refunded.json",
   v1: "boston-common-v1.json",
 };
 
@@ -100,15 +117,29 @@ export function makeFixtures(): Fixtures {
     noTrails: { ...v2.bundle, batches: [] },
     tampered: v2.tampered,
     tamperedLog: rewritten.bundle,
+    refunded: forgedFixture("hint-target"),
     v1: v1.v1 as ReplayBundle,
     summary: [...v2.summary, `tampered log: ${rewritten.rewrite}`],
   };
 }
 
+/**
+ * A match whose referee signed a verdict that breaks a rule only End's replay can see, everything
+ * else as honest. hint-target: End names Bo as the first hint's target (Eli asked it while
+ * hunting Ana). tag: the second Tag names Dee as the hunter (Eli made the strike; Dee was hunting
+ * Eli). Both are validly signed, chained and anchored.
+ */
+export function forgedFixture(forge: Forge): ReplayBundleV2 {
+  return generate({ version: 2, forge }).bundle;
+}
+
+type Forge = "hint-target" | "tag";
+
 interface Options {
   version: 1 | 2;
   /** Rewrite one Contact entry logged before this checkpoint, right after it is signed. */
   rewriteBefore?: number;
+  forge?: Forge;
 }
 
 function generate(opts: Options) {
@@ -445,10 +476,13 @@ function generate(opts: Options) {
   planStrike(idx("ana"), idx("bo"), 300);
   planStrike(idx("eli"), idx("ana"), 940);
 
-  // Hints: Eli asks about Ana twice (his target all match). Values computed like the referee.
+  // Hints: Eli asks about Ana twice (his target until he tags her), then once about Dee, whom he
+  // hunts after that. Ana's hint money is credited to her as she goes out; Dee's is still owed to
+  // her at End. Values computed like the referee.
   const hints: { player: number; kind: number; tS: number; question?: string }[] = [
     { player: idx("eli"), kind: HintKind.Near, tS: 205, question: "Is Ana anywhere near me?" },
     { player: idx("eli"), kind: HintKind.Bearing, tS: 905 },
+    { player: idx("eli"), kind: HintKind.Bearing, tS: 1125 },
   ];
   function bearing8(from: P, to: P) {
     const deg = ((Math.atan2(to.x - from.x, to.y - from.y) * 180) / Math.PI + 360) % 360;
@@ -460,7 +494,7 @@ function generate(opts: Options) {
       return value
         ? "Close. Inside a long throw of you. Put the phone away and look up."
         : "Not close. Ana is more than a block away and walking like she owns the place.";
-    return `${DIRS[value]}. She's moving, so don't jog. Joggers get noticed.`;
+    return `${DIRS[value]}. Your target is moving, so don't jog. Joggers get noticed.`;
   }
 
   // ── Batches ──────────────────────────────────────────────────────────────────────
@@ -547,18 +581,21 @@ function generate(opts: Options) {
   /** The salt of the entry appended next, as the referee gives it (a v1 log had none). */
   const nextSalt = () => (V2 ? logSalt(kLog, log.length) : NO_SALT);
   const encodeEntry = V2 ? encodeLogEntry : encodeLogEntryV1;
-  const signed: SignedVerdict[] = [];
+  const signed: (SignedVerdict | SignedVerdictV1)[] = [];
   const handler: ReplayBundle["handler"] = [];
   let nextSeq = 1;
   let prevDigest = new Uint8Array(32);
-  function verdict(body: Verdict, call: Uint8Array) {
-    const payload = { matchId: MATCH_ID, seq: nextSeq++, prev: prevDigest, callId: call, body };
-    const digest = V2 ? verdictDigest(payload) : verdictDigestV1(payload);
+  /** Signs the v2 body, or in a v1 fixture the v1 one (where v2 changed the shape). */
+  function verdict(body: Verdict, call: Uint8Array, v1Body?: VerdictV1) {
+    const base = { matchId: MATCH_ID, seq: nextSeq++, prev: prevDigest, callId: call };
+    const payload = V2 || !v1Body ? { ...base, body } : { ...base, body: v1Body };
+    const digest = V2 ? verdictDigest({ ...base, body }) : verdictDigestV1(payload as SignedVerdictV1);
     prevDigest = digest;
     log.push({ kind: "Verdict", seq: payload.seq, digest });
     signed.push({ ...payload, sig: ed25519.sign(digest, REFEREE_SK) });
   }
-  const encodeVerdict = (v: SignedVerdict) => (V2 ? encodeSignedVerdict(v) : encodeSignedVerdictV1(v));
+  const encodeVerdict = (v: SignedVerdict | SignedVerdictV1) =>
+    V2 ? encodeSignedVerdict(v as SignedVerdict) : encodeSignedVerdictV1(v as SignedVerdictV1);
   const leaves = () => log.map((e) => sha256(Uint8Array.of(0, ...encodeEntry(e))));
   function root(): Uint8Array {
     const merkle = (l: Uint8Array[]): Uint8Array => {
@@ -594,6 +631,16 @@ function generate(opts: Options) {
 
   const alive = new Array<boolean>(N).fill(true);
   const heads = new Array<bigint>(N).fill(STAKE);
+  // v2: hint money sits in the pool, owed to each target until it goes out or the match ends.
+  const pending = new Array<bigint>(N).fill(0n);
+  const hintTargets: number[] = [];
+  /** Moves the pool's debt to `loser` onto their head; the verdict carries it as `credit`. */
+  const creditOf = (loser: number) => {
+    const credit = V2 ? (pending[loser] as bigint) : 0n;
+    heads[loser] = (heads[loser] as bigint) + credit;
+    pending[loser] = 0n;
+    return credit;
+  };
   const target = new Array<number>(N).fill(-1);
   ring.forEach((acc, k) => {
     target[sorted.indexOf(acc)] = sorted.indexOf(ring[(k + 1) % N] as string);
@@ -627,6 +674,7 @@ function generate(opts: Options) {
     };
   }
   let nextHintId = 0;
+  let tagsSigned = 0;
   let nextCheckpoint = CHECKPOINT_MS;
   const hunterOf = (p: number) => target.findIndex((t, h) => alive[h] && t === p);
   const lockEpochs = (h: number, t: number, e: number) => {
@@ -702,6 +750,7 @@ function generate(opts: Options) {
         const touching = epochs.includes(e) || epochs.includes(e - 1);
         if (epochs.length < LOCK_EPOCHS || !touching)
           throw new Error(`strike by ${sorted[p]} at ${t} would be refused`);
+        const credit = creditOf(tg);
         heads[p] = (heads[p] as bigint) + (heads[tg] as bigint);
         heads[tg] = 0n;
         alive[tg] = false;
@@ -718,16 +767,28 @@ function generate(opts: Options) {
             epochs,
             salt: nextSalt(),
           });
-        verdict({ kind: "Tag", hunter: p, target: tg }, call);
+        tagsSigned++;
+        // The forged variant signs the second Tag for a hunter who wasn't hunting this target.
+        const hunter = opts.forge === "tag" && tagsSigned === 2 ? idx("dee") : p;
+        verdict({ kind: "Tag", hunter, target: tg, credit }, call, { kind: "Tag", hunter, target: tg });
       } else {
         const price = hintPrice(STAKE, action.hint as HintKind);
         const a = pos(p, t / 1000);
         const b = pos(tg, t / 1000);
         const value = action.hint === HintKind.Near ? Number(dist(a, b) <= HINT_NEAR_M) : bearing8(a, b);
         heads[p] = (heads[p] as bigint) - price;
-        heads[tg] = (heads[tg] as bigint) + price;
+        if (V2) pending[tg] = (pending[tg] as bigint) + price;
+        else heads[tg] = (heads[tg] as bigint) + price;
+        hintTargets.push(tg);
         const hintId = nextHintId++;
-        verdict({ kind: "Hint", from: p, to: tg, amount: price, hintId, hint: action.hint }, call);
+        verdict({ kind: "Hint", from: p, amount: price, hintId, hint: action.hint }, call, {
+          kind: "Hint",
+          from: p,
+          to: tg,
+          amount: price,
+          hintId,
+          hint: action.hint,
+        });
         const text = handlerLine(action.hint, value);
         pendingReceipts.push({ hintId, text });
         handler.push({
@@ -744,13 +805,14 @@ function generate(opts: Options) {
       if (now - (present[i] as number) >= DARK_FORFEIT_MS) {
         const to = hunterOf(i);
         if (to < 0) continue;
+        const credit = creditOf(i);
         heads[to] = (heads[to] as bigint) + (heads[i] as bigint);
         heads[i] = 0n;
         alive[i] = false;
         target[to] = target[i] === to ? -1 : (target[i] as number);
         target[i] = -1;
         lockFrom[to] = cur + 1;
-        verdict({ kind: "Forfeit", player: i, to }, call);
+        verdict({ kind: "Forfeit", player: i, to, credit }, call, { kind: "Forfeit", player: i, to });
       }
     }
     const over = now >= DURATION_MS || alive.filter(Boolean).length <= 1;
@@ -765,7 +827,11 @@ function generate(opts: Options) {
   }
   const endCall = callId();
   for (const r of pendingReceipts) log.push(chatReceipt(r));
-  verdict({ kind: "End", alpha, vrfSignature, logSize: BigInt(log.length), root: root() }, endCall);
+  // What the pool still owes a survivor goes onto their head when the contract settles.
+  for (let i = 0; i < N; i++) creditOf(i);
+  const endTargets = opts.forge === "hint-target" ? [idx("bo"), ...hintTargets.slice(1)] : hintTargets;
+  const end = { alpha, vrfSignature, logSize: BigInt(log.length), root: root() };
+  verdict({ kind: "End", ...end, hintTargets: endTargets }, endCall, { kind: "End", ...end });
 
   // ── Bundle ───────────────────────────────────────────────────────────────────────
 
@@ -811,11 +877,7 @@ function generate(opts: Options) {
   // Tampered: someone rewrote the second tag to credit Dee, keeping the referee's old signature.
   const tags = signed.filter((v) => v.body.kind === "Tag");
   const forged = tags[1] as SignedVerdict;
-  const forgedBody: Verdict = {
-    kind: "Tag",
-    hunter: idx("dee"),
-    target: (forged.body as { target: number }).target,
-  };
+  const forgedBody: Verdict = { ...(forged.body as Extract<Verdict, { kind: "Tag" }>), hunter: idx("dee") };
   const tampered: ReplayBundleV2 = {
     ...bundle,
     verdicts: bundle.verdicts.map((v, i) =>

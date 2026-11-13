@@ -37,3 +37,18 @@ pub fn build_ring<S: AsRef<str>>(ids: &[S], vrf_signature: &[u8; 64]) -> Vec<Str
     }
     ring
 }
+
+/// The ring as player indices: `ring_order(ids, sig)[k]` is the position in `sort_accounts(ids)`
+/// (the player index every verdict uses) of `build_ring(ids, sig)[k]`.
+pub fn ring_order<S: AsRef<str>>(ids: &[S], vrf_signature: &[u8; 64]) -> Vec<u16> {
+    let sorted = sort_accounts(ids);
+    build_ring(ids, vrf_signature)
+        .iter()
+        .map(|a| {
+            let i = sorted
+                .binary_search(a)
+                .expect("the ring is a permutation of the ids");
+            u16::try_from(i).expect("fewer than 2^16 players")
+        })
+        .collect()
+}

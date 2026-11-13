@@ -3,21 +3,29 @@
 // consistency proof for every Checkpoint/End checked with verifyConsistency against the root it
 // last anchored), each verdict must carry the pinned referee's signature, and it moves heads the
 // way the contract does: Start against the locked player list and block time, a Hint at exactly
-// its kind's price, a Tag or Forfeit along the ring, Checkpoints spaced in match time, and End
-// only with the VRF reveal that opens the Start's ring commit, then settled into balances.
+// its kind's price into the hint pool, a Tag or Forfeit crediting its loser from the pool before
+// the head moves, Checkpoints spaced in match time, and End only with the VRF reveal that opens
+// the Start's ring commit. End then replays the match (replaySettlement): if it holds, survivors
+// get their hint credit and the heads are paid; if not, every stake is refunded and the broken
+// rule is kept (`settlement`).
 // "Block time" is the clock the test runs the match on.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
-  buildRing,
   CHECKPOINT_MS,
   decodeSignedVerdict,
+  describeViolation,
   equal,
   fromHex,
   type HintKind,
   hintPrice,
+  MAX_HINTS,
+  type PlayEvent,
+  playEvent,
   playersHash,
+  replaySettlement,
   ringCommit,
+  ringOrder,
   type SignedVerdict,
   toHex,
   utf8,
@@ -43,8 +51,12 @@ interface Draft {
   startMs: number | null;
   endMs: number | null;
   checkpoints: number[];
-  /** [winner, loser] per Tag or Forfeit, for the ring check at End. */
-  eliminations: [number, number][];
+  /** Every applied Hint, Tag and Forfeit, for the replay at End. */
+  events: PlayEvent[];
+  /** Hint money paid in and not yet credited. */
+  pool: bigint;
+  settledAs: Settlement["settledAs"] | null;
+  violation: string | null;
   alpha: string | null;
   vrfSignature: Uint8Array | null;
 }
@@ -56,8 +68,21 @@ export interface Pins {
   vrfSender: string;
 }
 
+/** How a match settled, as the contract's `get_match` reports it. */
+export interface Settlement {
+  settledAs: "payout" | "refunded_rule_violation";
+  violation: string | null;
+}
+
+interface Play {
+  events: PlayEvent[];
+  pool: bigint;
+  settledAs: Settlement["settledAs"] | null;
+  violation: string | null;
+}
+
 export class ContractChain extends FakeChain {
-  private readonly eliminations = new Map<string, [number, number][]>();
+  private readonly plays = new Map<string, Play>();
 
   constructor(
     private readonly pins: Pins,
@@ -81,6 +106,12 @@ export class ContractChain extends FakeChain {
     m.referee_pk = toHex(this.pins.refereePk);
     m.vrf_pk = toHex(this.pins.vrfPk);
     return id;
+  }
+
+  /** How the match settled at End; null before. */
+  settlement(matchId: string): Settlement | null {
+    const p = this.plays.get(matchId);
+    return p?.settledAs ? { settledAs: p.settledAs, violation: p.violation } : null;
   }
 
   /** The digest of the last verdict applied for the match (`get_verdict_head`). */
@@ -120,7 +151,10 @@ export class ContractChain extends FakeChain {
       startMs: m.start_ms,
       endMs: m.end_ms,
       checkpoints: this.checkpointSizes(id),
-      eliminations: [...(this.eliminations.get(id) ?? [])],
+      events: [...(this.plays.get(id)?.events ?? [])],
+      pool: this.plays.get(id)?.pool ?? 0n,
+      settledAs: this.plays.get(id)?.settledAs ?? null,
+      violation: this.plays.get(id)?.violation ?? null,
       alpha: m.alpha,
       vrfSignature: m.vrf_signature === null ? null : fromHex(m.vrf_signature),
     };
@@ -147,7 +181,7 @@ export class ContractChain extends FakeChain {
     m.end_ms = d.endMs;
     m.alpha = d.alpha;
     m.vrf_signature = d.vrfSignature && toHex(d.vrfSignature);
-    this.eliminations.set(id, d.eliminations);
+    this.plays.set(id, { events: d.events, pool: d.pool, settledAs: d.settledAs, violation: d.violation });
     if (d.phase === "ended" && m.phase === "ended") {
       m.players.forEach((p, i) => {
         this.balances.set(p.account_id, (this.balances.get(p.account_id) ?? 0n) + (d.paid[i] as bigint));
@@ -158,6 +192,12 @@ export class ContractChain extends FakeChain {
 
 function require(cond: unknown, why: string): asserts cond {
   if (!cond) throw new Error(`contract refused: ${why}`);
+}
+
+/** A player who is still in. */
+function live(d: Draft, p: number) {
+  require(p < d.heads.length, "player index out of range");
+  require(!d.out[p], "player is out");
 }
 
 /** Two distinct players who are both still in. */
@@ -194,22 +234,27 @@ function applyOne(m: ChainMatch, d: Draft, v: SignedVerdict, now: number, pins: 
       return;
     }
     case "Hint": {
-      livePair(d, b.from, b.to);
+      live(d, b.from);
+      require(d.events.filter((e) => e.kind === "Hint").length <
+        MAX_HINTS, "the match already charged MAX_HINTS hints");
       require(b.amount ===
         hintPrice(BigInt(m.stake), b.hint as HintKind), "hint amount is not the price of its kind");
       require((d.heads[b.from] as bigint) >= b.amount, "hint costs more than the payer's head");
       d.heads[b.from] = (d.heads[b.from] as bigint) - b.amount;
-      d.heads[b.to] = (d.heads[b.to] as bigint) + b.amount;
+      d.pool += b.amount;
+      d.events.push(playEvent(b) as PlayEvent);
       return;
     }
     case "Tag":
     case "Forfeit": {
       const [winner, loser] = b.kind === "Tag" ? [b.hunter, b.target] : [b.to, b.player];
       livePair(d, winner, loser);
-      d.heads[winner] = (d.heads[winner] as bigint) + (d.heads[loser] as bigint);
+      require(b.credit <= d.pool, "credit is more than the hint pool holds");
+      d.pool -= b.credit;
+      d.heads[winner] = (d.heads[winner] as bigint) + (d.heads[loser] as bigint) + b.credit;
       d.heads[loser] = 0n;
       d.out[loser] = true;
-      d.eliminations.push([winner, loser]);
+      d.events.push(playEvent(b) as PlayEvent);
       return;
     }
     case "Checkpoint": {
@@ -237,33 +282,26 @@ function applyOne(m: ChainMatch, d: Draft, v: SignedVerdict, now: number, pins: 
       require(now >= (d.endMs ?? 0) || survivors === 1, "End before end_ms needs exactly one survivor");
       require(Number(b.logSize) >=
         (d.checkpoints.at(-1) ?? 0), "End log_size is below the last checkpoint's");
-      checkRing(
+      const ring = ringOrder(
         m.players.map((p) => p.account_id),
         b.vrfSignature,
-        d.eliminations,
       );
-      // Settle: every head to its player (no sponsor pot here).
-      d.paid = [...d.heads];
+      const r = replaySettlement(ring, d.events, b.hintTargets, d.pool);
+      // Settle (no sponsor pot here): the heads with each survivor's hint credit, or every stake.
+      if (r.ok) {
+        d.paid = d.heads.map((h, i) => h + (r.owed[i] as bigint));
+        d.settledAs = "payout";
+      } else {
+        d.paid = d.heads.map(() => BigInt(m.stake));
+        d.settledAs = "refunded_rule_violation";
+        d.violation = describeViolation(r.violation);
+      }
       d.heads = d.heads.map(() => 0n);
+      d.pool = 0n;
       d.phase = "ended";
       d.alpha = b.alpha;
       d.vrfSignature = b.vrfSignature;
       return;
     }
-  }
-}
-
-/** Each winner was hunting the loser when it won, along the ring the VRF output rebuilds. */
-function checkRing(players: string[], vrfSignature: Uint8Array, eliminations: [number, number][]) {
-  const ring = buildRing(players, vrfSignature);
-  const target: (number | null)[] = players.map(() => null);
-  ring.forEach((hunter, k) => {
-    target[players.indexOf(hunter)] = players.indexOf(ring[(k + 1) % ring.length] as string);
-  });
-  for (const [w, l] of eliminations) {
-    require(target[w] === l, "a Tag did not follow the ring");
-    const next = target[l] ?? null;
-    target[l] = null;
-    target[w] = next === w ? null : next;
   }
 }

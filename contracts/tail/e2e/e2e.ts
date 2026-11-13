@@ -288,7 +288,6 @@ async function run() {
       signVerdict(id, 2, prev, {
         kind: "Hint",
         from: 0,
-        to: 1,
         amount: hintPrice(STAKE, HintKind.Bearing),
         hintId: 1,
         hint: HintKind.Near,
@@ -301,24 +300,24 @@ async function run() {
     overpriced,
   );
   const hintAmount = hintPrice(STAKE, HintKind.Near); // 2% of the stake
-  const hint = next(2, { kind: "Hint", from: 0, to: 1, amount: hintAmount, hintId: 1, hint: HintKind.Near });
+  const hint = next(2, { kind: "Hint", from: 0, amount: hintAmount, hintId: 1, hint: HintKind.Near });
   await applyOne("Hint", hint);
-  const hinted = `${STAKE - hintAmount},${STAKE + hintAmount},${STAKE}`;
+  const hinted = `${STAKE - hintAmount},${STAKE},${STAKE}`;
   m = await eventually(
     () => getMatch(matchId),
     (v) => heads(v) === hinted,
   );
   record(
-    "Hint moves the price from player 0 to player 1",
-    heads(m) === `${STAKE - hintAmount},${STAKE + hintAmount},${STAKE}`,
-    heads(m),
+    "Hint moves the price from player 0 into the hint pool, onto nobody's head",
+    heads(m) === hinted && m.hint_pool === hintAmount.toString(),
+    `${heads(m)} pool ${m.hint_pool}`,
   );
 
   const replay = await fails(() => applyVerdicts([hint]));
   record("the same verdict replayed is refused", replay.includes("verdict out of order"), replay);
   const fork = await fails(() =>
     applyVerdicts([
-      signVerdict(id, 3, new Uint8Array(32).fill(1), { kind: "Tag", hunter: 0, target: 1 }).b64,
+      signVerdict(id, 3, new Uint8Array(32).fill(1), { kind: "Tag", hunter: 0, target: 1, credit: 0n }).b64,
     ]),
   );
   record(
@@ -328,12 +327,16 @@ async function run() {
   );
 
   // The ring End rebuilds from the VRF reveal: ring[k] hunts ring[k+1]. Player 1 is tagged by
-  // whoever hunts it, so players 0 and 2 survive either way.
+  // whoever hunts it, so players 0 and 2 survive either way. Player 0's hint was about player 0's
+  // target: if that is player 1, the Tag credits it to 1 before 1's head moves; if not, End
+  // credits it to the survivor it was about.
   const ring = buildRing(ids, vrfSignature).map((a) => sorted.indexOf(a));
   const hunter = ring[(ring.indexOf(1) + ring.length - 1) % ring.length] as number;
-  await applyOne("Tag", next(3, { kind: "Tag", hunter, target: 1 }));
+  const about = ring[(ring.indexOf(0) + 1) % ring.length] as number;
+  const credit = about === 1 ? hintAmount : 0n;
+  await applyOne("Tag", next(3, { kind: "Tag", hunter, target: 1, credit }));
   const afterTag = [STAKE - hintAmount, 0n, STAKE];
-  afterTag[hunter] = (afterTag[hunter] as bigint) + STAKE + hintAmount;
+  afterTag[hunter] = (afterTag[hunter] as bigint) + STAKE + credit;
   m = await eventually(
     () => getMatch(matchId),
     (v) => heads(v) === afterTag.join(),
@@ -355,7 +358,14 @@ async function run() {
   await applyOne("Checkpoint", checkpoint, [proofArg(4, 0, 42)]);
 
   const finalRoot = merkleRoot(logLeaves);
-  const end = next(5, { kind: "End", alpha, vrfSignature, logSize: 99n, root: finalRoot });
+  const end = next(5, {
+    kind: "End",
+    alpha,
+    vrfSignature,
+    logSize: 99n,
+    root: finalRoot,
+    hintTargets: [about],
+  });
   const wrongFrom = await fails(() => applyVerdicts([end], [proofArg(5, 0, 99)]));
   record(
     "an End proved from the start of the log instead of the last checkpoint is refused",
@@ -397,14 +407,20 @@ async function run() {
     included.every((x) => x === true) && excluded.every((x) => x === false),
     `${included.join()} / ${excluded.join()}`,
   );
-  const expected = [(afterTag[0] as bigint) + 6n, 0n, (afterTag[2] as bigint) + 5n];
+  const owed = [0n, 0n, 0n];
+  if (about !== 1) owed[about] = hintAmount;
+  const expected = [
+    (afterTag[0] as bigint) + (owed[0] as bigint) + 6n,
+    0n,
+    (afterTag[2] as bigint) + (owed[2] as bigint) + 5n,
+  ];
   const settled = await eventually(
     () => Promise.all(byIndex.map((p) => balance(p.id))),
     (b) => b.join() === expected.join(),
   );
   record(
-    "survivors get their head plus the sponsor pot split 6 / 5; the tagged player gets 0",
-    settled.join() === expected.join(),
+    "End's replay holds: survivors get their head, their hint credit and the sponsor pot split 6 / 5; the tagged player gets 0",
+    settled.join() === expected.join() && m.settled_as === "payout",
     settled.join(", "),
   );
 
@@ -489,6 +505,9 @@ interface MatchView {
   locked_until_ms: number | null;
   ring_commit: string | null;
   alpha: string | null;
+  hint_pool: string;
+  settled_as: "payout" | "refunded_rule_violation" | "refunded_abort" | null;
+  violation: string | null;
 }
 interface ProofArg {
   seq: number;

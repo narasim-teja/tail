@@ -91,7 +91,9 @@ fn leaving_the_zone_counts_as_dark_while_staying_near_the_edge_does_not() {
 }
 
 #[test]
-fn hints_move_money_from_asker_to_target_and_respect_cooldown_kind_text_and_head() {
+fn hints_pay_into_the_pool_and_respect_cooldown_kind_text_and_head() {
+    // The scenario's HUD expectations pin that a target's head does not move when someone asks
+    // about them, and its End text that the targets come out only there.
     let r = passes("hint-economics");
     // Every hint got its voice receipt into the log exactly once.
     let receipts: Vec<u32> = r
@@ -104,7 +106,50 @@ fn hints_move_money_from_asker_to_target_and_respect_cooldown_kind_text_and_head
         .collect();
     let issued: Vec<u32> = r.hints.iter().map(|(_, h)| h.hint_id).collect();
     assert_eq!(receipts, issued);
-    assert_eq!(issued.len(), 24);
+    assert_eq!(issued.len(), 23);
+}
+
+/// Twelve players asking every 30 s reach `MAX_HINTS` in the 20th round; the 21st round is refused
+/// for the limit (not for funds or cooldown), and End reveals every one of the 240 targets.
+#[test]
+fn hints_stop_at_the_limit_the_contract_paid_storage_for() {
+    let r = passes("hint-limit");
+    assert_eq!(r.hints.len(), tail_protocol::MAX_HINTS);
+    let refused: Vec<String> = r
+        .refusals
+        .iter()
+        .map(|(_, x)| referee_sim::variant(&x.reason))
+        .collect();
+    assert_eq!(refused, vec!["HintLimit".to_owned(); 12]);
+    let end = r.verdicts.iter().find_map(|(_, _, v)| match &v.body {
+        Verdict::End { hint_targets, .. } => Some(hint_targets.len()),
+        _ => None,
+    });
+    assert_eq!(end, Some(tail_protocol::MAX_HINTS));
+}
+
+/// The hunter's hints about its target reach the target's head as the Tag's credit, and from it
+/// the hunter; the contract mirror in the simulator replays the End and pays the same heads.
+#[test]
+fn a_tag_credits_the_hints_about_its_target_before_the_head_moves() {
+    use referee_sim::scenario::Event;
+    let mut sc = scenario("clean-tag");
+    sc.name = "clean-tag-hinted".into();
+    sc.events.push(Event::Hint {
+        t: 60,
+        player: "alice".into(),
+        kind: "near".into(),
+        text: None,
+        every: 0,
+        count: 1,
+    });
+    let r = run(&sc).unwrap();
+    assert_eq!(
+        r.verdict_texts(false),
+        ["Start", "Hint alice 20000", "Tag alice bob +20000", "End bob"]
+    );
+    assert_eq!(r.head("alice"), 2_000_000);
+    assert_eq!(r.head("bob"), 0);
 }
 
 #[test]

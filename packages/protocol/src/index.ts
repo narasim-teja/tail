@@ -8,6 +8,7 @@ export * from "./merkle.ts";
 export * from "./messages.ts";
 export * from "./presence.ts";
 export * from "./replay.ts";
+export * from "./settle.ts";
 export * from "./signed.ts";
 
 import { HINT_BPS, type HintKind } from "./constants.ts";

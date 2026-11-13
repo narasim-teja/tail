@@ -564,7 +564,8 @@ fn finish_needs_the_match_to_be_over_and_the_committed_vrf_signature() {
             alpha: alpha.clone(),
             vrf_signature: VRF,
             log_size: size,
-            root
+            root,
+            hint_targets: vec![]
         }
     );
     assert_eq!(
@@ -787,7 +788,7 @@ fn a_tagged_players_hud_names_the_hunter_and_a_player_still_in_names_no_one() {
         let tagged = out
             .verdicts
             .iter()
-            .any(|v| v.body == Verdict::Tag { hunter: h, target: t });
+            .any(|v| matches!(v.body, Verdict::Tag { hunter, target, .. } if hunter == h && target == t));
         if !tagged {
             for p in [h, t, by] {
                 assert_eq!(hud_of(&out, p).tagged_by, None, "player {p} is still in");
@@ -821,13 +822,9 @@ fn a_forfeited_players_hud_names_the_account_that_received_the_head() {
         ];
         let out = tick(st, input(n, now, batches)).unwrap();
         assert_eq!(out.rejected, vec![]);
-        if out.verdicts.iter().any(|v| {
-            v.body
-                == Verdict::Forfeit {
-                    player: dark,
-                    to: receiver,
-                }
-        }) {
+        if out.verdicts.iter().any(
+            |v| matches!(v.body, Verdict::Forfeit { player, to, .. } if player == dark && to == receiver),
+        ) {
             let gone = hud_of(&out, dark);
             assert_eq!(gone.status, target_status::OUT);
             assert_eq!(gone.tagged_by.as_deref(), Some(ACCOUNTS[receiver as usize]));
@@ -1117,7 +1114,7 @@ fn a_tag_is_logged_right_after_the_evidence_that_justifies_its_lock() {
         let tagged = out
             .verdicts
             .iter()
-            .find(|v| v.body == Verdict::Tag { hunter: h, target: t });
+            .find(|v| matches!(v.body, Verdict::Tag { hunter, target, .. } if hunter == h && target == t));
         if let Some(v) = tagged {
             let at = log
                 .iter()

@@ -14,13 +14,11 @@ import {
   logEntrySalt,
   playersHash,
   ringCommit,
-  type SignedVerdict,
   sha256,
   toHex,
   utf8,
-  type Verdict,
 } from "@tail/protocol";
-import type { DecodedBundle } from "./bundle.ts";
+import type { AnySignedVerdict, AnyVerdict, DecodedBundle } from "./bundle.ts";
 
 // ── Merkle frontier: the root of every log prefix in one pass ────────────────────────
 
@@ -72,7 +70,7 @@ export function prefixRoots(leaves: readonly Uint8Array[], sizes: Iterable<numbe
 export interface LocalVerdictCheck {
   index: number;
   seq: number | null;
-  kind: Verdict["kind"] | null;
+  kind: AnyVerdict["kind"] | null;
   /** The bytes decode as a SignedVerdict for this match. */
   decodes: boolean;
   /** ed25519 over the verdict digest (v2, or v1 for an old bundle) with the bundle's referee key. */
@@ -126,7 +124,7 @@ export function verdictEntries(
 export interface LocalContext {
   entries: Map<number, { index: number; digest: Uint8Array }>;
   roots: Map<number, Uint8Array>;
-  start: SignedVerdict | null;
+  start: AnySignedVerdict | null;
   /** The first position where the bundle's leaf hash disagrees with its entry, or Infinity. */
   firstConflict: number;
 }
@@ -193,8 +191,8 @@ export function checkVerdict(d: DecodedBundle, ctx: LocalContext, index: number)
 
 function checkEnd(
   d: DecodedBundle,
-  start: SignedVerdict | null,
-  b: Extract<Verdict, { kind: "End" }>,
+  start: AnySignedVerdict | null,
+  b: Extract<AnyVerdict, { kind: "End" }>,
 ): RingCheck {
   const commit = start?.body.kind === "Start" && equal(start.body.ringCommit, ringCommit(b.vrfSignature));
   let vrf = false;

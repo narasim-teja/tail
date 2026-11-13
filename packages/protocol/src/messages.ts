@@ -134,27 +134,39 @@ export function decodeBatchEnvelope(bytes: Bytes): BatchEnvelope {
 
 export type Verdict =
   | { kind: "Start"; playersHash: Bytes; ringCommit: Bytes; startMs: bigint; endMs: bigint }
-  /** `hint` is the HintKind, so the contract can check `amount == hintPrice(stake, hint)`. */
-  | { kind: "Hint"; from: number; to: number; amount: bigint; hintId: number; hint: number }
-  | { kind: "Tag"; hunter: number; target: number }
-  | { kind: "Forfeit"; player: number; to: number }
+  /**
+   * `amount` leaves the asker's head for the match's hint pool. `hint` is the HintKind, so the
+   * contract can check `amount == hintPrice(stake, hint)`. The verdict is public during play and
+   * does not name whom the hint was about; `End.hintTargets` reveals that.
+   */
+  | { kind: "Hint"; from: number; amount: bigint; hintId: number; hint: number }
+  /** `credit`: hints paid onto `target` and not yet credited, moved from the pool onto its head first. */
+  | { kind: "Tag"; hunter: number; target: number; credit: bigint }
+  | { kind: "Forfeit"; player: number; to: number; credit: bigint }
   | { kind: "Checkpoint"; logSize: bigint; root: Bytes }
-  | { kind: "End"; alpha: string; vrfSignature: Bytes; logSize: bigint; root: Bytes };
+  /** `hintTargets[k]`: whom the k-th Hint of the match was about, for the contract's replay. */
+  | { kind: "End"; alpha: string; vrfSignature: Bytes; logSize: bigint; root: Bytes; hintTargets: number[] };
 
 export function writeVerdict(w: Writer, v: Verdict): Writer {
   switch (v.kind) {
     case "Start":
       return w.u8(0).fixed(v.playersHash, 32).fixed(v.ringCommit, 32).u64(v.startMs).u64(v.endMs);
     case "Hint":
-      return w.u8(1).u16(v.from).u16(v.to).u128(v.amount).u32(v.hintId).u8(v.hint);
+      return w.u8(1).u16(v.from).u128(v.amount).u32(v.hintId).u8(v.hint);
     case "Tag":
-      return w.u8(2).u16(v.hunter).u16(v.target);
+      return w.u8(2).u16(v.hunter).u16(v.target).u128(v.credit);
     case "Forfeit":
-      return w.u8(3).u16(v.player).u16(v.to);
+      return w.u8(3).u16(v.player).u16(v.to).u128(v.credit);
     case "Checkpoint":
       return w.u8(4).u64(v.logSize).fixed(v.root, 32);
     case "End":
-      return w.u8(5).string(v.alpha).fixed(v.vrfSignature, 64).u64(v.logSize).fixed(v.root, 32);
+      return w
+        .u8(5)
+        .string(v.alpha)
+        .fixed(v.vrfSignature, 64)
+        .u64(v.logSize)
+        .fixed(v.root, 32)
+        .vec(v.hintTargets, (w, t) => w.u16(t));
   }
 }
 export function readVerdict(r: Reader): Verdict {
@@ -169,11 +181,11 @@ export function readVerdict(r: Reader): Verdict {
         endMs: r.u64(),
       };
     case 1:
-      return { kind: "Hint", from: r.u16(), to: r.u16(), amount: r.u128(), hintId: r.u32(), hint: r.u8() };
+      return { kind: "Hint", from: r.u16(), amount: r.u128(), hintId: r.u32(), hint: r.u8() };
     case 2:
-      return { kind: "Tag", hunter: r.u16(), target: r.u16() };
+      return { kind: "Tag", hunter: r.u16(), target: r.u16(), credit: r.u128() };
     case 3:
-      return { kind: "Forfeit", player: r.u16(), to: r.u16() };
+      return { kind: "Forfeit", player: r.u16(), to: r.u16(), credit: r.u128() };
     case 4:
       return { kind: "Checkpoint", logSize: r.u64(), root: r.fixed(32) };
     case 5:
@@ -183,6 +195,7 @@ export function readVerdict(r: Reader): Verdict {
         vrfSignature: r.fixed(64),
         logSize: r.u64(),
         root: r.fixed(32),
+        hintTargets: r.vec((r) => r.u16()),
       };
     default:
       throw new Error(`unknown Verdict tag ${tag}`);

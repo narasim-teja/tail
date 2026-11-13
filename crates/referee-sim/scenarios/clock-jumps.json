@@ -16,8 +16,8 @@
     { "do": "clock", "t": 100, "player": "alice", "offset_ms": 0 }
   ],
   "expect": {
-    "verdicts": ["Start", "Hint alice bob 20000", "Hint alice bob 50000", "End"],
-    "verdict_times": [{ "verdict": "Hint alice bob 50000", "from": 50, "to": 50 }],
+    "verdicts": ["Start", "Hint alice 20000", "Hint alice 50000", "End bob bob"],
+    "verdict_times": [{ "verdict": "Hint alice 50000", "from": 50, "to": 50 }],
     "refusals": [{ "player": "alice", "reason": "Cooldown", "from": 40, "to": 40 }],
     "rejections": [
       { "player": "alice", "reason": "BatchOrder", "from": 100, "to": 110 },

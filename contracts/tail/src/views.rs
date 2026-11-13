@@ -125,6 +125,27 @@ pub struct MatchView {
     /// The `sender` this match's VRF alpha must name, pinned at creation. `None` for a match
     /// created before the upgrade that added it (such a match settles by `abort`).
     pub vrf_sender: Option<AccountId>,
+    /// Hint money paid in and not yet credited to anyone (0 once settled).
+    pub hint_pool: U128,
+    /// How the match settled; `None` while it is a lobby or running.
+    pub settled_as: Option<SettledAs>,
+    /// The first rule the `End` replay found broken, when `settled_as` is
+    /// `refunded_rule_violation`.
+    pub violation: Option<String>,
+}
+
+/// How a match's money left it. Only `payout` follows the play: the other two refund every
+/// original stake and every sponsor.
+#[near(serializers = [json])]
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettledAs {
+    /// `End` landed and its replay of the whole match held.
+    Payout,
+    /// `End` landed but its replay found a broken rule (see `violation`).
+    RefundedRuleViolation,
+    /// `abort`: the lobby never started, or the referee went silent.
+    RefundedAbort,
 }
 
 #[near(serializers = [json])]
