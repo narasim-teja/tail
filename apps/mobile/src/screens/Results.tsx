@@ -97,7 +97,14 @@ export function ResultsView({
       tone={dark ? "ink" : "paper"}
       footer={
         <>
-          {m.replayUrl ? <Button title="Watch the replay" onPress={onReplay} hint="Opens in Safari" /> : null}
+          {m.replayUrl ? (
+            <Button
+              symbol="play.circle.fill"
+              title="Watch the replay"
+              onPress={onReplay}
+              hint="Opens in Safari"
+            />
+          ) : null}
           <Button kind={m.replayUrl ? "quiet" : "primary"} title="Done" onPress={onDone} />
         </>
       }

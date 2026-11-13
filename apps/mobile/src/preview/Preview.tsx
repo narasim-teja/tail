@@ -75,11 +75,19 @@ const lobby = (o: Partial<LobbyModel> = {}): LobbyModel => ({
   isHost: true,
   joined: true,
   balance: 20_000_000n,
+  testPlayers: true,
   busy: null,
   error: null,
   ...o,
 });
-const lobbyActions = { onJoin: noop, onLeave: noop, onStart: noop, onTopUp: noop, onBack: noop };
+const lobbyActions = {
+  onJoin: noop,
+  onLeave: noop,
+  onStart: noop,
+  onTopUp: noop,
+  onAddTestPlayer: noop,
+  onBack: noop,
+};
 const three = [
   { id: "teja.tail-dev.testnet", host: true, me: true },
   { id: "maya.tail-dev.testnet", host: false, me: false },

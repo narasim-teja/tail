@@ -42,7 +42,7 @@ export function EnrolView({
               disabled={!ok || !m.relaySet}
               onPress={() => onJoin(handle)}
             />
-            <Button kind="quiet" title="Settings" onPress={onSettings} />
+            <Button kind="quiet" symbol="gearshape" title="Settings" onPress={onSettings} />
           </>
         )
       }

@@ -377,6 +377,24 @@ export class RelayClient {
   }
 
   /** Testnet only: the relay mints the test token and credits it to `accountId` in the contract. */
+  /**
+   * Whether this relay is a test relay (its ghost door is open), so the lobby may offer a test
+   * player. False for a relay that does not say.
+   */
+  async allowsTestPlayers(): Promise<boolean> {
+    const r = await this.json("GET", "/health");
+    return r["test_players"] === true;
+  }
+
+  /** Test relays only: the host fills one seat with a stand-in that never moves. */
+  async addTestPlayer(signer: Signer, matchId: string): Promise<string> {
+    const r = await this.send(
+      this.sign(signer, "/dev/ghosts/fill", JSON.stringify({ match_id: matchId })),
+      SLOW_CALL_MS,
+    );
+    return read.str(r, "account_id");
+  }
+
   async topUp(signer: Signer, accountId: string, amount: bigint): Promise<void> {
     await this.send(
       this.sign(signer, "/dev/topup", JSON.stringify({ account_id: accountId, amount: amount.toString() })),

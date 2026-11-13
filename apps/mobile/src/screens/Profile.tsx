@@ -33,7 +33,7 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
   const reduceMotion = useReduceMotion();
   const testnet = m.network === "testnet";
   return (
-    <Screen footer={<Button kind="quiet" title="Back" onPress={actions.onBack} />}>
+    <Screen footer={<Button kind="quiet" symbol="chevron.left" title="Back" onPress={actions.onBack} />}>
       <View style={styles.who}>
         <Avatar name={m.accountId} size={64} mark />
         <Display>{handleOf(m.accountId)}</Display>
@@ -43,12 +43,14 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
         <Row gap="s">
           <Button
             kind="secondary"
+            symbol="square.and.arrow.up"
             title="Share"
             onPress={() => void Share.share({ message: m.accountId })}
             hint="Copy or send your account id"
           />
           <Button
             kind="secondary"
+            symbol="arrow.up.right.square"
             title="View on NEAR"
             onPress={() => void Linking.openURL(explorerUrl(m.network, m.accountId))}
             hint="Opens the NEAR explorer"
@@ -58,13 +60,14 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
 
       <Rule />
       <View accessible accessibilityLabel={m.balance === null ? "Balance loading" : "Balance"}>
-        <Eyebrow muted>Balance</Eyebrow>
+        <Eyebrow muted>{testnet ? "Test balance" : "Balance"}</Eyebrow>
         {m.balance === null ? <Num>-</Num> : <RollingMoney units={m.balance} reduceMotion={reduceMotion} />}
       </View>
       <Row gap="s" style={styles.actions}>
         {testnet ? (
           <Button
             kind="secondary"
+            symbol="plus.circle"
             title={m.busy === "Topping up" ? "Topping up" : "Top up 10"}
             busy={m.busy === "Topping up"}
             hint="Test USDC from the relay"
@@ -74,6 +77,7 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
         ) : null}
         <Button
           kind="secondary"
+          symbol="arrow.down.circle"
           title={m.busy === "Withdrawing" ? "Withdrawing" : "Withdraw"}
           busy={m.busy === "Withdrawing"}
           disabled={!m.balance}

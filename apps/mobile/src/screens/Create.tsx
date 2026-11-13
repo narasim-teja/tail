@@ -62,7 +62,7 @@ export function CreateView({
               onCreate({ stake: BigInt(stake) * USDC, minutes, minPlayers: players, radiusM, publicReplay })
             }
           />
-          <Button kind="quiet" title="Back" onPress={onBack} />
+          <Button kind="quiet" symbol="chevron.left" title="Back" onPress={onBack} />
         </>
       }
     >
@@ -100,6 +100,7 @@ export function CreateView({
         max={PLAYERS.max}
         onChange={setPlayers}
       />
+      <Caption muted>{`Up to ${PLAYERS.max} can join.`}</Caption>
       <ToggleRow label="Public replay" value={publicReplay} onChange={setPublicReplay} />
       <Caption muted>{publicReplay ? "Anyone with the link can watch." : "Only players can watch."}</Caption>
       {m.error ? <Notice title="Couldn't create the match" detail={m.error} /> : null}

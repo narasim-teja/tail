@@ -35,10 +35,11 @@ export function ScanView({
         footer={
           <>
             <Button
+              symbol={permission === "denied" ? "gearshape" : "camera"}
               title={permission === "denied" ? "Open Settings" : "Allow camera"}
               onPress={permission === "denied" ? () => void Linking.openSettings() : onAllow}
             />
-            <Button kind="quiet" title="Back" onPress={onBack} />
+            <Button kind="quiet" symbol="chevron.left" title="Back" onPress={onBack} />
           </>
         }
       >
@@ -80,7 +81,7 @@ export function ScanView({
           <Breathe reduceMotion={reduceMotion} amount={0.03}>
             <View style={styles.frame} />
           </Breathe>
-          <Button title="Back" onPress={onBack} />
+          <Button symbol="chevron.left" title="Back" onPress={onBack} />
         </View>
       </View>
     </ToneProvider>

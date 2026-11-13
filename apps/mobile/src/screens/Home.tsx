@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { handleOf, money } from "../game/huntModel";
-import { FINDING_LOBBY, type RecentMatch, useApp } from "../state/app";
+import { FINDING_LOBBY, NEAR_NETWORK, type RecentMatch, useApp } from "../state/app";
 import { RollingMoney } from "../ui/game";
 import {
   Avatar,
@@ -13,6 +13,7 @@ import {
   Eyebrow,
   Field,
   Gap,
+  IconButton,
   Label,
   Notice,
   Num,
@@ -83,7 +84,7 @@ export function HomeView({
           <Avatar name={m.handle} size={32} mark />
           <Strong>{m.handle}</Strong>
         </Pressable>
-        <Button kind="quiet" title="Settings" onPress={onSettings} />
+        <IconButton symbol="gearshape" label="Settings" onPress={onSettings} />
       </Row>
 
       {/* The park: the game in one glance, playing while you decide. */}
@@ -98,14 +99,20 @@ export function HomeView({
         accessibilityHint="Top up or withdraw"
         style={({ pressed }) => [styles.wallet, pressed && styles.pressed]}
       >
-        <Eyebrow muted>Balance</Eyebrow>
+        <Eyebrow muted>{NEAR_NETWORK === "testnet" ? "Test balance" : "Balance"}</Eyebrow>
         {m.balance === null ? <Num>-</Num> : <RollingMoney units={m.balance} reduceMotion={reduceMotion} />}
       </Pressable>
       {m.error ? <Notice title="Something didn't go through" detail={m.error} /> : null}
 
       <Gap size="m" />
-      <Button title="Create a match" onPress={onCreate} style={styles.big} />
-      <Button kind="secondary" title="Scan to join" onPress={onScan} style={styles.big} />
+      <Button symbol="plus" title="Create a match" onPress={onCreate} style={styles.big} />
+      <Button
+        kind="secondary"
+        symbol="qrcode.viewfinder"
+        title="Scan to join"
+        onPress={onScan}
+        style={styles.big}
+      />
 
       <Gap size="m" />
       <Field

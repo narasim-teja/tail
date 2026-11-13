@@ -19,7 +19,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Icon } from "./brand";
+import { Icon, SystemIcon, type SystemSymbol } from "./brand";
 import { haptic } from "./haptics";
 import { ease } from "./motion";
 import { color, HIT, maxScale, motion, radius, STRIKE_HEIGHT, space, text } from "./theme";
@@ -147,6 +147,7 @@ export function Button({
   onPress,
   kind = "primary",
   icon,
+  symbol,
   busy,
   disabled,
   hint,
@@ -157,6 +158,8 @@ export function Button({
   kind?: ButtonKind;
   /** A brand game icon, only for game concepts. */
   icon?: IconName | undefined;
+  /** An SF Symbol, for everyday controls (share, scan, back). */
+  symbol?: SystemSymbol | undefined;
   /** Shows a spinner and blocks presses; the title says what is happening. */
   busy?: boolean | undefined;
   disabled?: boolean | undefined;
@@ -216,6 +219,8 @@ export function Button({
         <ActivityIndicator color={fg} />
       ) : icon ? (
         <Icon name={icon} size={kind === "strike" ? 36 : 20} tint={fg} />
+      ) : symbol ? (
+        <SystemIcon name={symbol} size={17} tint={fg} />
       ) : null}
       <Text
         maxFontSizeMultiplier={kind === "strike" ? maxScale.number : maxScale.text}
@@ -350,6 +355,33 @@ function StepButton({ sign, off, onPress }: { sign: "-" | "+"; off: boolean; onP
       <Text allowFontScaling={false} style={s.stepSign}>
         {sign === "-" ? "\u2212" : "+"}
       </Text>
+    </AnimatedPressable>
+  );
+}
+
+/** A control that is only an icon (settings in a header). The label is what VoiceOver says. */
+export function IconButton({
+  symbol,
+  label,
+  onPress,
+}: {
+  symbol: SystemSymbol;
+  label: string;
+  onPress: () => void;
+}) {
+  const tone = useTone();
+  const press = usePress(0.9);
+  return (
+    <AnimatedPressable
+      onPress={onPress}
+      onPressIn={press.onPressIn}
+      onPressOut={press.onPressOut}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      hitSlop={4}
+      style={[s.iconButton, { transform: [{ scale: press.scale }] }]}
+    >
+      <SystemIcon name={symbol} size={22} tint={inkOn(tone)} />
     </AnimatedPressable>
   );
 }
@@ -535,6 +567,7 @@ const s = StyleSheet.create({
     justifyContent: "center",
   },
   chipOn: { backgroundColor: color.ink },
+  iconButton: { width: HIT, height: HIT, alignItems: "center", justifyContent: "center" },
   stepper: { flexDirection: "row", alignItems: "center", gap: space.s, minHeight: HIT },
   stepButton: {
     width: 52,

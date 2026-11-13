@@ -104,6 +104,8 @@ class AppModel {
   recent: RecentMatch[] = [];
   /** Home: this account's contract balance in the match token, and that token. */
   wallet: { token: string; balance: bigint } | null = null;
+  /** The relay is a test relay (it may fill a seat with a test player); read when a lobby opens. */
+  testPlayers = false;
   /** The player chose to see results while the match still runs (after being tagged). */
   resultsNow = false;
   busy: string | null = null;
@@ -357,6 +359,27 @@ class AppModel {
   start() {
     return this.act("Starting", async () => {
       await this.relay.startMatch(nearSigner(this.need()), this.needMatch());
+      await this.refresh();
+    });
+  }
+
+  /** Asks a test relay whether it offers test players; the lobby shows its button only then. */
+  checkTestPlayers(): void {
+    void this.relay
+      .allowsTestPlayers()
+      .then((on) => {
+        this.testPlayers = on;
+        this.emit();
+      })
+      // No answer means no test players: the button stays hidden, which is the safe default.
+      .catch(() => {});
+  }
+
+  addTestPlayer() {
+    return this.act("Adding a test player", async () => {
+      const id = this.need();
+      if (!this.matchId) throw new Error("Open a lobby first.");
+      await this.relay.addTestPlayer(nearSigner(id), this.matchId);
       await this.refresh();
     });
   }

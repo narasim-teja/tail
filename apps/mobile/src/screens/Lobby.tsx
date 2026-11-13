@@ -52,6 +52,8 @@ export interface LobbyModel {
   isHost: boolean;
   joined: boolean;
   balance: bigint | null;
+  /** A test relay: the host may fill an open seat with a test player. */
+  testPlayers: boolean;
   busy: string | null;
   error: string | null;
 }
@@ -61,6 +63,7 @@ export interface LobbyActions {
   onLeave: () => void;
   onStart: () => void;
   onTopUp: () => void;
+  onAddTestPlayer: () => void;
   onBack: () => void;
 }
 
@@ -162,6 +165,7 @@ export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions
       {open && !m.joined ? (
         short ? (
           <Button
+            symbol="plus.circle"
             title={m.busy ?? "Top up 10"}
             busy={!!m.busy}
             onPress={actions.onTopUp}
@@ -193,7 +197,7 @@ export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions
           hint="Your stake goes back to your balance"
         />
       ) : (
-        <Button kind="quiet" title="Back" onPress={actions.onBack} />
+        <Button kind="quiet" symbol="chevron.left" title="Back" onPress={actions.onBack} />
       )}
     </>
   );
@@ -221,6 +225,7 @@ export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions
         )}
         <Button
           kind="secondary"
+          symbol="square.and.arrow.up"
           title="Share"
           onPress={() => void Share.share({ message: shareMessage(m) })}
         />
@@ -252,6 +257,16 @@ export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions
           <OpenSeat key={i} reduceMotion={reduceMotion} />
         ))}
         {need > SEATS_SHOWN ? <Caption muted>{`and ${need - SEATS_SHOWN} more`}</Caption> : null}
+        {need > 0 && m.isHost && m.joined && m.testPlayers ? (
+          <Button
+            kind="secondary"
+            symbol="person.badge.plus"
+            title={m.busy === "Adding a test player" ? "Adding a test player" : "Add a test player"}
+            busy={m.busy === "Adding a test player"}
+            hint="Testing only: a stand-in that never moves and drops out after a few minutes"
+            onPress={actions.onAddTestPlayer}
+          />
+        ) : null}
         {m.players.length === 0 && m.state.kind !== "loading" ? (
           <Body muted>Nobody yet. Share the code.</Body>
         ) : null}
@@ -263,6 +278,7 @@ export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions
 
 export function Lobby() {
   const app = useApp();
+  useEffect(() => app.checkTestPlayers(), [app]);
   const m = app.match;
   const chain = m?.chain;
   const me = app.me;
@@ -297,6 +313,7 @@ export function Lobby() {
         isHost: m?.host === me,
         joined: players.some((p) => p.me),
         balance: app.balance,
+        testPlayers: app.testPlayers,
         busy: app.busy,
         error: app.error,
       }}
@@ -305,6 +322,7 @@ export function Lobby() {
         onLeave: () => void app.leave(),
         onStart: () => void app.start(),
         onTopUp: () => void app.topUp(TOP_UP),
+        onAddTestPlayer: () => void app.addTestPlayer(),
         onBack: () => app.closeMatch(),
       }}
     />

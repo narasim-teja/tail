@@ -292,7 +292,10 @@ export function BlockedView({
   onOpenSettings: () => void;
 }) {
   return (
-    <Screen scroll={false} footer={<Button title="Open Settings" onPress={onOpenSettings} />}>
+    <Screen
+      scroll={false}
+      footer={<Button symbol="gearshape" title="Open Settings" onPress={onOpenSettings} />}
+    >
       <View style={styles.center}>
         <Icon name="dark" size={48} tint={color.ink} />
         <Display center>{what === "bluetooth" ? "Bluetooth is off" : "Location is off"}</Display>
