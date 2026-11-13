@@ -2,7 +2,6 @@
 // touches the network: chain data comes in as an argument (see chain.ts), so the same code runs
 // in the browser and under `bun test`.
 
-import { ed25519 } from "@noble/curves/ed25519.js";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import {
@@ -17,6 +16,7 @@ import {
   sha256,
   toHex,
   utf8,
+  verifyEd25519,
 } from "@tail/protocol";
 import type { AnySignedVerdict, AnyVerdict, DecodedBundle } from "./bundle.ts";
 
@@ -73,7 +73,11 @@ export interface LocalVerdictCheck {
   kind: AnyVerdict["kind"] | null;
   /** The bytes decode as a SignedVerdict for this match. */
   decodes: boolean;
-  /** ed25519 over the verdict digest (v2, or v1 for an old bundle) with the bundle's referee key. */
+  /**
+   * ed25519 over the verdict digest (v2, or v1 for an old bundle) with the bundle's referee key,
+   * strict (verifyEd25519): a non-canonical point encoding or a small-order key fails, as in the
+   * protocol package's verdict chain check, rather than noble's permissive ZIP-215 default.
+   */
   signature: boolean;
   /** seq = position + 1: no gaps, no repeats. */
   order: boolean;
@@ -161,12 +165,7 @@ export function checkVerdict(d: DecodedBundle, ctx: LocalContext, index: number)
   };
   if (!v || !digest || !equal(v.matchId, d.matchId)) return base;
   const entry = ctx.entries.get(v.seq);
-  let signature = false;
-  try {
-    signature = ed25519.verify(v.sig, digest, d.refereePk);
-  } catch {
-    signature = false;
-  }
+  const signature = verifyEd25519(d.refereePk, digest, v.sig);
   const out: LocalVerdictCheck = {
     ...base,
     decodes: true,
@@ -195,12 +194,7 @@ function checkEnd(
   b: Extract<AnyVerdict, { kind: "End" }>,
 ): RingCheck {
   const commit = start?.body.kind === "Start" && equal(start.body.ringCommit, ringCommit(b.vrfSignature));
-  let vrf = false;
-  try {
-    vrf = ed25519.verify(b.vrfSignature, utf8(b.alpha), d.vrfPk);
-  } catch {
-    vrf = false;
-  }
+  const vrf = verifyEd25519(d.vrfPk, utf8(b.alpha), b.vrfSignature);
   const rebuilt = buildRing(d.players, b.vrfSignature);
   const revealed = d.reveal.ring;
   const sameSig = d.reveal.vrfSignature === null || equal(d.reveal.vrfSignature, b.vrfSignature);

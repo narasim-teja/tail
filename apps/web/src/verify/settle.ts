@@ -13,7 +13,6 @@
 // A v1 bundle (before protocol v2) paid a hint straight to its target and has no pool, credits or
 // hint targets, so its heads follow the v1 rule and no settlement replay runs for it.
 
-import { ed25519 } from "@noble/curves/ed25519.js";
 import {
   describeViolation,
   equal,
@@ -23,6 +22,7 @@ import {
   ringOrder,
   type Verdict,
   type Violation,
+  verifyEd25519,
 } from "@tail/protocol";
 import type { AnyVerdict, DecodedBundle } from "./bundle.ts";
 
@@ -103,14 +103,10 @@ export function settlementOf(d: DecodedBundle): Settlement {
 
 function settle(d: DecodedBundle): Settlement {
   if (d.version === 1) return { kind: "v1" };
-  const signed = d.verdicts.every((x) => {
-    if (!x.v || !x.digest || !equal(x.v.matchId, d.matchId)) return false;
-    try {
-      return ed25519.verify(x.v.sig, x.digest, d.refereePk);
-    } catch {
-      return false;
-    }
-  });
+  const signed = d.verdicts.every(
+    (x) =>
+      !!x.v && !!x.digest && equal(x.v.matchId, d.matchId) && verifyEd25519(d.refereePk, x.digest, x.v.sig),
+  );
   if (!signed) return { kind: "not-run", why: "unsigned" };
   // A v2 bundle decodes only v2 verdicts (bundle.ts).
   const bodies = d.verdicts.map((x) => x.v?.body as Verdict);

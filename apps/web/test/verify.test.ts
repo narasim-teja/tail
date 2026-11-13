@@ -1,12 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import { ed25519 } from "@noble/curves/ed25519.js";
+import { sha512 } from "@noble/hashes/sha2.js";
 import {
+  concat,
   encodeSignedVerdict,
   merkleLeaf,
   merkleRoot,
   type ReplayBundle,
   type ReplayBundleV2,
   type SignedVerdict,
+  sha256,
   toHex,
+  utf8,
 } from "@tail/protocol";
 import { makeFixtures } from "../scripts/fixture.ts";
 import type { Expect } from "../src/verify/anchor.ts";
@@ -14,6 +19,7 @@ import { BundleError, decodeBundle } from "../src/verify/bundle.ts";
 import { Frontier, prefixRoots } from "../src/verify/checks.ts";
 import { verifyAll } from "../src/verify/index.ts";
 import { matchProblem, summarize, summaryLine } from "../src/verify/report.ts";
+import { settlementOf } from "../src/verify/settle.ts";
 import { chainFor } from "./chain.ts";
 
 // Built in memory, through JSON as the relay would send it: no generated files needed.
@@ -211,5 +217,33 @@ describe("decoding", () => {
     const d = decodeBundle(b);
     expect(d.verdicts[1]?.v).toBeNull();
     expect(verifyAll(d, onChain, EXPECT).statuses[1]).toBe("mismatch");
+  });
+});
+
+describe("signatures are strict", () => {
+  test("a signature only ZIP-215 accepts (a non-canonical R) fails the verdict and stops the settlement replay", () => {
+    // The fixture's public test referee key (scripts/fixture.ts) signs verdict 1 with R the
+    // identity point encoded as y = p + 1: noble's permissive default decodes it, RFC 8032 doesn't.
+    const sk = sha256(utf8("TAIL replay fixture referee key. Test only, public, never on NEAR."));
+    const { scalar, pointBytes } = ed25519.utils.getExtendedPublicKey(sk);
+    const { Fp, Fn } = ed25519.Point;
+    const le = (n: bigint) => Uint8Array.from({ length: 32 }, (_, i) => Number((n >> BigInt(8 * i)) & 0xffn));
+    const x = good.verdicts[1];
+    if (!x?.v || !x.digest) throw new Error("no verdict");
+    const r = le(Fp.ORDER + 1n);
+    const k = Fn.create(BigInt(`0x${toHex(sha512(concat(r, pointBytes, x.digest)).reverse())}`));
+    const sig = concat(r, le(Fn.create(k * scalar)));
+    expect(ed25519.verify(sig, x.digest, pointBytes)).toBe(true);
+    expect(ed25519.verify(sig, x.digest, pointBytes, { zip215: false })).toBe(false);
+
+    const b = clone();
+    (b.verdicts[1] as { signed: string }).signed = b64(
+      encodeSignedVerdict({ ...(x.v as SignedVerdict), sig }),
+    );
+    const d = decodeBundle(b);
+    const r2 = verifyAll(d, chainFor(d), EXPECT);
+    expect(r2.local[1]?.signature).toBe(false);
+    expect(r2.statuses[1]).toBe("mismatch");
+    expect(settlementOf(d)).toEqual({ kind: "not-run", why: "unsigned" });
   });
 });
