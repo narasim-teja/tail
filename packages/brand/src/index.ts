@@ -151,3 +151,5 @@ function escapeXml(s: string) {
     (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;" })[c] as string,
   );
 }
+
+export * from "./dossier.ts";

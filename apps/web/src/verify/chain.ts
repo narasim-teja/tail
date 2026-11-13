@@ -6,7 +6,7 @@
 import type { ChainHead, ChainMatch, ChainRoots, ChainState } from "./anchor.ts";
 import { hexOrB64 } from "./bundle.ts";
 
-const RPC: Record<string, string> = {
+export const RPC: Record<string, string> = {
   testnet: import.meta.env.VITE_NEAR_RPC_TESTNET || "https://test.rpc.fastnear.com",
   mainnet: import.meta.env.VITE_NEAR_RPC_MAINNET || "https://free.rpc.fastnear.com",
 };

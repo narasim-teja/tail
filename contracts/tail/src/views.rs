@@ -5,7 +5,7 @@
 use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::{near, AccountId};
 
-use crate::Phase;
+use crate::{Phase, Requires};
 
 /// What a host sends to `create_match`.
 #[near(serializers = [json])]
@@ -30,6 +30,10 @@ pub struct MatchConfig {
     /// Accounts allowed to sponsor (at most 4); empty (the default) means no sponsor pot.
     #[serde(default)]
     pub sponsors: Vec<AccountId>,
+    /// Who may join, by their dossier: at least this many settled matches played and survived.
+    /// Absent (the default) means anyone the other rules let in.
+    #[serde(default)]
+    pub requires: Option<Requires>,
 }
 
 #[near(serializers = [json])]
@@ -132,6 +136,8 @@ pub struct MatchView {
     /// The first rule the `End` replay found broken, when `settled_as` is
     /// `refunded_rule_violation`.
     pub violation: Option<String>,
+    /// The dossier a player needs to join (`create_match`'s `requires`); `None` for none.
+    pub requires: Option<Requires>,
 }
 
 /// How a match's money left it. Only `payout` follows the play: the other two refund every
@@ -146,6 +152,9 @@ pub enum SettledAs {
     RefundedRuleViolation,
     /// `abort`: the lobby never started, or the referee went silent.
     RefundedAbort,
+    /// `End` landed under the code before the upgrade that added the replay: the heads were paid
+    /// as the verdicts moved them, with nothing checked against the ring.
+    PayoutUnreplayed,
 }
 
 #[near(serializers = [json])]
@@ -166,8 +175,12 @@ pub struct ConfigView {
     pub allowed_tokens: Vec<AccountId>,
     /// Exact yoctoNEAR deposit `create_match` needs.
     pub match_storage_deposit: U128,
-    /// Exact yoctoNEAR deposit `register_for` needs.
+    /// Exact yoctoNEAR deposit `register_for` needs (it includes the dossier).
     pub registration_deposit: U128,
+    /// Exact yoctoNEAR deposit `mint_dossier` needs.
+    pub dossier_deposit: U128,
+    /// How many entries a dossier keeps (the newest).
+    pub dossier_entries: u32,
     pub referee_timeout_ms: u64,
     pub lock_ms: u64,
     pub start_skew_ms: u64,

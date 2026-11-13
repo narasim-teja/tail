@@ -26,7 +26,7 @@ use curve25519_dalek::edwards::{CompressedEdwardsY, EdwardsPoint};
 use near_sdk::borsh::BorshDeserialize;
 use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::serde_json::json;
-use near_sdk::store::LookupMap;
+use near_sdk::store::{LookupMap, Vector};
 use near_sdk::{
     assert_one_yocto, env, near, require, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError,
 };
@@ -35,11 +35,15 @@ use tail_protocol::merkle::{verify_consistency_with, verify_with};
 use tail_protocol::ring::{players_hash, ring_commit, ring_order};
 use tail_protocol::settle::{replay, PlayEvent, Violation};
 use tail_protocol::{
-    hint_price, Hash, LogEntry, MatchId, SignedVerdict, Verdict, CHECKPOINT_MS, MAX_HINTS, REFEREE_TIMEOUT_MS,
+    hint_price, recent_hints, Hash, LogEntry, MatchId, SignedVerdict, Verdict, CHECKPOINT_MS, MAX_HINTS,
+    REFEREE_TIMEOUT_MS,
 };
 
+mod art;
+pub mod dossier;
 mod migrate;
 mod views;
+pub use dossier::{Dossier, DossierView, MatchResult, Requires, DOSSIER_ENTRIES, DOSSIER_RECORD_BYTES};
 pub use views::*;
 
 #[cfg(test)]
@@ -73,18 +77,17 @@ pub const LOCK_MS: u64 = 600_000;
 /// `Start.start_ms` must be this close to the block time it lands in, so `end_ms` (and with it
 /// the overdue abort) means real time.
 pub const START_SKEW_MS: u64 = 300_000;
-/// Tag, Hint and Forfeit verdicts are refused once block time passes `end_ms` by more than this.
-/// The referee's last tick runs up to `TICK_MS` after `end_ms` (dark forfeits are counted to
-/// `end_ms` on it), its OutLayer call takes seconds and the relay retries a failed submit; five
-/// minutes covers that with room, the same delay `START_SKEW_MS` already allows between the
-/// referee signing and a verdict landing. It stays well under `REFEREE_TIMEOUT_MS`, so no head
-/// can move once the overdue abort is open.
-pub const VERDICT_GRACE_MS: u64 = 300_000;
+/// Tag, Hint and Forfeit verdicts land until block time reaches `end_ms + VERDICT_GRACE_MS`, the
+/// moment anyone may abort an overdue match. Before that, a late verdict (the referee's last tick,
+/// OutLayer slow or down at the end, relay retries) must still land: verdicts are ordered, so
+/// refusing one would also block the End behind it and refund honest winners. After it, nothing
+/// that moves a head is needed: an abort refunds the original stakes whatever the heads are.
+pub const VERDICT_GRACE_MS: u64 = REFEREE_TIMEOUT_MS;
 /// Upper bound on what one match ever stores (the match record at its largest, a full checkpoint
-/// list, a full play record with `MAX_HINTS` hints and every elimination, and the verdict head,
-/// with NEAR's 40-byte per-record overhead). `create_match` charges it up front. A unit test
-/// checks the bound against a maximal match.
-pub const MATCH_STORAGE_BYTES: u128 = 13_200;
+/// list, a full play record with `MAX_HINTS` hints and their times, every elimination and an
+/// access rule, and the verdict head, with NEAR's 40-byte per-record overhead). `create_match`
+/// charges it up front. A unit test checks the bound against a maximal match.
+pub const MATCH_STORAGE_BYTES: u128 = 15_200;
 /// One payout record with 64-character account ids, including the 40-byte record overhead.
 pub const PAYOUT_RECORD_BYTES: u128 = 180;
 /// One (account, token) balance record with 64-character ids, including the record overhead.
@@ -207,14 +210,14 @@ pub struct PlayRecord {
     pub hint_pool: u128,
     /// The first rule the `End` replay found broken, when the match was refunded for it.
     pub violation: Option<Violation>,
+    /// Who may join, by their dossier (`create_match`'s `requires`).
+    pub requires: Option<Requires>,
 }
 
 impl PlayRecord {
-    fn hints(&self) -> usize {
-        self.events
-            .iter()
-            .filter(|e| matches!(e, PlayEvent::Hint { .. }))
-            .count()
+    /// The match times of the hints charged so far, in order.
+    fn hint_times(&self) -> Vec<u64> {
+        self.events.iter().filter_map(PlayEvent::hint_t_ms).collect()
     }
 }
 
@@ -253,6 +256,10 @@ pub struct Tail {
     /// The `verdict_digest` of each match's last applied verdict (zeros before the first): the
     /// next verdict's `prev` must equal it. Written by `create_match`, so it never allocates later.
     verdict_heads: LookupMap<MatchId, Hash>,
+    /// Each registered player's dossier (the NEP-171 token whose id is the account id).
+    dossiers: LookupMap<AccountId, Dossier>,
+    /// Every dossier's token id in mint order, for NEP-181 enumeration.
+    dossier_ids: Vector<AccountId>,
 }
 
 // near-sdk deserialises every JSON argument into an owned value, so methods take them by value.
@@ -285,6 +292,8 @@ impl Tail {
             vrf_sender: check_vrf_sender(vrf_sender),
             plays: LookupMap::new(migrate::PLAYS_PREFIX),
             verdict_heads: LookupMap::new(migrate::VERDICT_HEADS_PREFIX),
+            dossiers: LookupMap::new(migrate::DOSSIERS_PREFIX),
+            dossier_ids: Vector::new(migrate::DOSSIER_IDS_PREFIX),
         }
     }
 
@@ -325,33 +334,29 @@ impl Tail {
 
     // ── Accounts ─────────────────────────────────────────────────────────────────────────────
 
-    /// Registers `account_id` with its payout account. The caller is the account itself or its
-    /// parent (the relay creates `<handle>.<relay>` and registers it in the same breath), so
-    /// nobody can register someone else with a payout they control. Attach exactly
-    /// `get_config().registration_deposit`: it pays for the payout record and a balance for each
-    /// allowed token.
+    /// Registers `account_id` with its payout account and mints its dossier. The caller is the
+    /// account itself or its parent (the relay creates `<handle>.<relay>` and registers it in the
+    /// same breath), so nobody can register someone else with a payout they control. Attach
+    /// exactly `get_config().registration_deposit`: it pays for the payout record, a balance for
+    /// each allowed token and the largest dossier.
     #[payable]
     pub fn register_for(&mut self, account_id: AccountId, payout_account: AccountId) {
         require!(
             env::attached_deposit() == self.registration_deposit(),
             "attach exactly registration_deposit (see get_config)"
         );
-        let caller = env::predecessor_account_id();
-        let is_parent = account_id
-            .as_str()
-            .strip_suffix(caller.as_str())
-            .and_then(|rest| rest.strip_suffix('.'))
-            .is_some_and(|handle| !handle.is_empty() && !handle.contains('.'));
-        require!(
-            caller == account_id || is_parent,
-            "only the account or its parent can register it"
-        );
+        require_self_or_parent(&account_id, "register it");
         require!(!self.payouts.contains_key(&account_id), "already registered");
-        check_payout(&payout_account);
+        self.check_payout(&payout_account);
         for token in &self.allowed_tokens {
             self.balances.insert((account_id.clone(), token.clone()), 0);
         }
-        self.payouts.insert(account_id, payout_account);
+        self.payouts.insert(account_id.clone(), payout_account);
+        // An account registered before dossiers existed may have minted one through
+        // `mint_dossier`; a dossier is never removed, so this only happens on registration.
+        if !self.dossiers.contains_key(&account_id) {
+            self.mint(&account_id);
+        }
     }
 
     /// Repoints `account_id`'s payout. Either the account itself or its current payout account
@@ -371,7 +376,7 @@ impl Tail {
             caller == account_id || caller == *current,
             "only the account or its current payout account can change it"
         );
-        check_payout(&payout_account);
+        self.check_payout(&payout_account);
         self.payouts.insert(account_id, payout_account);
     }
 
@@ -398,9 +403,10 @@ impl Tail {
     /// callback.
     ///
     /// A payout that is the caller itself would strand the tokens on a player account that holds
-    /// only a function-call key. Then `to` is required: it becomes the payout, once and for good
-    /// (from then on only `set_payout` changes it), and this withdraw goes there.
-    /// It must be registered on the token, or the transfer fails and the balance comes back.
+    /// only a function-call key. Then `to` is required and this withdraw goes there. If the
+    /// transfer succeeds, `to` becomes the payout, once and for good (from then on only
+    /// `set_payout` changes it). If it fails (a mistyped account, or one not registered on the
+    /// token), the balance comes back and the payout stays unset, so the player can name another.
     /// Otherwise `to` must be absent or equal the payout.
     pub fn withdraw(&mut self, token: AccountId, amount: U128, to: Option<AccountId>) -> Promise {
         require!(
@@ -414,22 +420,20 @@ impl Tail {
             .cloned()
             .unwrap_or_else(|| env::panic_str("account not registered"));
         require!(amount.0 > 0, "amount must be positive");
-        let payout = if current == who {
+        let (payout, naming) = if current == who {
             let to = to.unwrap_or_else(|| {
                 env::panic_str("the payout account is this account itself; pass `to` to name a wallet")
             });
             require!(to != who, "`to` must be another account");
-            check_payout(&to);
-            // Overwrites the record registration paid for (sized for a 64-character id).
-            self.payouts.insert(who.clone(), to.clone());
-            env::log_str(&format!("payout of {who} set to {to}"));
-            to
+            self.check_payout(&to);
+            // Saved by `on_withdraw` only once the transfer to it succeeded.
+            (to.clone(), Some(to))
         } else {
             require!(
                 to.as_ref().is_none_or(|to| *to == current),
                 "`to` must be absent or the payout account"
             );
-            current
+            (current, None)
         };
         debit(&mut self.balances, &who, &token, amount.0);
         Promise::new(token.clone())
@@ -444,22 +448,37 @@ impl Tail {
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(ON_WITHDRAW_GAS)
-                    .on_withdraw(who, token, amount),
+                    .on_withdraw(who, token, amount, naming),
             )
     }
 
     /// Returns true when the tokens were paid, false when the transfer failed and the balance
     /// was restored (into the record `debit` left in place, so this never needs new storage).
+    /// `payout` is the wallet a withdraw named for an account that still paid itself: it becomes
+    /// the payout only now that a transfer to it went through, and only if no other withdraw
+    /// named one first. It overwrites the record registration paid for (sized for a
+    /// 64-character id).
     #[private]
-    pub fn on_withdraw(&mut self, account_id: AccountId, token: AccountId, amount: U128) -> bool {
+    pub fn on_withdraw(
+        &mut self,
+        account_id: AccountId,
+        token: AccountId,
+        amount: U128,
+        payout: Option<AccountId>,
+    ) -> bool {
         // ft_transfer returns no value, so any data (even an unexpected one) means it ran.
         if matches!(env::promise_result_checked(0, 0), Err(PromiseError::Failed)) {
             credit(&mut self.balances, &account_id, &token, amount.0);
             env::log_str(&format!("withdraw of {} failed; balance restored", amount.0));
-            false
-        } else {
-            true
+            return false;
         }
+        if let Some(to) = payout {
+            if self.payouts.get(&account_id) == Some(&account_id) {
+                env::log_str(&format!("payout of {account_id} set to {to}"));
+                self.payouts.insert(account_id, to);
+            }
+        }
+        true
     }
 
     // ── Lobby ────────────────────────────────────────────────────────────────────────────────
@@ -538,6 +557,7 @@ impl Tail {
                 events: Vec::new(),
                 hint_pool: 0,
                 violation: None,
+                requires: cfg.requires,
             },
         );
         self.verdict_heads.insert(id, [0; 32]);
@@ -571,6 +591,10 @@ impl Tail {
         require!(env::predecessor_account_id() == m.host, "host only");
         require!(m.phase == Phase::Lobby, "match already started");
         require!(m.locked_until_ms.is_none(), "lobby was already locked");
+        require!(
+            self.plays.contains_key(&parse_hex(&match_id, "match_id")),
+            "match was created before the upgrade and can never start; abort it"
+        );
         let now = env::block_timestamp_ms();
         require!(now <= m.start_by_ms, "start deadline passed");
         require!(
@@ -596,6 +620,20 @@ impl Tail {
         );
         require!(m.invites.is_empty() || m.invites.contains(&who), "not invited");
         require!(m.players.len() < usize::from(m.max_players), "match is full");
+        let id = parse_hex(&match_id, "match_id");
+        let play = self
+            .plays
+            .get(&id)
+            .unwrap_or_else(|| env::panic_str("match was created before the upgrade and can never start"));
+        if let Some(r) = play.requires {
+            let meets = self.dossiers.get(&who).is_some_and(|d| d.meets(&r));
+            if !meets {
+                env::panic_str(&format!(
+                    "your dossier is below this match's requires: {} settled matches and {} survived",
+                    r.min_matches, r.min_survived
+                ));
+            }
+        }
         let Err(pos) = m.players.binary_search_by(|p| p.account_id.cmp(&who)) else {
             env::panic_str("already joined");
         };
@@ -675,11 +713,14 @@ impl Tail {
             }
             Phase::Ended | Phase::Aborted => env::panic_str("match already settled"),
         }
-        let play = self.plays.get_mut(&id);
+        let mut play = self.plays.get_mut(&id);
         let was_running = m.phase == Phase::Running;
-        refund_stakes(m, play, &mut self.balances);
+        refund_stakes(m, play.as_deref_mut(), &mut self.balances);
         m.phase = Phase::Aborted;
+        // A lobby that never started was not played, so only a running match goes on record.
         if was_running {
+            let anchor = last_anchor(self.checkpoints.get(&id).map_or(&[], Vec::as_slice));
+            dossier::record_settlement(&mut self.dossiers, &id, m, play.as_deref(), anchor, true);
             emit_refund(&id, SettledAs::RefundedAbort, None);
         }
     }
@@ -698,6 +739,8 @@ impl Tail {
             allowed_tokens: self.allowed_tokens.clone(),
             match_storage_deposit: U128(match_storage_deposit().as_yoctonear()),
             registration_deposit: U128(self.registration_deposit().as_yoctonear()),
+            dossier_deposit: U128(dossier_deposit().as_yoctonear()),
+            dossier_entries: DOSSIER_ENTRIES as u32,
             referee_timeout_ms: REFEREE_TIMEOUT_MS,
             lock_ms: LOCK_MS,
             start_skew_ms: START_SKEW_MS,
@@ -799,8 +842,23 @@ impl Tail {
         require!(env::predecessor_account_id() == self.owner, "owner only");
     }
 
+    /// A plain ft_transfer to this contract would land outside every internal balance, and one to
+    /// a token contract would leave the tokens with the token itself.
+    fn check_payout(&self, payout: &AccountId) {
+        require!(
+            *payout != env::current_account_id(),
+            "payout cannot be this contract"
+        );
+        require!(
+            !self.allowed_tokens.contains(payout),
+            "payout cannot be a token contract"
+        );
+    }
+
     fn registration_deposit(&self) -> NearToken {
-        let bytes = PAYOUT_RECORD_BYTES + BALANCE_RECORD_BYTES * self.allowed_tokens.len() as u128;
+        let bytes = PAYOUT_RECORD_BYTES
+            + BALANCE_RECORD_BYTES * self.allowed_tokens.len() as u128
+            + DOSSIER_RECORD_BYTES;
         env::storage_byte_cost().saturating_mul(bytes)
     }
 
@@ -845,6 +903,9 @@ impl Tail {
                 // The pot is fixed at Start so `sum(heads) + pot` stays constant while running.
                 if m.phase != Phase::Lobby {
                     return Err("match already started");
+                }
+                if !self.plays.contains_key(&id) {
+                    return Err("match was created before the upgrade and can never start");
                 }
                 if &m.token != token {
                     return Err("wrong token for this match");
@@ -901,8 +962,8 @@ impl Tail {
             Verdict::Hint { .. } | Verdict::Tag { .. } | Verdict::Forfeit { .. }
         ) {
             require!(
-                now <= m.window().1.saturating_add(VERDICT_GRACE_MS),
-                "the match is over: no heads move after end_ms + grace"
+                now < m.window().1.saturating_add(VERDICT_GRACE_MS),
+                "the match is overdue: no heads move once it can be aborted"
             );
         }
         match sv.body {
@@ -913,30 +974,18 @@ impl Tail {
                 end_ms,
             } => start(m, ph, rc, start_ms, end_ms, now),
             Verdict::Hint {
-                from, amount, hint, ..
+                from,
+                amount,
+                hint,
+                t_ms,
+                ..
             } => {
                 let play = self.plays.get_mut(&id).unwrap_or_else(created_before_upgrade);
-                pay_hint(m, play, from, amount, hint);
+                pay_hint(m, play, from, amount, hint, t_ms);
             }
-            Verdict::Tag {
-                hunter,
-                target,
-                credit,
-            } => {
+            Verdict::Tag { .. } | Verdict::Forfeit { .. } => {
                 let play = self.plays.get_mut(&id).unwrap_or_else(created_before_upgrade);
-                eliminate(
-                    m,
-                    play,
-                    PlayEvent::Tag {
-                        hunter,
-                        target,
-                        credit,
-                    },
-                );
-            }
-            Verdict::Forfeit { player, to, credit } => {
-                let play = self.plays.get_mut(&id).unwrap_or_else(created_before_upgrade);
-                eliminate(m, play, PlayEvent::Forfeit { player, to, credit });
+                eliminate(m, play, &sv.body);
             }
             Verdict::Checkpoint { log_size, root } => {
                 let list = self.checkpoints.entry(id).or_default();
@@ -961,7 +1010,16 @@ impl Tail {
                 );
                 let final_root = Root { log_size, root };
                 check_consistency(last, final_root, &proofs.take(sv.seq));
-                settle(m, play, &vrf_signature, &hint_targets, &mut self.balances, &id);
+                settle(
+                    m,
+                    play,
+                    &vrf_signature,
+                    &hint_targets,
+                    &mut self.balances,
+                    &mut self.dossiers,
+                    &id,
+                    final_root,
+                );
                 m.reveal = Some(Reveal {
                     alpha,
                     vrf_signature,
@@ -1047,6 +1105,11 @@ fn last_anchor(list: &[Root]) -> Root {
 /// The new root must extend the last anchored one: the log is append-only across every root the
 /// contract holds, so no checkpoint can drop or rewrite an entry an earlier one committed to.
 fn check_consistency(from: Root, to: Root, proof: &Proof) {
+    // The proof check accepts any root for an empty log; the only root of no entries is SHA256("").
+    require!(
+        to.log_size > 0 || to.root == host_sha256(&[]),
+        "the root of an empty log must be SHA256(\"\")"
+    );
     if proof.from_size != from.log_size {
         env::panic_str(&format!(
             "consistency proof from_size {} is not the last anchored log size {}",
@@ -1095,19 +1158,34 @@ fn start(m: &mut Match, ph: Hash, rc: Hash, start_ms: u64, end_ms: u64, now: u64
     m.end_ms = Some(end_ms);
 }
 
-/// A hint costs exactly its kind's price (`HINT_BPS[kind] × stake / 10 000`, the same rule the
-/// referee and the app use), paid from the asker's head into the hint pool. Whom it was about stays
-/// secret until `End`; the Tag or Forfeit that puts that player out credits it to them first.
-fn pay_hint(m: &mut Match, play: &mut PlayRecord, from: u16, amount: u128, kind: u8) {
+/// A hint costs exactly its price at the match's demand when it was charged (`pricing`: the kind's
+/// base price, 25 % more for each hint anyone bought in the 5 minutes of match time before
+/// `t_ms`, at most 4x), recomputed here from the earlier hints' times, so the referee cannot
+/// charge anything else. `t_ms` must lie in `[start_ms, end_ms]` and never go back, so a referee
+/// cannot reorder hints in time to move the price. The amount goes from the asker's head into
+/// the hint pool. Whom it was about stays secret until `End`; the Tag or Forfeit that puts that
+/// player out credits it to them first.
+fn pay_hint(m: &mut Match, play: &mut PlayRecord, from: u16, amount: u128, kind: u8, t_ms: u64) {
     let f = live(m, from);
+    let earlier = play.hint_times();
     require!(
-        play.hints() < MAX_HINTS,
+        earlier.len() < MAX_HINTS,
         "the match already charged MAX_HINTS hints"
     );
-    let price = hint_price(m.stake, kind).unwrap_or_else(|| env::panic_str("unknown hint kind"));
+    let (start_ms, end_ms) = m.window();
+    require!(
+        start_ms <= t_ms && t_ms <= end_ms,
+        "hint t_ms is outside the match (start_ms..=end_ms)"
+    );
+    require!(
+        earlier.last().is_none_or(|&last| last <= t_ms),
+        "hint t_ms is before the previous hint's"
+    );
+    let price = hint_price(m.stake, kind, recent_hints(&earlier, t_ms))
+        .unwrap_or_else(|| env::panic_str("unknown hint kind"));
     require!(
         amount == price,
-        "hint amount is not the price of its kind (HINT_BPS[kind] × stake / 10000)"
+        "hint amount is not its price at the match's demand (tail_protocol::pricing)"
     );
     require!(
         m.players[f].head >= amount,
@@ -1115,7 +1193,7 @@ fn pay_hint(m: &mut Match, play: &mut PlayRecord, from: u16, amount: u128, kind:
     );
     m.players[f].head -= amount;
     play.hint_pool += amount;
-    play.events.push(PlayEvent::Hint { from, amount });
+    play.events.push(PlayEvent::Hint { from, amount, t_ms });
 }
 
 /// The k-th checkpoint needs k spacings of match time, and each one commits to a longer log than
@@ -1129,8 +1207,8 @@ fn check_checkpoint(list: &[Root], m: &Match, cp: Root, now: u64) {
         "checkpoint too early: at most one per checkpoint_spacing_ms of match time"
     );
     require!(
-        list.last().is_none_or(|last| cp.log_size > last.log_size),
-        "checkpoint log_size must grow"
+        cp.log_size > list.last().map_or(0, |last| last.log_size),
+        "checkpoint log_size must grow (and an empty log is no checkpoint)"
     );
 }
 
@@ -1145,15 +1223,26 @@ fn created_before_upgrade<T>() -> T {
 /// Tag and Forfeit: the credit moves from the hint pool onto the loser's head, the loser's whole
 /// head goes to the winner, the loser is out, and the event is recorded for the replay at `End`.
 /// Whether the credit is right is checked there; here it can only be no more than the pool holds.
-fn eliminate(m: &mut Match, play: &mut PlayRecord, e: PlayEvent) {
-    let (winner, loser, credit) = match e {
-        PlayEvent::Tag {
+fn eliminate(m: &mut Match, play: &mut PlayRecord, verdict: &Verdict) {
+    let (event, winner, loser, credit) = match *verdict {
+        Verdict::Tag {
             hunter,
             target,
             credit,
-        } => (hunter, target, credit),
-        PlayEvent::Forfeit { player, to, credit } => (to, player, credit),
-        PlayEvent::Hint { .. } => unreachable!("hints are paid by pay_hint"),
+        } => (
+            PlayEvent::Tag {
+                hunter,
+                target,
+                credit,
+            },
+            hunter,
+            target,
+            credit,
+        ),
+        Verdict::Forfeit { player, to, credit } => {
+            (PlayEvent::Forfeit { player, to, credit }, to, player, credit)
+        }
+        _ => unreachable!("only a Tag or a Forfeit puts a player out"),
     };
     let (w, l) = live_pair(m, winner, loser);
     require!(
@@ -1165,7 +1254,7 @@ fn eliminate(m: &mut Match, play: &mut PlayRecord, e: PlayEvent) {
     m.players[l].out = true;
     m.players[w].head += head;
     // Each one puts a live player out, so there are at most MAX_PLAYERS - 1 (storage paid for).
-    play.events.push(e);
+    play.events.push(event);
 }
 
 /// What `End` must get right before the match is replayed at all: the reveal opens the Start
@@ -1224,13 +1313,16 @@ fn check_alpha(alpha: &str, id: &MatchId, vrf_sender: &AccountId) {
 /// every step holds, each survivor gets what hints about them paid in and the match pays out. If
 /// one fails, the signed End is not refused (that would only stall the match until `abort`): the
 /// match settles at once as a refund of every original stake, with the broken rule on record.
+#[allow(clippy::too_many_arguments)]
 fn settle(
     m: &mut Match,
     play: &mut PlayRecord,
     vrf_signature: &[u8; 64],
     hint_targets: &[u16],
     balances: &mut LookupMap<(AccountId, AccountId), u128>,
+    dossiers: &mut LookupMap<AccountId, Dossier>,
     id: &MatchId,
+    anchor: Root,
 ) {
     // `players` is sorted by account id, so a position in it is the player index.
     let ids: Vec<&str> = m.players.iter().map(|p| p.account_id.as_str()).collect();
@@ -1242,11 +1334,13 @@ fn settle(
             }
             play.hint_pool = 0;
             settle_end(m, balances);
+            dossier::record_settlement(dossiers, id, m, Some(play), anchor, false);
         }
         Err(v) => {
             refund_stakes(m, Some(play), balances);
             play.violation = Some(v);
             m.phase = Phase::Ended;
+            dossier::record_settlement(dossiers, id, m, Some(play), anchor, true);
             emit_refund(id, SettledAs::RefundedRuleViolation, Some(&v));
         }
     }
@@ -1375,12 +1469,22 @@ fn check_vrf_sender(vrf_sender: AccountId) -> AccountId {
     vrf_sender
 }
 
-fn check_payout(payout: &AccountId) {
-    // A plain ft_transfer to this contract would land outside every internal balance.
-    require!(
-        *payout != env::current_account_id(),
-        "payout cannot be this contract"
-    );
+/// The caller must be `account_id` itself or its direct parent (`<handle>.<caller>`).
+fn require_self_or_parent(account_id: &AccountId, what: &str) {
+    let caller = env::predecessor_account_id();
+    let is_parent = account_id
+        .as_str()
+        .strip_suffix(caller.as_str())
+        .and_then(|rest| rest.strip_suffix('.'))
+        .is_some_and(|handle| !handle.is_empty() && !handle.contains('.'));
+    if !(caller == *account_id || is_parent) {
+        env::panic_str(&format!("only the account or its parent can {what}"));
+    }
+}
+
+/// What a dossier record costs to store; part of `registration_deposit`, and `mint_dossier`'s.
+pub fn dossier_deposit() -> NearToken {
+    env::storage_byte_cost().saturating_mul(DOSSIER_RECORD_BYTES)
 }
 
 pub fn match_storage_deposit() -> NearToken {
@@ -1479,11 +1583,14 @@ fn match_view(id: &MatchId, m: &Match, play: Option<&PlayRecord>) -> MatchView {
         settled_as: match m.phase {
             Phase::Lobby | Phase::Running => None,
             Phase::Aborted => Some(SettledAs::RefundedAbort),
-            Phase::Ended if play.is_some_and(|r| r.violation.is_some()) => {
-                Some(SettledAs::RefundedRuleViolation)
-            }
-            Phase::Ended => Some(SettledAs::Payout),
+            Phase::Ended => match play {
+                Some(r) if r.violation.is_some() => Some(SettledAs::RefundedRuleViolation),
+                Some(_) => Some(SettledAs::Payout),
+                // Ended by the code before the upgrade, which paid the heads without a replay.
+                None => Some(SettledAs::PayoutUnreplayed),
+            },
         },
         violation: play.and_then(|r| r.violation.as_ref()).map(Violation::describe),
+        requires: play.and_then(|r| r.requires),
     }
 }

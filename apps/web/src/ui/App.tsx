@@ -11,6 +11,7 @@ import { BundleError, type DecodedBundle, decodeBundle } from "../verify/bundle.
 import { nearReader } from "../verify/chain.ts";
 import { type BatchCheck, checkBatches, checkHandler } from "../verify/checks.ts";
 import { PINS } from "../verify/pins.ts";
+import { DossierPage } from "./Dossier.tsx";
 import { PresencePage } from "./Presence.tsx";
 import { Stage } from "./Stage.tsx";
 import { Loading, PageState, ProgressLine, Retry } from "./States.tsx";
@@ -24,6 +25,9 @@ type Phase =
   | { kind: "error"; message: string };
 
 export function App() {
+  // `/dossier/<account>` is a player's dossier.
+  const dossier = /^\/dossier\/([^/]+)\/?$/.exec(location.pathname)?.[1];
+  if (dossier) return <DossierPage account={decodeURIComponent(dossier)} />;
   // `?presence=<proof>` (or a bare `?presence` to paste one) is the presence proof page.
   const presence = new URLSearchParams(location.search).get("presence");
   if (presence !== null)

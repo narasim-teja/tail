@@ -1,0 +1,297 @@
+[
+  {
+    "name": "new player",
+    "view": {
+      "account_id": "ana.tail-dev-a38d13.testnet",
+      "seed": "cf87035d77dcf7abd17ae900507f15608813e92fe7d0a316311bde150fc46422",
+      "matches": 0,
+      "survived": 0,
+      "tags": 0,
+      "forfeits": 0,
+      "refunded": 0,
+      "won": "0",
+      "entries": []
+    },
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 400 500\" width=\"400\" height=\"500\" role=\"img\" aria-label=\"TAIL dossier\"><path d=\"M0 56V20Q0 0 20 0H128Q140 0 146 10L154 26Q160 36 174 36H380Q400 36 400 56V480Q400 500 380 500H20Q0 500 0 480Z\" fill=\"#1C2430\"/><path d=\"M234 228Q247 237 236 247Q226 257 212 259Q199 261 185 259Q172 257 163 247Q155 237 163 226Q171 216 185 209Q199 203 210 211Q222 220 234 228ZM272 215Q289 237 274 260Q260 283 229 287Q199 291 174 282Q150 274 131 255Q112 237 130 218Q149 200 174 192Q199 185 227 189Q256 194 272 215ZM298 208Q319 237 304 271Q290 305 244 313Q199 321 158 309Q118 297 103 267Q89 237 98 203Q108 169 153 156Q199 143 238 161Q277 179 298 208Z\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".07\"/><path d=\"M57 332Q88 354 119 325Q153 351 187 334Q233 311 279 308Q309 289 340 323Q359 270 318 218Q277 194 236 230Q195 209 154 216Q118 239 83 226Q75 192 95 159Q122 148 150 150Q185 125 220 144Q265 127 310 155\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".2\" stroke-width=\"2\" stroke-dasharray=\"0 7\" stroke-linecap=\"round\"/><circle cx=\"57\" cy=\"332\" r=\"3\" fill=\"#F1ECE5\" fill-opacity=\".5\"/><g transform=\"translate(52 289) scale(.75 .75)\" fill=\"#EE6A3F\"><path d=\"M33.8 11.8 Q14 30 7 57 Q30 46 52.2 30.2 Z\" fill-opacity=\".38\"/><circle cx=\"43\" cy=\"21\" r=\"13\"/></g><g font-family=\"system-ui,sans-serif\" fill=\"#F1ECE5\"><text x=\"24\" y=\"24\" font-size=\"11\" font-weight=\"600\" letter-spacing=\"3\" fill-opacity=\".6\">DOSSIER</text><text x=\"376\" y=\"66\" text-anchor=\"end\" font-family=\"ui-monospace,Menlo,monospace\" font-size=\"11\" letter-spacing=\"1\" fill-opacity=\".45\">FILE CF87035D</text><path d=\"M24 372H376\" stroke=\"#F1ECE5\" stroke-opacity=\".14\"/><text x=\"24\" y=\"416\" font-size=\"34\" font-weight=\"700\">ana</text><text x=\"24\" y=\"446\" font-size=\"14\" fill-opacity=\".7\"><tspan font-weight=\"700\" fill-opacity=\"1\">0</tspan> matches · <tspan font-weight=\"700\" fill-opacity=\"1\">0</tspan> survived · <tspan font-weight=\"700\" fill-opacity=\"1\">0</tspan> tags</text><g transform=\"translate(24 460) scale(.67)\" fill=\"none\" stroke=\"#F1ECE5\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-opacity=\".7\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M8 12.5L11 15.5L16.5 9\"/></g><text x=\"46\" y=\"474\" font-size=\"12\" fill-opacity=\".7\">verified on NEAR</text></g></svg>"
+  },
+  {
+    "name": "a few matches",
+    "view": {
+      "account_id": "eli.tail-dev-a38d13.testnet",
+      "seed": "94ab29f3022502bca758009603545551989cbe255c6bfc17818f51e00b6891a2",
+      "matches": 4,
+      "survived": 2,
+      "tags": 4,
+      "forfeits": 1,
+      "refunded": 1,
+      "won": "5000000",
+      "entries": [
+        {
+          "match_id": "05050505050505050505050505050505",
+          "result": "survived",
+          "tags": 1,
+          "payout": "2500000",
+          "log_size": "104",
+          "root": "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4"
+        },
+        {
+          "match_id": "04040404040404040404040404040404",
+          "result": "forfeit",
+          "tags": 1,
+          "payout": "0",
+          "log_size": "103",
+          "root": "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3"
+        },
+        {
+          "match_id": "03030303030303030303030303030303",
+          "result": "refunded",
+          "tags": 0,
+          "payout": "1000000",
+          "log_size": "102",
+          "root": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"
+        },
+        {
+          "match_id": "02020202020202020202020202020202",
+          "result": "survived",
+          "tags": 2,
+          "payout": "2500000",
+          "log_size": "101",
+          "root": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        },
+        {
+          "match_id": "01010101010101010101010101010101",
+          "result": "tagged",
+          "tags": 0,
+          "payout": "0",
+          "log_size": "100",
+          "root": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+        }
+      ]
+    },
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 400 500\" width=\"400\" height=\"500\" role=\"img\" aria-label=\"TAIL dossier\"><path d=\"M0 56V20Q0 0 20 0H128Q140 0 146 10L154 26Q160 36 174 36H380Q400 36 400 56V480Q400 500 380 500H20Q0 500 0 480Z\" fill=\"#1C2430\"/><path d=\"M211 217Q209 230 205 238Q201 247 189 257Q178 267 163 259Q149 252 147 241Q146 230 146 218Q146 206 162 206Q178 206 195 205Q213 204 211 217ZM254 207Q268 230 249 249Q230 269 204 275Q178 282 152 275Q127 268 116 249Q105 230 117 211Q129 193 153 185Q178 177 209 180Q240 184 254 207ZM275 200Q293 230 277 261Q262 293 220 303Q178 313 133 304Q89 296 74 263Q60 230 79 200Q99 171 138 159Q178 148 217 159Q257 171 275 200Z\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".07\"/><path d=\"M100 241Q139 200 178 220Q203 233 229 242Q277 227 326 224Q342 186 306 149Q279 156 252 151Q207 132 162 158Q131 158 101 139\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".2\" stroke-width=\"2\" stroke-dasharray=\"0 7\" stroke-linecap=\"round\"/><path d=\"M208 319Q172 291 136 324\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".32\" stroke-width=\"2\" stroke-dasharray=\"5 5\"/><path d=\"M336 322Q307 296 278 323\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".55\" stroke-width=\"2.5\" stroke-linecap=\"round\"/><path d=\"M278 323Q243 311 208 319M136 324Q107 352 78 328Q75 284 100 241\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".9\" stroke-width=\"2.5\" stroke-linecap=\"round\"/><circle cx=\"336\" cy=\"322\" r=\"3\" fill=\"#F1ECE5\" fill-opacity=\".5\"/><path d=\"M254 313v8m-23-10v8m-124 16v8m-29-59h8\" stroke=\"#EE6A3F\" stroke-width=\"2\" stroke-linecap=\"round\"/><g fill=\"#EE6A3F\"><circle cx=\"208\" cy=\"319\" r=\"5\"/><circle cx=\"100\" cy=\"241\" r=\"5\"/></g><g fill=\"#1C2430\" stroke=\"#F1ECE5\" stroke-width=\"2\"><circle cx=\"278\" cy=\"323\" r=\"5\"/><circle cx=\"78\" cy=\"328\" r=\"5\"/><path d=\"M75 331l6-6\"/></g><g fill=\"#F1ECE5\" fill-opacity=\".32\"><circle cx=\"136\" cy=\"324\" r=\"3\"/></g><g transform=\"translate(95 198) scale(.75 .75)\" fill=\"#EE6A3F\"><path d=\"M33.8 11.8 Q14 30 7 57 Q30 46 52.2 30.2 Z\" fill-opacity=\".38\"/><circle cx=\"43\" cy=\"21\" r=\"13\"/></g><g font-family=\"system-ui,sans-serif\" fill=\"#F1ECE5\"><text x=\"24\" y=\"24\" font-size=\"11\" font-weight=\"600\" letter-spacing=\"3\" fill-opacity=\".6\">DOSSIER</text><text x=\"376\" y=\"66\" text-anchor=\"end\" font-family=\"ui-monospace,Menlo,monospace\" font-size=\"11\" letter-spacing=\"1\" fill-opacity=\".45\">FILE 94AB29F3</text><path d=\"M24 372H376\" stroke=\"#F1ECE5\" stroke-opacity=\".14\"/><text x=\"24\" y=\"416\" font-size=\"34\" font-weight=\"700\">eli</text><text x=\"24\" y=\"446\" font-size=\"14\" fill-opacity=\".7\"><tspan font-weight=\"700\" fill-opacity=\"1\">4</tspan> matches · <tspan font-weight=\"700\" fill-opacity=\"1\">2</tspan> survived · <tspan font-weight=\"700\" fill-opacity=\"1\">4</tspan> tags</text><g transform=\"translate(24 460) scale(.67)\" fill=\"none\" stroke=\"#F1ECE5\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-opacity=\".7\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M8 12.5L11 15.5L16.5 9\"/></g><text x=\"46\" y=\"474\" font-size=\"12\" fill-opacity=\".7\">verified on NEAR</text></g></svg>"
+  },
+  {
+    "name": "a full record",
+    "view": {
+      "account_id": "dee.tail-dev-a38d13.testnet",
+      "seed": "2c8e05f4b5c5903775a614886ec6c7b84c9e31e49665894bf9fe5bbebd21df2c",
+      "matches": 10,
+      "survived": 6,
+      "tags": 18,
+      "forfeits": 1,
+      "refunded": 2,
+      "won": "15000000",
+      "entries": [
+        {
+          "match_id": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+          "result": "survived",
+          "tags": 5,
+          "payout": "2500000",
+          "log_size": "111",
+          "root": "abababababababababababababababababababababababababababababababab"
+        },
+        {
+          "match_id": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+          "result": "survived",
+          "tags": 1,
+          "payout": "2500000",
+          "log_size": "110",
+          "root": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "match_id": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+          "result": "refunded",
+          "tags": 0,
+          "payout": "1000000",
+          "log_size": "109",
+          "root": "a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9"
+        },
+        {
+          "match_id": "09090909090909090909090909090909",
+          "result": "tagged",
+          "tags": 2,
+          "payout": "0",
+          "log_size": "108",
+          "root": "a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8"
+        },
+        {
+          "match_id": "08080808080808080808080808080808",
+          "result": "survived",
+          "tags": 4,
+          "payout": "2500000",
+          "log_size": "107",
+          "root": "a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"
+        },
+        {
+          "match_id": "07070707070707070707070707070707",
+          "result": "forfeit",
+          "tags": 0,
+          "payout": "0",
+          "log_size": "106",
+          "root": "a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6"
+        },
+        {
+          "match_id": "06060606060606060606060606060606",
+          "result": "survived",
+          "tags": 2,
+          "payout": "2500000",
+          "log_size": "105",
+          "root": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        },
+        {
+          "match_id": "05050505050505050505050505050505",
+          "result": "tagged",
+          "tags": 0,
+          "payout": "0",
+          "log_size": "104",
+          "root": "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4"
+        },
+        {
+          "match_id": "04040404040404040404040404040404",
+          "result": "refunded",
+          "tags": 0,
+          "payout": "1000000",
+          "log_size": "103",
+          "root": "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3"
+        },
+        {
+          "match_id": "03030303030303030303030303030303",
+          "result": "survived",
+          "tags": 0,
+          "payout": "2500000",
+          "log_size": "102",
+          "root": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"
+        },
+        {
+          "match_id": "02020202020202020202020202020202",
+          "result": "tagged",
+          "tags": 1,
+          "payout": "0",
+          "log_size": "101",
+          "root": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        },
+        {
+          "match_id": "01010101010101010101010101010101",
+          "result": "survived",
+          "tags": 3,
+          "payout": "2500000",
+          "log_size": "100",
+          "root": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+        }
+      ]
+    },
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 400 500\" width=\"400\" height=\"500\" role=\"img\" aria-label=\"TAIL dossier\"><path d=\"M0 56V20Q0 0 20 0H128Q140 0 146 10L154 26Q160 36 174 36H380Q400 36 400 56V480Q400 500 380 500H20Q0 500 0 480Z\" fill=\"#1C2430\"/><path d=\"M228 207Q229 218 229 230Q229 242 213 243Q197 244 182 242Q167 240 160 229Q154 218 162 208Q171 198 184 190Q197 182 212 189Q227 196 228 207ZM268 195Q279 218 269 241Q259 265 228 275Q197 285 169 272Q141 260 131 239Q122 218 132 197Q142 177 169 167Q197 158 227 165Q257 173 268 195ZM301 186Q320 218 301 250Q282 282 239 293Q197 305 152 295Q107 285 95 251Q84 218 96 184Q108 151 152 139Q197 128 240 141Q283 154 301 186Z\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".07\"/><path d=\"M265 314Q300 336 336 330M73 133Q120 157 168 137\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".32\" stroke-width=\"2\" stroke-dasharray=\"5 5\"/><path d=\"M59 304Q92 318 126 305Q157 304 189 323Q227 344 265 314\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".3\" stroke-width=\"2.5\" stroke-linecap=\"round\"/><path d=\"M336 330Q354 281 328 232Q280 253 232 246Q201 214 170 234Q130 204 90 218\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".55\" stroke-width=\"2.5\" stroke-linecap=\"round\"/><path d=\"M90 218Q51 175 73 133M168 137Q196 159 224 146Q265 126 307 151\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".9\" stroke-width=\"2.5\" stroke-linecap=\"round\"/><circle cx=\"59\" cy=\"304\" r=\"3\" fill=\"#F1ECE5\" fill-opacity=\".5\"/><path d=\"M75 305v8m17-6v8m17-10v8m48-8v8m139-75v8m-32-3v8m-110-32v8m-16-14v8m-16-12v8m-16-7v8m-40-29h8m-13-28h8m127-15v8m41-18v8m14-11v8m14-8v8m14-6v8m14-4v8\" stroke=\"#EE6A3F\" stroke-width=\"2\" stroke-linecap=\"round\"/><g fill=\"#EE6A3F\"><circle cx=\"126\" cy=\"305\" r=\"5\"/><circle cx=\"265\" cy=\"314\" r=\"5\"/><circle cx=\"232\" cy=\"246\" r=\"5\"/><circle cx=\"90\" cy=\"218\" r=\"5\"/><circle cx=\"224\" cy=\"146\" r=\"5\"/><circle cx=\"307\" cy=\"151\" r=\"5\"/></g><g fill=\"#1C2430\" stroke=\"#F1ECE5\" stroke-width=\"2\"><circle cx=\"189\" cy=\"323\" r=\"5\"/><circle cx=\"328\" cy=\"232\" r=\"5\"/><circle cx=\"170\" cy=\"234\" r=\"5\"/><circle cx=\"73\" cy=\"133\" r=\"5\"/><path d=\"M167 237l6-6\"/></g><g fill=\"#F1ECE5\" fill-opacity=\".32\"><circle cx=\"336\" cy=\"330\" r=\"3\"/><circle cx=\"168\" cy=\"137\" r=\"3\"/></g><g transform=\"translate(302 108) scale(.75 .75)\" fill=\"#EE6A3F\"><path d=\"M33.8 11.8 Q14 30 7 57 Q30 46 52.2 30.2 Z\" fill-opacity=\".38\"/><circle cx=\"43\" cy=\"21\" r=\"13\"/></g><g font-family=\"system-ui,sans-serif\" fill=\"#F1ECE5\"><text x=\"24\" y=\"24\" font-size=\"11\" font-weight=\"600\" letter-spacing=\"3\" fill-opacity=\".6\">DOSSIER</text><text x=\"376\" y=\"66\" text-anchor=\"end\" font-family=\"ui-monospace,Menlo,monospace\" font-size=\"11\" letter-spacing=\"1\" fill-opacity=\".45\">FILE 2C8E05F4</text><path d=\"M24 372H376\" stroke=\"#F1ECE5\" stroke-opacity=\".14\"/><text x=\"24\" y=\"416\" font-size=\"34\" font-weight=\"700\">dee</text><text x=\"24\" y=\"446\" font-size=\"14\" fill-opacity=\".7\"><tspan font-weight=\"700\" fill-opacity=\"1\">10</tspan> matches · <tspan font-weight=\"700\" fill-opacity=\"1\">6</tspan> survived · <tspan font-weight=\"700\" fill-opacity=\"1\">18</tspan> tags</text><g transform=\"translate(24 460) scale(.67)\" fill=\"none\" stroke=\"#F1ECE5\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-opacity=\".7\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M8 12.5L11 15.5L16.5 9\"/></g><text x=\"46\" y=\"474\" font-size=\"12\" fill-opacity=\".7\">verified on NEAR</text></g></svg>"
+  },
+  {
+    "name": "maximal",
+    "view": {
+      "account_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.testnet",
+      "seed": "b22fb14d9da76c7be7f853f2962bd5096aa4223cccd3dde9f8277e30bea4e5f0",
+      "matches": 12,
+      "survived": 12,
+      "tags": 132,
+      "forfeits": 0,
+      "refunded": 0,
+      "won": "30000000",
+      "entries": [
+        {
+          "match_id": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+          "result": "survived",
+          "tags": 11,
+          "payout": "2500000",
+          "log_size": "111",
+          "root": "abababababababababababababababababababababababababababababababab"
+        },
+        {
+          "match_id": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+          "result": "survived",
+          "tags": 11,
+          "payout": "2500000",
+          "log_size": "110",
+          "root": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "match_id": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+          "result": "survived",
+          "tags": 11,
+          "payout": "2500000",
+          "log_size": "109",
+          "root": "a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9"
+        },
+        {
+          "match_id": "09090909090909090909090909090909",
+          "result": "survived",
+          "tags": 11,
+          "payout": "2500000",
+          "log_size": "108",
+          "root": "a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8"
+        },
+        {
+          "match_id": "08080808080808080808080808080808",
+          "result": "survived",
+          "tags": 11,
+          "payout": "2500000",
+          "log_size": "107",
+          "root": "a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"
+        },
+        {
+          "match_id": "07070707070707070707070707070707",
+          "result": "survived",
+          "tags": 11,
+          "payout": "2500000",
+          "log_size": "106",
+          "root": "a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6"
+        },
+        {
+          "match_id": "06060606060606060606060606060606",
+          "result": "survived",
+          "tags": 11,
+          "payout": "2500000",
+          "log_size": "105",
+          "root": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        },
+        {
+          "match_id": "05050505050505050505050505050505",
+          "result": "survived",
+          "tags": 11,
+          "payout": "2500000",
+          "log_size": "104",
+          "root": "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4"
+        },
+        {
+          "match_id": "04040404040404040404040404040404",
+          "result": "survived",
+          "tags": 11,
+          "payout": "2500000",
+          "log_size": "103",
+          "root": "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3"
+        },
+        {
+          "match_id": "03030303030303030303030303030303",
+          "result": "survived",
+          "tags": 11,
+          "payout": "2500000",
+          "log_size": "102",
+          "root": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"
+        },
+        {
+          "match_id": "02020202020202020202020202020202",
+          "result": "survived",
+          "tags": 11,
+          "payout": "2500000",
+          "log_size": "101",
+          "root": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        },
+        {
+          "match_id": "01010101010101010101010101010101",
+          "result": "survived",
+          "tags": 11,
+          "payout": "2500000",
+          "log_size": "100",
+          "root": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+        }
+      ]
+    },
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 400 500\" width=\"400\" height=\"500\" role=\"img\" aria-label=\"TAIL dossier\"><path d=\"M0 56V20Q0 0 20 0H128Q140 0 146 10L154 26Q160 36 174 36H380Q400 36 400 56V480Q400 500 380 500H20Q0 500 0 480Z\" fill=\"#1C2430\"/><path d=\"M232 236Q236 249 228 258Q220 267 208 272Q196 278 180 275Q165 272 160 260Q156 249 158 236Q161 223 178 224Q196 225 212 224Q229 224 232 236ZM258 228Q266 249 261 272Q257 295 226 305Q196 316 167 303Q139 291 131 270Q123 249 134 230Q146 212 171 203Q196 195 223 201Q251 208 258 228ZM291 219Q307 249 296 282Q285 316 240 328Q196 341 151 328Q106 316 88 282Q71 249 94 220Q118 191 157 175Q196 159 235 174Q275 190 291 219Z\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".07\"/><path d=\"M339 314Q304 342 270 319Q237 314 204 313Q170 282 137 311Q96 305 55 336\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".3\" stroke-width=\"2.5\" stroke-linecap=\"round\"/><path d=\"M55 336Q52 276 102 217Q136 244 171 243Q199 218 228 222Q278 235 328 229\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".55\" stroke-width=\"2.5\" stroke-linecap=\"round\"/><path d=\"M328 229Q329 190 311 151Q273 166 235 130Q202 107 169 145Q127 169 86 134\" fill=\"none\" stroke=\"#F1ECE5\" stroke-opacity=\".9\" stroke-width=\"2.5\" stroke-linecap=\"round\"/><circle cx=\"339\" cy=\"314\" r=\"3\" fill=\"#F1ECE5\" fill-opacity=\".5\"/><path d=\"M333 314v8m-6-5v8m-6-5v8m-6-5v8m-5-7v8m-6-7v8m-6-8v8m-6-9v8m-5-9v8m-6-10v8m-6-11v8m-11-12v8m-5-9v8m-6-9v8m-5-8v8m-6-9v8m-5-8v8m-6-9v8m-5-8v8m-6-9v8m-5-8v8m-6-8v8m-11-13v8m-6-12v8m-5-11v8m-6-10v8m-6-10v8m-5-8v8m-6-8v8m-5-7v8m-6-6v8m-5-5v8m-6-5v8m-12-4v8m-7-8v8m-7-8v8m-7-7v8m-7-7v8m-6-6v8m-7-6v8m-7-5v8m-7-5v8m-7-4v8m-7-3v8m-11-9h8m-7-10h8m-7-10h8m-6-10h8m-5-10h8m-4-10h8m-4-10h8m-3-10h8m-2-10h8m-2-10h8m0-10h8m9-9v8m6-4v8m6-5v8m5-5v8m6-5v8m6-5v8m6-7v8m5-6v8m6-7v8m6-7v8m6-8v8m10-11v8m5-12v8m5-11v8m4-11v8m5-10v8m5-10v8m5-10v8m4-9v8m5-9v8m5-8v8m5-8v8m13-5v8m8-7v8m9-6v8m8-7v8m8-7v8m9-7v8m8-8v8m8-8v8m9-8v8m8-8v8m8-9v8m5-11h8m-9-6h8m-8-7h8m-9-6h8m-9-7h8m-9-6h8m-10-7h8m-10-6h8m-10-7h8m-10-6h8m-11-7h8m-13-8v8m-6-7v8m-6-7v8m-7-8v8m-6-9v8m-6-9v8m-7-10v8m-6-11v8m-6-12v8m-7-12v8m-6-13v8m-12-17v8m-5-10v8m-6-10v8m-5-9v8m-6-8v8m-5-7v8m-6-7v8m-5-5v8m-6-5v8m-5-3v8m-6-3v8m-12 1v8m-7-5v8m-7-6v8m-7-7v8m-7-8v8m-7-8v8m-7-10v8m-7-10v8m-7-11v8m-7-11v8m-7-13v8\" stroke=\"#EE6A3F\" stroke-width=\"2\" stroke-linecap=\"round\"/><g fill=\"#EE6A3F\"><circle cx=\"270\" cy=\"319\" r=\"5\"/><circle cx=\"204\" cy=\"313\" r=\"5\"/><circle cx=\"137\" cy=\"311\" r=\"5\"/><circle cx=\"55\" cy=\"336\" r=\"5\"/><circle cx=\"102\" cy=\"217\" r=\"5\"/><circle cx=\"171\" cy=\"243\" r=\"5\"/><circle cx=\"228\" cy=\"222\" r=\"5\"/><circle cx=\"328\" cy=\"229\" r=\"5\"/><circle cx=\"311\" cy=\"151\" r=\"5\"/><circle cx=\"235\" cy=\"130\" r=\"5\"/><circle cx=\"169\" cy=\"145\" r=\"5\"/><circle cx=\"86\" cy=\"134\" r=\"5\"/></g><g transform=\"translate(91 91) scale(-.75 .75)\" fill=\"#EE6A3F\"><path d=\"M33.8 11.8 Q14 30 7 57 Q30 46 52.2 30.2 Z\" fill-opacity=\".38\"/><circle cx=\"43\" cy=\"21\" r=\"13\"/></g><g font-family=\"system-ui,sans-serif\" fill=\"#F1ECE5\"><text x=\"24\" y=\"24\" font-size=\"11\" font-weight=\"600\" letter-spacing=\"3\" fill-opacity=\".6\">DOSSIER</text><text x=\"376\" y=\"66\" text-anchor=\"end\" font-family=\"ui-monospace,Menlo,monospace\" font-size=\"11\" letter-spacing=\"1\" fill-opacity=\".45\">FILE B22FB14D</text><path d=\"M24 372H376\" stroke=\"#F1ECE5\" stroke-opacity=\".14\"/><text x=\"24\" y=\"416\" font-size=\"10\" font-weight=\"700\">xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</text><text x=\"24\" y=\"446\" font-size=\"14\" fill-opacity=\".7\"><tspan font-weight=\"700\" fill-opacity=\"1\">12</tspan> matches · <tspan font-weight=\"700\" fill-opacity=\"1\">12</tspan> survived · <tspan font-weight=\"700\" fill-opacity=\"1\">132</tspan> tags</text><g transform=\"translate(24 460) scale(.67)\" fill=\"none\" stroke=\"#F1ECE5\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-opacity=\".7\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M8 12.5L11 15.5L16.5 9\"/></g><text x=\"46\" y=\"474\" font-size=\"12\" fill-opacity=\".7\">verified on NEAR</text></g></svg>"
+  }
+]

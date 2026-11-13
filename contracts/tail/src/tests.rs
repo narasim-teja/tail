@@ -7,15 +7,21 @@ use near_sdk::test_utils::{get_created_receipts, VMContextBuilder};
 use near_sdk::{testing_env, PromiseResult};
 use tail_protocol::hint_kind::{BEARING, NEAR, TREND};
 use tail_protocol::merkle::{consistency_proof, leaf, proof, root};
-use tail_protocol::VerdictPayload;
+use tail_protocol::{recent_hints, VerdictPayload, PRICE_WINDOW_MS};
 
 const T0: u64 = 1_794_514_000_000;
 const STAKE: u128 = 1_000_000;
 const DURATION: u64 = 3_600_000;
 const CALL_ID: [u8; 16] = [7; 16];
-/// What a NEAR or TREND hint costs at `STAKE` (2 %), and a BEARING hint (5 %).
+/// What a NEAR or TREND hint costs at `STAKE` (2 %), and a BEARING hint (5 %), with no other hint
+/// in the last 5 minutes.
 const NEAR_PRICE: u128 = STAKE * 200 / 10_000;
 const BEARING_PRICE: u128 = STAKE * 500 / 10_000;
+
+/// What a hint of `kind` costs at `STAKE` after `recent` hints in the window.
+fn price(kind: u8, recent: u32) -> u128 {
+    hint_price(STAKE, kind, recent).unwrap()
+}
 
 fn acc(s: &str) -> AccountId {
     s.parse().unwrap()
@@ -130,13 +136,20 @@ fn consistency(seq: u32, m: u64, n: u64) -> ConsistencyArg {
         path: path.into_iter().map(|h| Base64VecU8(h.to_vec())).collect(),
     }
 }
-/// A hint by `from` of `kind`, at its price in a `STAKE` match.
+/// In a Hint body: the fixture fills in the price at the match's demand when it signs.
+const HONEST_PRICE: u128 = u128::MAX;
+/// In a Hint body: the fixture fills in the fixture clock (kept within the match, never before
+/// the previous hint) when it signs.
+const HONEST_TIME: u64 = u64::MAX;
+
+/// A hint by `from` of `kind`, at its price, now.
 fn hint_of(from: u16, kind: u8) -> Verdict {
     Verdict::Hint {
         from,
-        amount: hint_price(STAKE, kind).unwrap(),
+        amount: HONEST_PRICE,
         hint_id: 1,
         hint: kind,
+        t_ms: HONEST_TIME,
     }
 }
 
@@ -147,6 +160,7 @@ fn free_hint(from: u16) -> Verdict {
         amount: 0,
         hint_id: 1,
         hint: NEAR,
+        t_ms: HONEST_TIME,
     }
 }
 
@@ -172,16 +186,19 @@ fn forfeit(player: u16, to: u16) -> Verdict {
     }
 }
 
-/// The honest referee's view of a match: who hunts whom now, the hints pending on each player and
-/// whom each hint so far was about.
+/// The honest referee's view of a match: who hunts whom now, the hints pending on each player,
+/// whom each hint so far was about and when it was charged, the stake and the referee clock.
 struct Honest {
     targets: Vec<Option<u16>>,
     pending: Vec<u128>,
     about: Vec<u16>,
+    times: Vec<u64>,
+    stake: u128,
+    clock: u64,
 }
 
 impl Honest {
-    fn new(ring: &[u16]) -> Self {
+    fn new(ring: &[u16], stake: u128, clock: u64) -> Self {
         let mut targets = vec![None; ring.len()];
         for (k, &h) in ring.iter().enumerate() {
             targets[usize::from(h)] = Some(ring[(k + 1) % ring.len()]);
@@ -190,13 +207,29 @@ impl Honest {
             targets,
             pending: vec![0; ring.len()],
             about: Vec::new(),
+            times: Vec::new(),
+            stake,
+            clock,
         }
     }
 
-    /// Fills in the honest credit or hint targets of `body`, then follows it.
+    /// Fills in the honest price and time, credit or hint targets of `body`, then follows it.
     fn sign(&mut self, mut body: Verdict) -> Verdict {
         match &mut body {
-            Verdict::Hint { from, amount, .. } => {
+            Verdict::Hint {
+                from,
+                amount,
+                hint,
+                t_ms,
+                ..
+            } => {
+                if *t_ms == HONEST_TIME {
+                    *t_ms = self.clock.max(self.times.last().copied().unwrap_or(0));
+                }
+                if *amount == HONEST_PRICE {
+                    *amount = hint_price(self.stake, *hint, recent_hints(&self.times, *t_ms)).unwrap_or(0);
+                }
+                self.times.push(*t_ms);
                 // A hint by a player the ring has no target for is refused anyway; 0 stands in.
                 let t = self
                     .targets
@@ -228,6 +261,10 @@ impl Honest {
                 } else if *credit == HONEST_CREDIT {
                     *credit = 0;
                 }
+            }
+            // The referee's clock starts with the match.
+            Verdict::Start { start_ms, end_ms, .. } => {
+                self.clock = self.clock.clamp(*start_ms, (*end_ms).max(*start_ms));
             }
             Verdict::End { hint_targets, .. } if *hint_targets == honest_targets() => {
                 hint_targets.clone_from(&self.about);
@@ -292,6 +329,7 @@ fn cfg(token: AccountId, stake: u128) -> MatchConfig {
         start_by_ms: T0 + 600_000,
         invites: vec![],
         sponsors: vec![acc("dao.testnet")],
+        requires: None,
     }
 }
 
@@ -450,9 +488,15 @@ impl Fx {
         ring_of(&self.view(), &self.alpha())
     }
 
-    /// The honest referee's view after every event the contract recorded for the match.
+    /// The honest referee's view after every event the contract recorded for the match, its
+    /// clock the fixture's, kept within the match.
     fn honest(&self) -> Honest {
-        let mut h = Honest::new(&self.ring());
+        let v = self.view();
+        let clock = match (v.start_ms, v.end_ms) {
+            (Some(s), Some(e)) => self.now.clamp(s, e),
+            _ => self.now,
+        };
+        let mut h = Honest::new(&self.ring(), v.stake.0, clock);
         let events = self
             .c
             .plays
@@ -460,11 +504,12 @@ impl Fx {
             .map_or_else(Vec::new, |r| r.events.clone());
         for e in events {
             let body = match e {
-                PlayEvent::Hint { from, amount } => Verdict::Hint {
+                PlayEvent::Hint { from, amount, t_ms } => Verdict::Hint {
                     from,
                     amount,
                     hint_id: 0,
                     hint: 0,
+                    t_ms,
                 },
                 PlayEvent::Tag {
                     hunter,
@@ -776,6 +821,13 @@ fn ft_transfer_receipt() -> (AccountId, near_sdk::serde_json::Value, NearToken, 
     )
 }
 
+/// The `ft_transfer` of a withdraw by `who` succeeded: its callback runs, naming `wallet` if the
+/// withdraw named one.
+fn transfer_succeeded(fx: &mut Fx, who: &str, amount: u128, wallet: Option<&str>) {
+    ctx_with_result(fx.now, PromiseResult::Successful(vec![]));
+    assert!(fx.c.on_withdraw(acc(who), usdc(), U128(amount), wallet.map(acc)));
+}
+
 #[test]
 fn withdraw_pays_the_registered_payout_account_with_one_yocto_attached() {
     let mut fx = Fx::empty();
@@ -802,6 +854,7 @@ fn a_second_withdraw_beyond_the_balance_is_refused() {
     let _ =
         fx.c.withdraw(usdc(), U128(900), Some(acc("alice-wallet.testnet")));
     assert_eq!(fx.bal("alice.testnet"), 0);
+    transfer_succeeded(&mut fx, "alice.testnet", 900, Some("alice-wallet.testnet"));
     fx.as_("alice.testnet");
     let _ = fx.c.withdraw(usdc(), U128(900), None);
 }
@@ -823,8 +876,20 @@ fn a_failed_ft_transfer_restores_the_balance() {
     let _ =
         fx.c.withdraw(usdc(), U128(900), Some(acc("alice-wallet.testnet")));
     ctx_with_result(fx.now, PromiseResult::Failed);
-    assert!(!fx.c.on_withdraw(acc("alice.testnet"), usdc(), U128(900)));
+    assert!(!fx.c.on_withdraw(
+        acc("alice.testnet"),
+        usdc(),
+        U128(900),
+        Some(acc("alice-wallet.testnet"))
+    ));
     assert_eq!(fx.bal("alice.testnet"), 900);
+    // Review fix: a wallet the transfer never reached does not become the payout, so a typo can
+    // be corrected with the next withdraw.
+    assert_eq!(fx.c.get_payout(acc("alice.testnet")), Some(acc("alice.testnet")));
+    fx.as_("alice.testnet");
+    let _ = fx.c.withdraw(usdc(), U128(900), Some(acc("alice-real.testnet")));
+    let (_, args, _, _) = ft_transfer_receipt();
+    assert_eq!(args["receiver_id"], "alice-real.testnet");
 }
 
 #[test]
@@ -836,8 +901,53 @@ fn a_successful_ft_transfer_keeps_the_balance_debited() {
     let _ =
         fx.c.withdraw(usdc(), U128(900), Some(acc("alice-wallet.testnet")));
     ctx_with_result(fx.now, PromiseResult::Successful(vec![]));
-    assert!(fx.c.on_withdraw(acc("alice.testnet"), usdc(), U128(900)));
+    assert!(fx.c.on_withdraw(
+        acc("alice.testnet"),
+        usdc(),
+        U128(900),
+        Some(acc("alice-wallet.testnet"))
+    ));
     assert_eq!(fx.bal("alice.testnet"), 0);
+    assert_eq!(
+        fx.c.get_payout(acc("alice.testnet")),
+        Some(acc("alice-wallet.testnet"))
+    );
+}
+
+/// Two withdraws in flight each naming a wallet: the first to succeed sets the payout for good.
+#[test]
+fn the_first_named_wallet_paid_becomes_the_payout_and_a_later_one_does_not_replace_it() {
+    let mut fx = Fx::empty();
+    fx.register("alice.testnet");
+    fx.top_up("alice.testnet", &usdc(), 900);
+    for w in ["alice-a.testnet", "alice-b.testnet"] {
+        fx.as_("alice.testnet");
+        let _ = fx.c.withdraw(usdc(), U128(100), Some(acc(w)));
+    }
+    for w in ["alice-a.testnet", "alice-b.testnet"] {
+        ctx_with_result(fx.now, PromiseResult::Successful(vec![]));
+        assert!(fx
+            .c
+            .on_withdraw(acc("alice.testnet"), usdc(), U128(100), Some(acc(w))));
+    }
+    assert_eq!(
+        fx.c.get_payout(acc("alice.testnet")),
+        Some(acc("alice-a.testnet"))
+    );
+}
+
+#[test]
+fn a_token_contract_cannot_be_a_payout() {
+    let mut fx = Fx::empty();
+    fx.register("alice.testnet");
+    fx.top_up("alice.testnet", &usdc(), 900);
+    fx.as_("alice.testnet");
+    let why = refusal(|| {
+        let _ = fx.c.withdraw(usdc(), U128(900), Some(usdc()));
+    });
+    assert!(why.contains("payout cannot be a token contract"), "{why}");
+    let why = refusal(|| fx.register_with_payout("bob.testnet", "usdt.testnet"));
+    assert!(why.contains("payout cannot be a token contract"), "{why}");
 }
 
 // ── Lobby ───────────────────────────────────────────────────────────────────────────────────
@@ -1071,16 +1181,37 @@ fn refusal(f: impl FnOnce()) -> String {
 fn a_forked_verdict_stream_cannot_land() {
     let mut fx = Fx::running();
     let (seq, prev) = fx.head();
-    let (a, a_digest) = sign(&referee(), fx.id, seq + 1, prev, hint_of(0, NEAR));
-    let (b, b_digest) = sign(&referee(), fx.id, seq + 1, prev, hint_of(1, NEAR));
+    let (a, a_digest) = sign(
+        &referee(),
+        fx.id,
+        seq + 1,
+        prev,
+        fx.honest().sign(hint_of(0, NEAR)),
+    );
+    let (b, b_digest) = sign(
+        &referee(),
+        fx.id,
+        seq + 1,
+        prev,
+        fx.honest().sign(hint_of(1, NEAR)),
+    );
     let (b_next, _) = sign(&referee(), fx.id, seq + 2, b_digest, hint_of(2, NEAR));
     fx.apply(vec![a]);
     assert!(refusal(|| fx.apply(vec![b])).contains("verdict out of order"));
     assert!(refusal(|| fx.apply(vec![b_next])).contains("verdict prev is not the digest"));
-    // The honest chain continues from the verdict that landed.
-    let (next, _) = sign(&referee(), fx.id, seq + 2, a_digest, hint_of(2, NEAR));
+    // The honest chain continues from the verdict that landed: a second hint in the window.
+    let (next, _) = sign(
+        &referee(),
+        fx.id,
+        seq + 2,
+        a_digest,
+        fx.honest().sign(hint_of(2, NEAR)),
+    );
     fx.apply(vec![next]);
-    assert_eq!(fx.heads(), vec![STAKE - NEAR_PRICE, STAKE, STAKE - NEAR_PRICE]);
+    assert_eq!(
+        fx.heads(),
+        vec![STAKE - NEAR_PRICE, STAKE, STAKE - price(NEAR, 1)]
+    );
 }
 
 // ── Key rotation ────────────────────────────────────────────────────────────────────────────
@@ -1235,25 +1366,109 @@ fn a_hint_before_start_is_refused() {
 fn each_hint_kind_moves_its_price_from_the_asker_into_the_pool() {
     let mut fx = Fx::running();
     fx.verdicts(vec![hint_of(0, NEAR), hint_of(0, BEARING), hint_of(1, TREND)]);
+    // In one tick, each hint pays for the ones before it: base, 1.25x, 1.5x.
+    let (near, bearing, trend) = (price(NEAR, 0), price(BEARING, 1), price(TREND, 2));
+    assert_eq!((near, bearing, trend), (20_000, 62_500, 30_000));
     // Nobody's head goes up: whom a hint was about stays secret until End.
-    assert_eq!(
-        fx.heads(),
-        vec![STAKE - NEAR_PRICE - BEARING_PRICE, STAKE - NEAR_PRICE, STAKE]
-    );
-    assert_eq!(fx.pool(), 2 * NEAR_PRICE + BEARING_PRICE);
+    assert_eq!(fx.heads(), vec![STAKE - near - bearing, STAKE - trend, STAKE]);
+    assert_eq!(fx.pool(), near + bearing + trend);
 }
 
-/// Twenty BEARING hints at 5 % each spend a whole head.
-fn spend_player_2s_head(fx: &mut Fx) {
-    fx.verdicts((0..20).map(|_| hint_of(2, BEARING)).collect());
+/// BEARING hints in one tick (5 %, then 25 % dearer each) until the next costs more than player
+/// 2's head; returns what they paid.
+fn spend_player_2s_head(fx: &mut Fx) -> u128 {
+    let mut paid = 0;
+    let mut recent = 0;
+    while paid + price(BEARING, recent) <= STAKE {
+        paid += price(BEARING, recent);
+        recent += 1;
+    }
+    fx.verdicts((0..recent).map(|_| hint_of(2, BEARING)).collect());
+    paid
 }
 
 #[test]
-fn hints_can_spend_the_whole_head() {
+fn hints_spend_a_head_down_until_the_next_costs_more() {
     let mut fx = Fx::running();
-    spend_player_2s_head(&mut fx);
-    assert_eq!(fx.heads(), vec![STAKE, STAKE, 0]);
-    assert_eq!(fx.pool(), STAKE);
+    let paid = spend_player_2s_head(&mut fx);
+    assert_eq!(fx.heads(), vec![STAKE, STAKE, STAKE - paid]);
+    assert_eq!(fx.pool(), paid);
+}
+
+#[test]
+fn demand_raises_the_price_up_to_four_times_and_it_falls_back_as_hints_age_out() {
+    let mut fx = Fx::running();
+    let start = fx.view().start_ms.unwrap();
+    // Twelve hints in one tick: the twelfth pays 1 + 11 × 25 % = 3.75x, the thirteenth the cap.
+    fx.verdicts((0..13).map(|_| hint_of(0, NEAR)).collect());
+    let paid: u128 = (0..13).map(|r| price(NEAR, r)).sum();
+    assert_eq!(price(NEAR, 12), 4 * NEAR_PRICE);
+    assert_eq!(fx.heads()[0], STAKE - paid);
+    // One unit of time before the window closes, all thirteen still count: the cap holds.
+    fx.now = start + PRICE_WINDOW_MS - 1;
+    fx.verdict(hint_of(1, NEAR));
+    assert_eq!(fx.heads()[1], STAKE - 4 * NEAR_PRICE);
+    // At exactly 5 minutes the first thirteen age out; only the last one counts.
+    fx.now = start + PRICE_WINDOW_MS;
+    fx.verdict(hint_of(2, NEAR));
+    assert_eq!(fx.heads()[2], STAKE - price(NEAR, 1));
+}
+
+/// A Hint with an explicit time.
+fn hint_at(from: u16, t_ms: u64) -> Verdict {
+    Verdict::Hint {
+        from,
+        amount: HONEST_PRICE,
+        hint_id: 1,
+        hint: NEAR,
+        t_ms,
+    }
+}
+
+#[test]
+fn hints_in_the_same_tick_share_a_time_and_a_later_one_may_follow() {
+    let mut fx = Fx::running();
+    let start = fx.view().start_ms.unwrap();
+    fx.verdicts(vec![
+        hint_at(0, start + 10),
+        hint_at(1, start + 10),
+        hint_at(2, start + 11),
+    ]);
+    assert_eq!(fx.pool(), price(NEAR, 0) + price(NEAR, 1) + price(NEAR, 2));
+}
+
+#[test]
+#[should_panic(expected = "hint t_ms is before the previous hint's")]
+fn a_hint_dated_before_the_previous_one_is_refused() {
+    let mut fx = Fx::running();
+    let start = fx.view().start_ms.unwrap();
+    // Backdating would let a referee drop the earlier hint out of the window and charge less.
+    fx.verdicts(vec![hint_at(0, start + PRICE_WINDOW_MS), hint_at(1, start)]);
+}
+
+#[test]
+fn a_hint_dated_outside_the_match_is_refused() {
+    for late in [false, true] {
+        let mut fx = Fx::running();
+        let v = fx.view();
+        let t = if late {
+            v.end_ms.unwrap() + 1
+        } else {
+            v.start_ms.unwrap() - 1
+        };
+        let why = refusal(|| fx.verdict(hint_at(0, t)));
+        assert!(why.contains("hint t_ms is outside the match"), "{why}");
+    }
+}
+
+#[test]
+fn hints_at_the_first_and_last_moment_of_the_match_are_accepted() {
+    let mut fx = Fx::running();
+    let v = fx.view();
+    let (start, end) = (v.start_ms.unwrap(), v.end_ms.unwrap());
+    fx.now = end;
+    fx.verdicts(vec![hint_at(0, start), hint_at(0, end)]);
+    assert_eq!(fx.pool(), 2 * NEAR_PRICE);
 }
 
 #[test]
@@ -1261,7 +1476,7 @@ fn hints_can_spend_the_whole_head() {
 fn a_hint_over_the_payers_head_is_refused() {
     let mut fx = Fx::running();
     spend_player_2s_head(&mut fx);
-    fx.verdict(hint_of(2, NEAR));
+    fx.verdict(hint_of(2, BEARING));
 }
 
 #[test]
@@ -1306,26 +1521,27 @@ fn hint_paying(amount: u128, kind: u8) -> Verdict {
         amount,
         hint_id: 1,
         hint: kind,
+        t_ms: HONEST_TIME,
     }
 }
 
 /// The referee could charge any amount for a hint; the price is now the contract's rule.
 #[test]
-#[should_panic(expected = "hint amount is not the price of its kind")]
+#[should_panic(expected = "hint amount is not its price at the match's demand")]
 fn a_hint_paying_one_unit_more_than_its_price_is_refused() {
     let mut fx = Fx::running();
     fx.verdict(hint_paying(NEAR_PRICE + 1, NEAR));
 }
 
 #[test]
-#[should_panic(expected = "hint amount is not the price of its kind")]
+#[should_panic(expected = "hint amount is not its price at the match's demand")]
 fn a_hint_paying_one_unit_less_than_its_price_is_refused() {
     let mut fx = Fx::running();
     fx.verdict(hint_paying(BEARING_PRICE - 1, BEARING));
 }
 
 #[test]
-#[should_panic(expected = "hint amount is not the price of its kind")]
+#[should_panic(expected = "hint amount is not its price at the match's demand")]
 fn a_near_hint_at_the_bearing_price_is_refused() {
     let mut fx = Fx::running();
     fx.verdict(hint_paying(BEARING_PRICE, NEAR));
@@ -1883,7 +2099,8 @@ fn end_with_the_committed_vrf_reveal_credits_every_survivor_their_head_and_their
     // h asks about t, o about h; t's hint money reaches t just before h takes t's head, and h's
     // reaches h at End.
     fx.verdicts(vec![hint_of(h, NEAR), hint_of(o, BEARING), tag(h, t)]);
-    assert_eq!(fx.pool(), BEARING_PRICE);
+    let bearing = price(BEARING, 1);
+    assert_eq!(fx.pool(), bearing);
     fx.end();
     let v = fx.view();
     assert_eq!(v.phase, Phase::Ended);
@@ -1892,8 +2109,8 @@ fn end_with_the_committed_vrf_reveal_credits_every_survivor_their_head_and_their
     assert_eq!(fx.heads(), vec![0, 0, 0]);
     assert_eq!(fx.pool(), 0);
     let mut want = vec![0; 3];
-    want[usize::from(h)] = 2 * STAKE + BEARING_PRICE;
-    want[usize::from(o)] = STAKE - BEARING_PRICE;
+    want[usize::from(h)] = 2 * STAKE + bearing;
+    want[usize::from(o)] = STAKE - bearing;
     assert_eq!(fx.paid(), want);
     for (i, p) in PLAYERS.iter().enumerate() {
         // Each started with 2 stakes and put one in.
@@ -2299,6 +2516,7 @@ fn a_maximal_match_fits_in_the_storage_its_deposit_paid_for() {
     let hints = (0..MAX_HINTS).map(|_| PlayEvent::Hint {
         from: 0,
         amount: u128::MAX,
+        t_ms: u64::MAX,
     });
     let eliminations = (1..MAX_PLAYERS).map(|i| PlayEvent::Tag {
         hunter: 0,
@@ -2312,6 +2530,10 @@ fn a_maximal_match_fits_in_the_storage_its_deposit_paid_for() {
         violation: Some(Violation {
             check: tail_protocol::settle::Check::Pool,
             event: Some(u32::MAX),
+        }),
+        requires: Some(Requires {
+            min_matches: u32::MAX,
+            min_survived: u32::MAX,
         }),
     };
     let before = env::storage_usage();
@@ -2685,7 +2907,7 @@ fn credits_withdraws_and_failed_withdraw_refunds_never_grow_storage() {
         "withdraw that empties the balance"
     );
     ctx_with_result(fx.now, PromiseResult::Failed);
-    let refund = |c: &mut Tail| assert!(!c.on_withdraw(acc("alice.testnet"), usdc(), U128(900)));
+    let refund = |c: &mut Tail| assert!(!c.on_withdraw(acc("alice.testnet"), usdc(), U128(900), None));
     assert_eq!(
         storage_delta(&mut fx.c, refund),
         0,
@@ -3002,9 +3224,10 @@ fn play_a_maximal_match(fx: &mut Fx, players: &[AccountId]) {
     let (end, proofs) = fx.chain(vec![end_at(&alpha, MAX_CHECKPOINTS as u64 + 1)]);
     fx.as_("relay.testnet");
     let gas = host_gas(|| fx.c.apply(end, Some(proofs)));
-    // The replay of 240 hints and 11 tags, the ring rebuilt with host SHA-256 and the payout. The
-    // mock counts host functions only (not wasm instructions, not the map writes at the end of
-    // the call), so this is a floor; the e2e measures the real cost.
+    // The replay of 240 hints and 11 tags, the ring rebuilt (`ring_order` hashes in wasm, which
+    // the mock does not meter), the payout and the 12 dossier entries. The mock counts host
+    // functions only (not wasm instructions, not the map writes at the end of the call), so this
+    // is a floor; the e2e prints the real receipt gas of End.
     println!(
         "host gas: apply(End of a maximal match) {} Ggas",
         gas / 1_000_000_000
@@ -3036,7 +3259,7 @@ fn storage_never_exceeds_the_deposits_with_maximal_ids() {
     for a in players.iter().chain(sponsors.iter()) {
         ctx(a, fx.now, fx.registration_deposit());
         fx.c.register_for(a.clone(), long("payout"));
-        paid += PAYOUT_RECORD_BYTES + 2 * BALANCE_RECORD_BYTES;
+        paid += PAYOUT_RECORD_BYTES + 2 * BALANCE_RECORD_BYTES + DOSSIER_RECORD_BYTES;
         ctx(&long("payout"), fx.now, NearToken::from_yoctonear(1));
         fx.c.set_payout(a.clone(), long("payout2"));
     }
@@ -3077,7 +3300,7 @@ fn storage_never_exceeds_the_deposits_with_maximal_ids() {
             let b = fx.c.get_balance(p.clone(), tok.clone()).0;
             let _ = fx.c.withdraw(tok.clone(), U128(b), None);
             ctx_with_result(fx.now, PromiseResult::Failed);
-            fx.c.on_withdraw(p.clone(), tok.clone(), U128(b));
+            fx.c.on_withdraw(p.clone(), tok.clone(), U128(b), None);
         }
         fx.c.payouts.flush();
         fx.c.balances.flush();
@@ -3085,6 +3308,8 @@ fn storage_never_exceeds_the_deposits_with_maximal_ids() {
         fx.c.checkpoints.flush();
         fx.c.plays.flush();
         fx.c.verdict_heads.flush();
+        fx.c.dossiers.flush();
+        fx.c.dossier_ids.flush();
         let used = stored_bytes();
         assert!(
             used <= paid,
@@ -3216,6 +3441,7 @@ impl Model {
                     Some(SettledAs::RefundedAbort) => {
                         assert!(refunded, "abort paid something other than the stakes");
                     }
+                    Some(SettledAs::PayoutUnreplayed) => panic!("every match here has a play record"),
                     None => {}
                 }
             }
@@ -3269,7 +3495,7 @@ impl Model {
                 let to =
                     (self.fx.c.get_payout(acc(&who)) == Some(acc(&who))).then(|| acc(&format!("w-{who}")));
                 self.as_(&who);
-                let _ = self.fx.c.withdraw(token.clone(), U128(amount), to);
+                let _ = self.fx.c.withdraw(token.clone(), U128(amount), to.clone());
                 *self.held.get_mut(&token).unwrap() -= amount;
                 self.check(); // in flight: debited, not yet resolved
                 let failed = rng.below(2) == 0;
@@ -3281,7 +3507,7 @@ impl Model {
                         PromiseResult::Successful(vec![])
                     },
                 );
-                self.fx.c.on_withdraw(acc(&who), token.clone(), U128(amount));
+                self.fx.c.on_withdraw(acc(&who), token.clone(), U128(amount), to);
                 if failed {
                     *self.held.get_mut(&token).unwrap() += amount;
                 }
@@ -3413,7 +3639,7 @@ impl Model {
             Phase::Running => {
                 let (start_ms, end_ms) = (v.start_ms.unwrap(), v.end_ms.unwrap());
                 let now = self.fx.now;
-                let in_play = now <= end_ms + VERDICT_GRACE_MS;
+                let in_play = now < end_ms + VERDICT_GRACE_MS;
                 let targets = &self.honest[&id].targets;
                 let a = *rng.pick(&live).unwrap();
                 let others: Vec<u16> = live.iter().copied().filter(|&b| b != a).collect();
@@ -3421,16 +3647,21 @@ impl Model {
                 match rng.below(10) {
                     0..=3 if honest => {
                         let kind = rng.below(3) as u8;
-                        let amount = hint_price(v.stake.0, kind).unwrap();
+                        self.fx.id = id;
+                        let body = self.fx.honest().sign(Verdict::Hint {
+                            from: a,
+                            amount: HONEST_PRICE,
+                            hint_id: 0,
+                            hint: kind,
+                            t_ms: HONEST_TIME,
+                        });
+                        let Verdict::Hint { amount, .. } = body else {
+                            unreachable!()
+                        };
                         if amount > v.players[usize::from(a)].head.0 {
                             return;
                         }
-                        Verdict::Hint {
-                            from: a,
-                            amount,
-                            hint_id: 0,
-                            hint: kind,
-                        }
+                        body
                     }
                     4 | 5 if honest => {
                         let target = targets[usize::from(a)].unwrap();
@@ -3474,7 +3705,9 @@ impl Model {
             let v = self.view(id);
             let total = v.players.iter().map(|p| p.head.0).sum::<u128>() + v.sponsor_pot.0;
             self.at_start.insert(id, total);
-            self.honest.insert(id, Honest::new(&ring_of(&v, &alpha_for(id))));
+            // Bodies reach this model with their price and time already filled in.
+            self.honest
+                .insert(id, Honest::new(&ring_of(&v, &alpha_for(id)), v.stake.0, 0));
         }
     }
 }
@@ -3552,6 +3785,9 @@ fn a_withdraw_with_to_names_the_payout_for_good_and_pays_it() {
         fx.c.withdraw(usdc(), U128(400), Some(acc("alice-wallet.testnet")));
     let (_, args, _, _) = ft_transfer_receipt();
     assert_eq!(args["receiver_id"], "alice-wallet.testnet");
+    // Saved once the transfer to it went through.
+    assert_eq!(fx.c.get_payout(acc("alice.testnet")), Some(acc("alice.testnet")));
+    transfer_succeeded(&mut fx, "alice.testnet", 400, Some("alice-wallet.testnet"));
     assert_eq!(
         fx.c.get_payout(acc("alice.testnet")),
         Some(acc("alice-wallet.testnet"))
@@ -3573,6 +3809,7 @@ fn a_withdraw_cannot_name_a_second_wallet_once_the_payout_is_set() {
     fx.as_("alice.testnet");
     let _ =
         fx.c.withdraw(usdc(), U128(400), Some(acc("alice-wallet.testnet")));
+    transfer_succeeded(&mut fx, "alice.testnet", 400, Some("alice-wallet.testnet"));
     fx.as_("alice.testnet");
     let _ = fx.c.withdraw(usdc(), U128(1), Some(acc("thief.testnet")));
 }
@@ -3626,6 +3863,7 @@ fn the_wallet_a_withdraw_named_can_repoint_the_payout() {
     fx.as_("alice.testnet");
     let _ =
         fx.c.withdraw(usdc(), U128(900), Some(acc("alice-wallet.testnet")));
+    transfer_succeeded(&mut fx, "alice.testnet", 900, Some("alice-wallet.testnet"));
     as_with_one_yocto(&fx, "alice-wallet.testnet");
     fx.c.set_payout(acc("alice.testnet"), acc("alice-new.testnet"));
     assert_eq!(
@@ -3645,6 +3883,9 @@ fn naming_a_maximal_payout_through_withdraw_stays_within_the_registration() {
     fx.top_up(long("a").as_str(), &usdc(), 5);
     ctx(&long("a"), fx.now, NearToken::from_yoctonear(0));
     let _ = fx.c.withdraw(usdc(), U128(5), Some(long("b")));
+    ctx_with_result(fx.now, PromiseResult::Successful(vec![]));
+    assert!(fx.c.on_withdraw(long("a"), usdc(), U128(5), Some(long("b"))));
+    assert_eq!(fx.c.get_payout(long("a")), Some(long("b")));
     fx.c.payouts.flush();
     fx.c.balances.flush();
     let used = u128::from(env::storage_usage() - before) + 2 * (64 - 12);
@@ -3789,7 +4030,7 @@ fn hint() -> Verdict {
 #[test]
 fn a_hint_tag_and_forfeit_land_up_to_the_grace_after_end() {
     let mut fx = Fx::running();
-    fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS;
+    fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS - 1;
     fx.verdict(hint());
     let ring = fx.ring();
     fx.verdict(tag(ring[0], ring[1]));
@@ -3798,27 +4039,27 @@ fn a_hint_tag_and_forfeit_land_up_to_the_grace_after_end() {
 }
 
 #[test]
-#[should_panic(expected = "the match is over")]
+#[should_panic(expected = "the match is overdue: no heads move once it can be aborted")]
 fn a_hint_after_the_grace_is_refused() {
     let mut fx = Fx::running();
-    fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS + 1;
+    fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS;
     fx.verdict(hint());
 }
 
 #[test]
-#[should_panic(expected = "the match is over")]
+#[should_panic(expected = "the match is overdue: no heads move once it can be aborted")]
 fn a_tag_after_the_grace_is_refused() {
     let mut fx = Fx::running();
-    fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS + 1;
+    fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS;
     let ring = fx.ring();
     fx.verdict(tag(ring[0], ring[1]));
 }
 
 #[test]
-#[should_panic(expected = "the match is over")]
+#[should_panic(expected = "the match is overdue: no heads move once it can be aborted")]
 fn a_forfeit_after_the_grace_is_refused() {
     let mut fx = Fx::running();
-    fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS + 1;
+    fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS;
     let ring = fx.ring();
     fx.verdict(forfeit(ring[1], ring[0]));
 }
@@ -4066,8 +4307,9 @@ fn hints_follow_the_target_a_forfeit_handed_on() {
     assert_eq!(fx.view().settled_as, Some(SettledAs::Payout));
     let mut want = vec![0; 3];
     // ring[1]'s hint was about ring[2], who survives with it; ring[0]'s too.
-    want[usize::from(ring[0])] = 2 * STAKE - NEAR_PRICE - BEARING_PRICE;
-    want[usize::from(ring[2])] = STAKE + NEAR_PRICE + BEARING_PRICE;
+    let bearing = price(BEARING, 1);
+    want[usize::from(ring[0])] = 2 * STAKE - NEAR_PRICE - bearing;
+    want[usize::from(ring[2])] = STAKE + NEAR_PRICE + bearing;
     assert_eq!(fx.paid(), want);
 }
 
@@ -4096,6 +4338,13 @@ fn downgrade_to_v1(fx: &mut Fx) {
     fx.c.plays.flush();
     fx.c.verdict_heads.remove(&fx.id);
     fx.c.verdict_heads.flush();
+    // v1 registrations paid for no dossier, so v1 accounts have none.
+    for p in PLAYERS {
+        fx.c.dossiers.remove(&acc(p));
+    }
+    fx.c.dossiers.flush();
+    fx.c.dossier_ids.clear();
+    fx.c.dossier_ids.flush();
     let v1 = migrate::TailV1 {
         owner: fx.c.owner.clone(),
         referee_pk: fx.c.referee_pk,
@@ -4181,10 +4430,19 @@ fn a_start_in_a_lobby_from_before_migrate_is_refused() {
 }
 
 #[test]
-fn a_lobby_from_before_migrate_aborts_with_a_refund_once_its_lock_runs_out() {
+fn a_lobby_from_before_migrate_takes_no_join_sponsor_or_lock_and_aborts_with_a_refund() {
     let mut fx = migrated_lobby();
-    fx.lock();
-    fx.now += LOCK_MS;
+    // Review fix: such a lobby can never start, so it takes nothing more in.
+    let why = refusal(|| fx.lock());
+    assert!(why.contains("created before the upgrade"), "{why}");
+    fx.register("dave.testnet");
+    fx.top_up("dave.testnet", &usdc(), STAKE);
+    let why = refusal(|| fx.join("dave.testnet"));
+    assert!(why.contains("created before the upgrade"), "{why}");
+    fx.register("dao.testnet");
+    let msg = format!(r#"{{"sponsor":"{}"}}"#, hex::encode(fx.id));
+    assert_eq!(fx.transfer(&usdc(), "dao.testnet", 7, &msg), 7);
+    fx.now = fx.view().start_by_ms + 1;
     fx.abort();
     for p in PLAYERS {
         assert_eq!(fx.bal(p), 2 * STAKE);
@@ -4235,4 +4493,469 @@ fn migrate_on_the_new_layout_is_refused() {
     env::state_write(&fx.c);
     ctx(&owner(), fx.now, NearToken::from_yoctonear(0));
     let _ = Tail::migrate(vrf_sender());
+}
+
+// ── Dossier (NEP-171) ───────────────────────────────────────────────────────────────────────
+
+fn dossier(fx: &Fx, who: &str) -> DossierView {
+    fx.c.get_dossier(acc(who)).unwrap()
+}
+
+/// The card is the same bytes the TypeScript builder draws (`packages/brand`, golden vectors).
+#[test]
+fn the_dossier_card_matches_the_golden_vectors_byte_for_byte() {
+    let cases: Vec<near_sdk::serde_json::Value> =
+        near_sdk::serde_json::from_str(include_str!("../../../packages/brand/vectors/dossier.json")).unwrap();
+    assert!(cases.len() >= 4);
+    for c in cases {
+        let view: DossierView = near_sdk::serde_json::from_value(c["view"].clone()).unwrap();
+        let want = c["svg"].as_str().unwrap();
+        assert_eq!(art::dossier_svg(&view), want, "{}", c["name"]);
+        assert!(want.len() <= 4096, "{}: {} bytes", c["name"], want.len());
+        assert_eq!(view.seed, hex::encode(env::sha256(view.account_id.as_bytes())));
+    }
+}
+
+#[test]
+fn registering_mints_a_dossier_whose_owner_and_token_id_are_the_account() {
+    let fx = Fx::lobby();
+    let t = fx.c.nft_token(acc("alice.testnet")).unwrap();
+    let json = near_sdk::serde_json::to_value(&t).unwrap();
+    assert_eq!(json["token_id"], "alice.testnet");
+    assert_eq!(json["owner_id"], "alice.testnet");
+    assert!(json.get("approved_account_ids").is_none());
+    let md = &json["metadata"];
+    for key in [
+        "title",
+        "description",
+        "media",
+        "media_hash",
+        "copies",
+        "issued_at",
+        "expires_at",
+        "starts_at",
+        "updated_at",
+        "extra",
+        "reference",
+        "reference_hash",
+    ] {
+        assert!(md.get(key).is_some(), "NEP-177 metadata lacks {key}");
+    }
+    assert_eq!(md["title"], "alice's dossier");
+    assert_eq!(md["copies"], 1);
+    assert_eq!(md["issued_at"], T0.to_string());
+    assert!(md["reference"].is_null());
+    let extra: near_sdk::serde_json::Value =
+        near_sdk::serde_json::from_str(md["extra"].as_str().unwrap()).unwrap();
+    assert_eq!(extra["matches"], 0);
+    assert_eq!(extra["page"], "/dossier/alice.testnet");
+    // The media is the card itself, and media_hash its SHA-256.
+    let media = md["media"].as_str().unwrap();
+    let svg = near_sdk::base64::Engine::decode(
+        &near_sdk::base64::engine::general_purpose::STANDARD,
+        media.strip_prefix("data:image/svg+xml;base64,").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(svg, art::dossier_svg(&dossier(&fx, "alice.testnet")).into_bytes());
+    assert_eq!(t.metadata.media_hash.unwrap().0, env::sha256(&svg));
+    assert!(fx.c.nft_token(acc("mallory.testnet")).is_none());
+    assert!(fx.c.get_dossier(acc("mallory.testnet")).is_none());
+}
+
+#[test]
+fn the_collection_follows_nep_177_and_nep_181() {
+    let fx = Fx::lobby();
+    let md = near_sdk::serde_json::to_value(fx.c.nft_metadata()).unwrap();
+    assert_eq!(md["spec"], "nft-2.1.0");
+    assert_eq!(md["symbol"], "DOSSIER");
+    assert!(md["icon"]
+        .as_str()
+        .unwrap()
+        .starts_with("data:image/svg+xml;base64,"));
+    assert!(md["base_uri"].is_null());
+    assert_eq!(fx.c.nft_total_supply(), U128(3));
+    // Mint order: the lobby registers carol, alice, bob.
+    let ids: Vec<String> =
+        fx.c.nft_tokens(None, None)
+            .into_iter()
+            .map(|t| t.token_id)
+            .collect();
+    assert_eq!(ids, ["carol.testnet", "alice.testnet", "bob.testnet"]);
+    let page: Vec<String> =
+        fx.c.nft_tokens(Some(U128(1)), Some(1))
+            .into_iter()
+            .map(|t| t.token_id)
+            .collect();
+    assert_eq!(page, ["alice.testnet"]);
+    assert_eq!(fx.c.nft_tokens(Some(U128(3)), None).len(), 0);
+    assert_eq!(fx.c.nft_supply_for_owner(acc("bob.testnet")), U128(1));
+    assert_eq!(fx.c.nft_supply_for_owner(acc("mallory.testnet")), U128(0));
+    assert_eq!(fx.c.nft_tokens_for_owner(acc("bob.testnet"), None, None).len(), 1);
+    let bob_from_1 = fx.c.nft_tokens_for_owner(acc("bob.testnet"), Some(U128(1)), None);
+    assert_eq!(bob_from_1.len(), 0);
+    assert_eq!(
+        fx.c.nft_tokens_for_owner(acc("mallory.testnet"), None, None)
+            .len(),
+        0
+    );
+}
+
+#[test]
+#[should_panic(expected = "a dossier is bound to the player who earned it")]
+fn a_dossier_transfer_by_its_owner_is_refused() {
+    let fx = Fx::lobby();
+    ctx(&acc("alice.testnet"), fx.now, NearToken::from_yoctonear(1));
+    let mut c = fx.c;
+    c.nft_transfer(acc("bob.testnet"), "alice.testnet".to_owned(), None, None);
+}
+
+#[test]
+#[should_panic(expected = "a dossier is bound to the player who earned it")]
+fn a_dossier_transfer_call_by_its_owner_is_refused() {
+    let fx = Fx::lobby();
+    ctx(&acc("alice.testnet"), fx.now, NearToken::from_yoctonear(1));
+    let mut c = fx.c;
+    let _ = c.nft_transfer_call(
+        acc("market.testnet"),
+        "alice.testnet".to_owned(),
+        None,
+        None,
+        String::new(),
+    );
+}
+
+/// h hints and tags t, then End: h survives with a tag, t was tagged, o survives.
+fn ended_with_a_tag() -> (Fx, u16, u16, u16) {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    let (h, t, o) = (ring[0], ring[1], ring[2]);
+    at_checkpoint(&mut fx, 1);
+    fx.verdict(cp(10));
+    fx.verdicts(vec![hint_of(h, NEAR), tag(h, t)]);
+    fx.end();
+    (fx, h, t, o)
+}
+
+#[test]
+fn a_paid_out_match_adds_an_entry_to_every_players_dossier() {
+    let (fx, h, t, o) = ended_with_a_tag();
+    let view = fx.view();
+    let name = |i: u16| view.players[usize::from(i)].account_id.to_string();
+    let final_root = fx.c.get_roots(hex::encode(fx.id)).unwrap().final_root.unwrap();
+    for (i, result, tags) in [
+        (h, MatchResult::Survived, 1),
+        (t, MatchResult::Tagged, 0),
+        (o, MatchResult::Survived, 0),
+    ] {
+        let dos = dossier(&fx, &name(i));
+        assert_eq!((dos.matches, dos.refunded), (1, 0));
+        assert_eq!(dos.survived, u32::from(result == MatchResult::Survived));
+        assert_eq!(dos.tags, tags);
+        assert_eq!(dos.won, view.players[usize::from(i)].paid);
+        assert_eq!(dos.entries.len(), 1);
+        let entry = &dos.entries[0];
+        assert_eq!(entry.match_id, hex::encode(fx.id));
+        assert_eq!((entry.result, entry.tags), (result, tags));
+        assert_eq!(entry.payout, view.players[usize::from(i)].paid);
+        // The entry names the root End anchored, so its log can be checked with verify_inclusion.
+        assert_eq!(
+            (entry.log_size.0, entry.root.clone()),
+            (final_root.log_size, final_root.root.clone())
+        );
+    }
+    let t_name = name(t);
+    let extra = fx.c.nft_token(acc(&t_name)).unwrap().metadata.extra.unwrap();
+    assert!(extra.contains(r#""matches":1"#), "{extra}");
+}
+
+#[test]
+fn a_forfeit_is_recorded_as_one() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    fx.verdict(forfeit(ring[1], ring[0]));
+    fx.end();
+    let loser = fx.view().players[usize::from(ring[1])].account_id.to_string();
+    let d = dossier(&fx, &loser);
+    assert_eq!((d.matches, d.forfeits, d.survived), (1, 1, 0));
+    assert_eq!(d.entries[0].result, MatchResult::Forfeit);
+}
+
+#[test]
+fn a_match_refunded_for_a_broken_rule_counts_only_as_a_refund() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    // An off-ring Tag: End's replay refunds the match.
+    fx.verdict(tag(ring[0], ring[2]));
+    fx.end();
+    assert_eq!(fx.view().settled_as, Some(SettledAs::RefundedRuleViolation));
+    for p in PLAYERS {
+        let d = dossier(&fx, p);
+        assert_eq!((d.matches, d.survived, d.tags, d.refunded), (0, 0, 0, 1));
+        assert_eq!(d.won, U128(0));
+        let e = &d.entries[0];
+        assert_eq!(
+            (e.result, e.tags, e.payout),
+            (MatchResult::Refunded, 0, U128(STAKE))
+        );
+        assert_eq!(e.log_size, U64(77));
+    }
+}
+
+#[test]
+fn an_aborted_running_match_is_recorded_as_a_refund_at_its_last_checkpoint() {
+    let mut fx = Fx::running();
+    at_checkpoint(&mut fx, 1);
+    fx.verdict(cp(10));
+    fx.now += REFEREE_TIMEOUT_MS;
+    fx.abort();
+    for p in PLAYERS {
+        let d = dossier(&fx, p);
+        assert_eq!((d.matches, d.refunded), (0, 1));
+        let e = &d.entries[0];
+        assert_eq!(e.result, MatchResult::Refunded);
+        assert_eq!((e.log_size, e.root.clone()), (U64(10), hex::encode(log_root(10))));
+    }
+}
+
+#[test]
+fn a_lobby_that_never_started_adds_nothing() {
+    let mut fx = Fx::locked();
+    fx.now += LOCK_MS;
+    fx.abort();
+    for p in PLAYERS {
+        assert_eq!(dossier(&fx, p).entries.len(), 0);
+    }
+}
+
+#[test]
+fn a_dossier_keeps_the_newest_entries_and_every_total() {
+    let mut d = Dossier::new(T0);
+    for k in 0..DOSSIER_ENTRIES as u8 + 3 {
+        d.matches += 1;
+        d.push(
+            dossier::DossierEntry {
+                match_id: [k; 16],
+                result: MatchResult::Survived,
+                tags: 0,
+                payout: 0,
+                anchor: Root {
+                    log_size: 1,
+                    root: [0; 32],
+                },
+            },
+            T0 + u64::from(k),
+        );
+    }
+    assert_eq!(d.entries.len(), DOSSIER_ENTRIES);
+    assert_eq!(d.entries[0].match_id, [3; 16]);
+    assert_eq!(d.matches, 15);
+    let v = DossierView::of(&acc("alice.testnet"), &d);
+    // Newest first.
+    assert_eq!(v.entries[0].match_id, hex::encode([14u8; 16]));
+}
+
+/// A maximal dossier (64-character id, every entry and total at its largest) and its place in
+/// the token list stay within what registration charges for it.
+#[test]
+fn a_maximal_dossier_fits_the_storage_registration_paid_for() {
+    let mut fx = Fx::empty();
+    let who = acc(&format!("{}.testnet", "d".repeat(56)));
+    fx.c.dossiers.flush();
+    fx.c.dossier_ids.flush();
+    let before = env::storage_usage();
+    ctx(&who, fx.now, fx.registration_deposit());
+    fx.c.register_for(who.clone(), who.clone());
+    fx.c.payouts.remove(&who);
+    fx.c.payouts.flush();
+    for t in [usdc(), usdt()] {
+        fx.c.balances.remove(&(who.clone(), t));
+    }
+    fx.c.balances.flush();
+    let d = fx.c.dossiers.get_mut(&who).unwrap();
+    for k in 0..DOSSIER_ENTRIES as u8 {
+        d.push(
+            dossier::DossierEntry {
+                match_id: [k; 16],
+                result: MatchResult::Survived,
+                tags: u8::MAX,
+                payout: u128::MAX,
+                anchor: Root {
+                    log_size: u64::MAX,
+                    root: [9; 32],
+                },
+            },
+            u64::MAX,
+        );
+    }
+    (d.matches, d.survived, d.tags, d.forfeits, d.refunded, d.won) =
+        (u32::MAX, u32::MAX, u32::MAX, 0, 0, u128::MAX);
+    fx.c.dossiers.flush();
+    fx.c.dossier_ids.flush();
+    let used = u128::from(env::storage_usage() - before);
+    println!("a maximal dossier stores {used} bytes");
+    assert!(
+        used <= DOSSIER_RECORD_BYTES,
+        "a maximal dossier uses {used} bytes"
+    );
+    assert!(
+        used + 100 > DOSSIER_RECORD_BYTES,
+        "a maximal dossier uses only {used} bytes"
+    );
+    assert_eq!(
+        fx.c.get_config().registration_deposit.0,
+        env::storage_byte_cost().as_yoctonear()
+            * (PAYOUT_RECORD_BYTES + 2 * BALANCE_RECORD_BYTES + DOSSIER_RECORD_BYTES)
+    );
+}
+
+/// A lobby open for ten minutes from `now`, with `requires`.
+fn requiring(now: u64, min_matches: u32, min_survived: u32) -> MatchConfig {
+    MatchConfig {
+        requires: Some(Requires {
+            min_matches,
+            min_survived,
+        }),
+        start_by_ms: now + 600_000,
+        ..cfg(usdc(), STAKE)
+    }
+}
+
+#[test]
+fn a_player_whose_dossier_is_below_requires_cannot_join() {
+    let mut fx = Fx::empty();
+    fx.register("alice.testnet");
+    fx.top_up("alice.testnet", &usdc(), STAKE);
+    fx.id = fx.create(requiring(fx.now, 1, 0));
+    assert_eq!(
+        fx.view().requires,
+        Some(Requires {
+            min_matches: 1,
+            min_survived: 0
+        })
+    );
+    let why = refusal(|| fx.join("alice.testnet"));
+    assert!(
+        why.contains("your dossier is below this match's requires: 1 settled matches and 0 survived"),
+        "{why}"
+    );
+    assert_eq!(fx.bal("alice.testnet"), STAKE);
+}
+
+#[test]
+fn a_player_whose_dossier_meets_requires_joins_and_a_refund_does_not_count() {
+    let (mut fx, h, t, _) = ended_with_a_tag();
+    let v = fx.view();
+    let (survivor, tagged) = (
+        v.players[usize::from(h)].account_id.to_string(),
+        v.players[usize::from(t)].account_id.to_string(),
+    );
+    fx.id = fx.create(requiring(fx.now, 1, 1));
+    fx.join(&survivor);
+    // One match played but not survived.
+    let why = refusal(|| fx.join(&tagged));
+    assert!(why.contains("below this match's requires"), "{why}");
+    // A refunded match is no settled match: after one, the bar of one match still holds.
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    fx.verdict(tag(ring[0], ring[2]));
+    fx.end();
+    fx.id = fx.create(requiring(fx.now, 1, 0));
+    let why = refusal(|| fx.join("alice.testnet"));
+    assert!(why.contains("below this match's requires"), "{why}");
+}
+
+#[test]
+fn a_match_without_requires_admits_a_new_player() {
+    let mut fx = Fx::empty();
+    fx.register("alice.testnet");
+    fx.top_up("alice.testnet", &usdc(), STAKE);
+    fx.id = fx.create(requiring(fx.now, 0, 0));
+    fx.join("alice.testnet");
+    assert_eq!(fx.view().players.len(), 1);
+}
+
+#[test]
+fn an_account_from_before_migrate_has_no_dossier_until_it_mints_one() {
+    let mut fx = migrated(Fx::running());
+    assert!(fx.c.get_dossier(acc("alice.testnet")).is_none());
+    assert_eq!(fx.c.nft_total_supply(), U128(0));
+    // Its old match settles by abort, which records nothing for an account without a dossier.
+    fx.now += REFEREE_TIMEOUT_MS;
+    fx.abort();
+    let deposit = NearToken::from_yoctonear(fx.c.get_config().dossier_deposit.0);
+    let why = refusal(|| {
+        ctx(&acc("mallory.testnet"), fx.now, deposit);
+        fx.c.mint_dossier(acc("alice.testnet"));
+    });
+    assert!(why.contains("only the account or its parent"), "{why}");
+    ctx(&acc("alice.testnet"), fx.now, deposit);
+    fx.c.mint_dossier(acc("alice.testnet"));
+    assert_eq!(dossier(&fx, "alice.testnet").matches, 0);
+    assert_eq!(fx.c.nft_total_supply(), U128(1));
+    let why = refusal(|| {
+        ctx(&acc("alice.testnet"), fx.now, deposit);
+        fx.c.mint_dossier(acc("alice.testnet"));
+    });
+    assert!(why.contains("already has a dossier"), "{why}");
+    let why = refusal(|| {
+        ctx(&acc("zed.testnet"), fx.now, deposit);
+        fx.c.mint_dossier(acc("zed.testnet"));
+    });
+    assert!(why.contains("account not registered"), "{why}");
+}
+
+// ── Review fixes (money review of 2d30754) ──────────────────────────────────────────────────
+
+/// OutLayer down at the end: a Tag signed in time lands ten minutes after `end_ms`, past the old
+/// five-minute grace, and the End behind it still pays out the winners.
+#[test]
+fn a_late_tag_before_the_overdue_abort_lands_and_end_still_pays_out() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    fx.now = fx.view().end_ms.unwrap() + 600_000;
+    fx.verdict(tag(ring[0], ring[1]));
+    fx.end();
+    assert_eq!(fx.view().settled_as, Some(SettledAs::Payout));
+    let mut want = vec![STAKE; 3];
+    want[usize::from(ring[0])] = 2 * STAKE;
+    want[usize::from(ring[1])] = 0;
+    // The sponsor named in `cfg` put nothing in, so the payout is the heads.
+    assert_eq!(fx.paid(), want);
+}
+
+#[test]
+#[should_panic(expected = "checkpoint log_size must grow (and an empty log is no checkpoint)")]
+fn a_checkpoint_of_an_empty_log_is_refused() {
+    let mut fx = Fx::running();
+    at_checkpoint(&mut fx, 1);
+    fx.verdict(Verdict::Checkpoint {
+        log_size: 0,
+        root: [7; 32],
+    });
+}
+
+#[test]
+fn an_end_of_an_empty_log_must_anchor_the_empty_root() {
+    let mut fx = Fx::running();
+    fx.now = fx.view().end_ms.unwrap();
+    let mut junk = end_at(&alpha_for(fx.id), 0);
+    if let Verdict::End { root, .. } = &mut junk {
+        *root = [7; 32];
+    }
+    let why = refusal(|| fx.verdict(junk));
+    assert!(why.contains("the root of an empty log must be SHA256"), "{why}");
+    // The empty root itself is fine.
+    fx.verdict(end_at(&alpha_for(fx.id), 0));
+    assert_eq!(fx.view().settled_as, Some(SettledAs::Payout));
+}
+
+/// The code before the upgrade paid heads at End with no replay; `get_match` says so.
+#[test]
+fn a_match_ended_before_the_upgrade_reads_as_paid_out_without_a_replay() {
+    let mut fx = Fx::running();
+    fx.end();
+    let fx = migrated(fx);
+    assert_eq!(fx.view().settled_as, Some(SettledAs::PayoutUnreplayed));
+    let json = near_sdk::serde_json::to_value(fx.view()).unwrap();
+    assert_eq!(json["settled_as"], "payout_unreplayed");
 }

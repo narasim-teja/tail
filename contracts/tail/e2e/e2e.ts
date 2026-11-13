@@ -9,7 +9,8 @@
 // Start/Hint/Tag/Checkpoint/End (protocol v2: each verdict chained to the one before, each
 // Checkpoint and End proved consistent with the last anchored root) with the Tag following the
 // ring End rebuilds, an inclusion proof against the anchored root, settlement, withdraw (a player
-// naming its wallet once, paid, and refunded). The verdict key and the VRF key are local test keys
+// naming its wallet once, paid, and refunded), and each player's Dossier (NEP-171): minted at
+// registration, one entry from the settled match, transfers refused. The verdict key and the VRF key are local test keys
 // in .keys/ standing in for the enclave's `verdicts` key and OutLayer's VRF key; the parent stands
 // in for the referee's OutLayer caller (the VRF alpha's sender). The match log is a stand-in of
 // Tick entries that this script proves against with @tail/protocol's Merkle helpers.
@@ -54,7 +55,7 @@ const zeros = new Uint8Array(32);
 const SPONSOR = 11n; // odd on purpose: two survivors split it 6 / 5
 // Start is dated 4.5 min back (the contract allows 5) so this 4-minute match is already past
 // end_ms when End lands: an End with two survivors is only accepted from end_ms on, and Tag and
-// Hint still land within the 5-minute grace after it.
+// Hint still land until the match could be aborted as overdue (15 minutes after end_ms).
 const DURATION_MS = 240_000;
 const START_BACKDATE_MS = 270_000;
 const runId = Date.now().toString(36);
@@ -283,24 +284,34 @@ async function run() {
     m.phase === "running" && m.ring_commit === hex(ringCommit(vrfSignature)),
   );
 
+  const hintAt = startMs + 60_000n;
   const overpriced = await fails(() =>
     applyVerdicts([
       signVerdict(id, 2, prev, {
         kind: "Hint",
         from: 0,
-        amount: hintPrice(STAKE, HintKind.Bearing),
+        amount: hintPrice(STAKE, HintKind.Bearing, 0),
         hintId: 1,
         hint: HintKind.Near,
+        tMs: hintAt,
       }).b64,
     ]),
   );
   record(
     "a NEAR hint charged at the BEARING price is refused",
-    overpriced.includes("hint amount is not the price of its kind"),
+    overpriced.includes("hint amount is not its price at the match's demand"),
     overpriced,
   );
-  const hintAmount = hintPrice(STAKE, HintKind.Near); // 2% of the stake
-  const hint = next(2, { kind: "Hint", from: 0, amount: hintAmount, hintId: 1, hint: HintKind.Near });
+  // The first hint of the match: no demand yet, so the base price (2 % of the stake).
+  const hintAmount = hintPrice(STAKE, HintKind.Near, 0);
+  const hint = next(2, {
+    kind: "Hint",
+    from: 0,
+    amount: hintAmount,
+    hintId: 1,
+    hint: HintKind.Near,
+    tMs: hintAt,
+  });
   await applyOne("Hint", hint);
   const hinted = `${STAKE - hintAmount},${STAKE},${STAKE}`;
   m = await eventually(
@@ -422,6 +433,51 @@ async function run() {
     "End's replay holds: survivors get their head, their hint credit and the sponsor pot split 6 / 5; the tagged player gets 0",
     settled.join() === expected.join() && m.settled_as === "payout",
     settled.join(", "),
+  );
+
+  // ---------- dossiers (NEP-171, soulbound) ----------
+  const dossiers = await Promise.all(
+    byIndex.map((p) =>
+      view<{ matches: number; survived: number; entries: { match_id: string; result: string }[] } | null>(
+        "get_dossier",
+        { account_id: p.id },
+      ),
+    ),
+  );
+  record(
+    "each player's dossier records the settled match: 0 and 2 survived, 1 was tagged",
+    dossiers.every((d) => d?.matches === 1 && d.entries[0]?.match_id === matchId) &&
+      dossiers.map((d) => d?.entries[0]?.result).join() === "survived,tagged,survived",
+    dossiers.map((d) => d?.entries[0]?.result).join(),
+  );
+  const token = await view<{ owner_id: string; metadata: { media: string; title: string } } | null>(
+    "nft_token",
+    {
+      token_id: p0.id,
+    },
+  );
+  record(
+    "nft_token returns the dossier with its card as an on-chain SVG",
+    token !== null &&
+      token.owner_id === p0.id &&
+      token.metadata.media.startsWith("data:image/svg+xml;base64,"),
+    token?.metadata.title ?? "none",
+  );
+  // Player keys may only call join_match, leave_lobby and withdraw, so the full-access parent
+  // asks: the refusal is the contract's, whoever calls.
+  const moved = await fails(() =>
+    parent.callFunction({
+      contractId,
+      methodName: "nft_transfer",
+      args: { receiver_id: p1.id, token_id: p0.id },
+      gas: teraToGas("30"),
+      deposit: 1n,
+    }),
+  );
+  record(
+    "a dossier transfer is refused",
+    moved.includes("a dossier is bound to the player who earned it"),
+    moved,
   );
 
   // ---------- withdraw with function-call keys (withdraw_min_gas: 20 go to ft_transfer, 10 to the callback) ----------

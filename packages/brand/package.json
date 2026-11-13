@@ -5,10 +5,12 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./assets/*": "./assets/*"
+    "./assets/*": "./assets/*",
+    "./vectors/*": "./vectors/*"
   },
   "scripts": {
     "build": "bun scripts/build.ts",
+    "dossier-vectors": "bun scripts/dossier-vectors.ts",
     "typecheck": "tsc -p ."
   },
   "devDependencies": {

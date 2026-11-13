@@ -1,6 +1,7 @@
 // Profile, from your name on Home: who you are on NEAR and what you hold. The account id can be
-// selected (long-press to copy), shared, or opened in the explorer; the balance tops up on
-// testnet and withdraws. Three facts close it: this iPhone, the network, the contract.
+// selected (long-press to copy), shared, or opened in the explorer. Under it, the player's
+// Dossier, their soulbound record on NEAR. The balance tops up on testnet and withdraws. Three
+// facts close it: this iPhone, the network, the contract.
 //
 // The relay creates each account with only this phone's game key, so its payout starts as the
 // account itself, where tokens could never leave. The first withdraw then asks for a wallet the
@@ -11,6 +12,7 @@ import { NEAR_NETWORK, TOP_UP, useApp } from "../state/app";
 import { handleOf } from "../tail/huntModel";
 import { Icon } from "../ui/brand";
 import { ContractMismatch } from "../ui/contract";
+import { DossierCard } from "../ui/dossier";
 import { RollingMoney } from "../ui/game";
 import {
   Avatar,
@@ -42,6 +44,8 @@ export interface ProfileModel {
   testRelay: boolean;
   /** Where withdrawals go; equal to accountId until a wallet is named; null while unknown. */
   payout: string | null;
+  /** Where the Dossier card reads from and links to; without it there is no card. */
+  dossier?: { rpcUrl: string; replayUrl: string };
 }
 
 export interface ProfileActions {
@@ -108,6 +112,15 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
           />
         </Row>
       </View>
+
+      {m.dossier ? (
+        <DossierCard
+          accountId={m.accountId}
+          contractId={m.contractId}
+          rpcUrl={m.dossier.rpcUrl}
+          replayUrl={m.dossier.replayUrl}
+        />
+      ) : null}
 
       <Rule />
       <View accessible accessibilityLabel={m.balance === null ? "Balance loading" : "Balance"}>
@@ -231,6 +244,7 @@ export function Profile() {
         contractMismatch: app.contractMismatch,
         testRelay: app.testPlayers,
         payout: app.wallet?.payout ?? null,
+        dossier: { rpcUrl: app.settings.rpcUrl, replayUrl: app.settings.replayUrl },
       }}
       actions={{
         onTopUp: () => void app.topUp(TOP_UP),
