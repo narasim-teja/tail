@@ -53,18 +53,18 @@ game icons) from source, never copies.
 
 ## Screens
 
-| Screen   | What it shows                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Enrol    | The Chase scene, TAIL, one field (handle), Join; states: checking this phone, handle taken, no App Attest                                                                                                                                                                                                                                                                                                                                               |
-| Primer   | Three swipeable cards (Lock, Heat, Strike), once, skippable; each plays the real readout it explains                                                                                                                                                                                                                                                                                                                                                    |
-| Home     | You (avatar and handle) and Settings; the Chase in a sand well; balance (rolls when it changes); Create a match and Scan to join; code entry; recent matches, or on first run how a match goes in three lines. You and the balance open Profile                                                                                                                                                                                                         |
-| Profile  | Handle and account id (select to copy, Share, View on NEAR); balance with Top up 10 (testnet) and Withdraw; this iPhone verified, network, contract                                                                                                                                                                                                                                                                                                     |
-| Create   | Live map of the zone around you; zone, stake and length as chips, players as a stepper (all inside the server's bounds); public replay                                                                                                                                                                                                                                                                                                                  |
-| Scan     | Camera reads a lobby QR (`tail://join/<id>`); permission asked or Open Settings                                                                                                                                                                                                                                                                                                                                                                         |
-| Lobby    | Big QR first, code and Share, stake, length, players as initials (each slides in with a tick as they join), open seats as dashed pulsing rings; waiting, ready, starting (rings run round each player), failed (retry), called off; Join, Start (host), Leave; on a test relay the host can Add a test player (it forfeits after 3 min dark)                                                                                                            |
-| Briefing | The Chase with the target's initials on the ink dot; the handle rises out of a mask with a haptic tick; your head and the start countdown, ticking by feel in the last 5 s                                                                                                                                                                                                                                                                              |
-| Hunt     | Target and time left; LOCK arc with its numeral, HEAD, HEAT bar with its numeral; live map (you as the Trail mark, zone edge dotted, safehouses, leaked cell); Handler at thumb reach. Lock full floods persimmon and STRIKE replaces the map; strike sent; landed (flash, new target slides in); dark and out-of-zone banners with countdowns; vehicle freeze; Handler dispatch and pull-down log; hint sheet; tagged (ink); Bluetooth or location off |
-| Results  | Outcome emblem; survived, out or last one standing; final head and tags roll up; the Handler's sign-off; Watch the replay (Safari); How it's verified; your reports ("N of M reports are in the log anchored on NEAR", refusals with their reason, any missing report as a problem); after the end, Prove I met (name) for each player you met                                                                                                          |
+| Screen   | What it shows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Enrol    | The Chase scene, TAIL, one field (handle), Join; states: checking this phone, handle taken, no App Attest                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Primer   | Three swipeable cards (Lock, Heat, Strike), once, skippable; each plays the real readout it explains                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Home     | You (avatar and handle) and Settings; the Chase in a sand well; balance (rolls when it changes); Create a match and Scan to join; code entry; recent matches, or on first run how a match goes in three lines. You and the balance open Profile                                                                                                                                                                                                                                                                                                                                             |
+| Profile  | Handle and account id (select to copy, Share, View on NEAR); balance with Top up 10 (testnet) and Withdraw (the first one names the payout wallet for good; a withdraw the token refused says nothing moved); the Dossier card; this iPhone verified, network, contract                                                                                                                                                                                                                                                                                                                     |
+| Create   | Live map of the zone around you; zone, stake and length as chips, players as a stepper (all inside the server's bounds); public replay                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Scan     | Camera reads a lobby QR (`tail://join/<id>`); permission asked or Open Settings                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Lobby    | Big QR first, code and Share, stake, length, players as initials (each slides in with a tick as they join), open seats as dashed pulsing rings; waiting, ready, starting (rings run round each player), failed (retry), called off; Join, Start (host), Leave; on a test relay the host can Add a test player (it forfeits after 3 min dark)                                                                                                                                                                                                                                                |
+| Briefing | The Chase with the target's initials on the ink dot; the handle rises out of a mask with a haptic tick; your head and the start countdown, ticking by feel in the last 5 s. Reporting starts as soon as the orders open here; Hunt only moves to the hunt screen. Until the orders open it offers Settings (a wrong relay or RPC can be fixed while the match stays open) and says the phone can't report yet, which counts as dark time                                                                                                                                                    |
+| Hunt     | Target and time left; LOCK arc with its numeral, HEAD, HEAT bar with its numeral; live map (you as the Trail mark, zone edge dotted, safehouses, leaked cell); Handler at thumb reach. Lock full floods persimmon and STRIKE replaces the map; strike sent; landed (flash, new target slides in); a refused strike's reason as a banner for 10 s; dark and out-of-zone banners with countdowns; vehicle freeze; Handler dispatch and pull-down log; hint sheet; tagged (ink); Bluetooth or location off; a screen that stays when iOS has lost the device key (the match will be forfeited) |
+| Results  | Outcome emblem; survived, out or last one standing; final head and tags roll up; the Handler's sign-off; Watch the replay (Safari); How it's verified; your reports ("N of M reports are in the log anchored on NEAR", refusals with their reason, any missing report as a problem); after the end, Prove I met (name) for each player you met. It reads the match every 5 s until End is in and checked. A match the contract paid before the upgrade says it was paid on the old rules, without a replay                                                                                  |
 
 ## Design system
 
@@ -104,8 +104,8 @@ The look follows `docs/DESIGN.md` and the confirmed brief `docs/briefs/mobile.md
 
 `package.json` has **no `name` on purpose**: Bun only treats a folder matched by the root
 `workspaces` glob (`apps/*`) as a member if it has a name. Without one, `bun install` here keeps
-its own `bun.lock` and `node_modules`, and a root install ignores this folder. (A
-`"!apps/mobile"` entry in the root `workspaces` would say the same thing explicitly.)
+its own `bun.lock` and `node_modules`, and a root install ignores this folder. The root
+`workspaces` also says so explicitly, with `"!apps/mobile"`.
 
 ```sh
 cd apps/mobile
@@ -116,7 +116,7 @@ bun install
 
 ```sh
 cd apps/mobile
-bun test                                   # 235 tests
+bun test
 bunx tsc -p . && bunx tsc -p tsconfig.test.json
 bunx expo export --platform ios --output-dir /tmp/tail-export
 CI=1 bunx expo prebuild --platform ios --clean
@@ -222,9 +222,10 @@ Use xcodebuild directly (the route that worked in the device spike on 2026-11-12
    works there too.
 4. Everyone: **Top up 10** (testnet: the relay credits test USDC), then **Join** (a NEAR
    `join_match` signed on the phone). Host: **Start** once enough players joined.
-5. Briefing shows your target. **Hunt** starts beacon, scan, location and pocket mode. Keep the
-   app in front; put the phone in a pocket screen-in (the proximity sensor turns the screen off).
-   Do not press the side button: that locks the phone and stops the game.
+5. Briefing shows your target. Beacon, scan, location and pocket mode start as soon as the orders
+   open, before you tap **Hunt**, which only moves to the hunt screen. Keep the app in front; put
+   the phone in a pocket screen-in (the proximity sensor turns the screen off). Do not press the
+   side button: that locks the phone and stops the game.
 6. Lock fills when you are near your target; heat when your hunter is near you. **STRIKE**
    appears at a full lock. **Handler** sells three hints with an optional question.
 7. When you are out or the match ends: your head, your tags, and your reports checked against
@@ -253,10 +254,16 @@ All served by `apps/server` (shapes in its README):
   says so and offers to open it. 429 (limits) and 413 (too large) show as short sentences.
 - `GET /enroll/status`, `POST /enroll/refresh/challenge`, `POST /enroll/refresh` (signed): when
   the contract pins another referee, that referee knows no device. The phone asks on start-up,
-  when the relay is checked and when a Start fails; if the referee doesn't hold its device, or
-  Start answers 409 with `code: "refresh"` naming it, the phone attests a new App Attest key over
-  a fresh challenge for the same account and signs `rebind_sig` (`rebindDigest`) with the NEAR
-  key from the Keychain. It says so in one line on Home and the lobby. Not run on a phone yet.
+  when the relay is checked and when a Start fails, again every 30 s while the lobby shows a
+  failed Start, and on pull to refresh in the lobby; never during a hunt. The status names the
+  App Attest key the relay holds (`app_attest_key_id`): a key the phone sent before an answer was
+  lost is kept as pending and settled against it, and a key the phone does not hold means a
+  refresh. Then it makes one trial assertion with its key, so a key iOS threw away (after a
+  reinstall) is replaced before the hunt. If the referee doesn't hold its device, the key is not
+  the relay's or fails the trial, or Start answers 409 with `code: "refresh"` naming it, the
+  phone attests a new App Attest key over a fresh challenge for the same account and signs
+  `rebind_sig` (`rebindDigest`) with the NEAR key from the Keychain. It says so in one line on
+  Home and the lobby. Not run on a phone yet.
 - `POST /enroll/challenge`, `POST /enroll`, `POST /matches/:id/start`,
   `POST /batch`, `GET /hud` (WebSocket), `POST /dev/topup` (testnet).
 - `GET /matches/:id/inclusion?leaf=&size=`: audit paths for the receipts. The size is always one
@@ -301,7 +308,8 @@ a report that is in neither form as a problem once End's root is there.
 `Contact` entry with its path to End's root, plus the accounts, epoch, index and size. Anyone can
 check it from chain data alone: `decodePresenceProof`, then `verifyPresence(proof, roots, players)`
 from `@tail/protocol`, with `roots` from `get_roots` and `players` from `get_match` on the
-contract. The app does not link to a web page for it yet.
+contract. The replay's `/?presence=` page reads this document too (its `kind` is
+`tail/presence-proof/v1`); the app does not link to it yet.
 
 ## Log monitor
 
