@@ -65,7 +65,9 @@ export function Ledger() {
               <tr key={r.what}>
                 <th scope="row">{r.what}</th>
                 <td data-k="You">{usdc(r.you)}</td>
-                <td data-k="Target">{r.target === null ? <span className="d-out">out</span> : usdc(r.target)}</td>
+                <td data-k="Target">
+                  {r.target === null ? <span className="d-out">out</span> : usdc(r.target)}
+                </td>
                 <td data-k="Pool">{usdc(r.pool)}</td>
                 <td data-k="Table" className="d-total">
                   {usdc(r.you + (r.target ?? 0n) + r.pool + others)}
@@ -76,8 +78,8 @@ export function Ledger() {
         </table>
       </div>
       <figcaption>
-        A table of {say(TABLE)} at {usdc(STAKE)} USDC each, priced by the rule above; the other {say(TABLE - 2)} hold{" "}
-        {usdc(others)}. The table holds {usdc(total)} at every step.
+        A table of {say(TABLE)} at {usdc(STAKE)} USDC each, priced by the rule above; the other{" "}
+        {say(TABLE - 2)} hold {usdc(others)}. The table holds {usdc(total)} at every step.
       </figcaption>
     </figure>
   );
