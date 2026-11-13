@@ -59,6 +59,11 @@ the keys pinned. `apps/server/test/replay-verify.test.ts` does that for a match 
 local referee. `--older-relay` makes the demo bundle look like one from a relay before it
 released the fields below.
 
+`cargo run -q -p referee-verify --example economy-bundle > economy.json` plays a 12-player,
+60-minute match with scripted walkers that buy demand-priced hints in waves and tag along the
+ring, and prints its bundle (`--summary` prints what happened instead); it is the web replay's
+`boston-common-economy` fixture, and `tail-verify` passes it with nothing trusted.
+
 | Flag               | Effect                                                                                                                                   |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `--referee-pk HEX` | The bundle's `referee.refereePk` must be this key, or the run fails (`pins`).                                                            |

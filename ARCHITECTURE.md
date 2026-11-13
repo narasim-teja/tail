@@ -22,8 +22,12 @@ Read every claim below with this in mind:
 - **OutLayer still holds the old build.** The active OutLayer version is the protocol v1 build
   `20446c64…08664`. The v2 build has not been uploaded.
 - **Real phones have only run v1.** Two iPhones played indoor matches on 2026-11-12, and a Tag
-  landed from Bluetooth contact. The v2 phone paths (signed HUDs, chain recovery, receipts,
-  presence proofs, mesh carry) have only run in tests.
+  landed from Bluetooth contact. The v2 phone paths (signed HUDs, chain recovery, receipts, the
+  log monitor, the Handler line check, presence proofs, re-enrolment, mesh carry) have only run
+  in tests.
+- **One account owns the relay, the contract and the OutLayer project**
+  (`tail-dev-a38d13.testnet`, see Trust). So "the relay cannot sign a verdict" holds only while
+  the enclave is pinned, and even then the same owner could publish a new referee version.
 
 ## Data flow
 
@@ -50,6 +54,7 @@ Read every claim below with this in mind:
     │  views: get_match, get_roots, get_heads, get_verdict_head*, verify_inclusion*
     ▼  after End: declassify releases the log and K_m
  browser  apps/web ── re-checks the bundle against NEAR    (* after the upgrade)
+ tail-verify  crates/referee-verify ── re-runs the engine on the bundle, byte for byte
 ```
 
 ## The verdict chain and the log
@@ -87,20 +92,38 @@ Paths are relative to the repo root. "Referee" means `crates/referee-core` (the 
   - the counter is 0 and the aaguid is the development one;
   - the attested key is the enrolled `app_attest_pk`.
 
-  The App ID and the environment are constants in the code, not inputs. A device without an
-  attestation is enrolled only when `ALLOW_UNATTESTED=1`. It is then recorded as
-  `attested: false` and logged at Start as `Enrolled{player, account, key_hash, attested}`.
+  The App ID (`APP_ID` in `crates/referee-wasi/src/cmd/mod.rs`) and the environment are
+  constants in the code, not inputs. `enroll` checks attestations against that App ID, and
+  `start` takes no app id: the engine checks every assertion of the match against the same
+  constant. A device without an attestation is enrolled only when `ALLOW_UNATTESTED=1`. It is
+  then recorded as `attested: false` and logged at Start as `Enrolled{player, account, key_hash,
+  attested}`.
+
+  An account keeps the device it first enrolled. Enrolling the same three keys again returns the
+  stored receipt. Other keys need `rebind_sig`: the stored device's NEAR key signing
+  `SHA256("tail/rebind/v1" ‖ borsh(account_id) ‖ app_attest_pk ‖ player_box_pk ‖ near_pk)` of
+  the new keys. Without it, a relay holding a genuine iPhone of its own could attest it for
+  someone else's account. Each enrolment receipt names the `referee_pk` that signed it, so the
+  relay knows which referee holds which device. When the contract pins another referee, Start
+  answers `code: "refresh"`, and the phone attests a new App Attest key over a fresh challenge
+  and signs `rebind_sig` (`apps/mobile/src/identity/enrol.ts`, `refreshEnrolment`). The phone
+  attests only for `<handle>.<parent>`, with the parent pinned in its build, so a relay cannot
+  have it attest for another account.
 - **Enforced.** `crates/appattest/src/lib.rs` (`verify_attestation`),
-  `crates/referee-wasi/src/cmd/enroll.rs`. The relay also checks the attestation
-  (`apps/server/src/enroll.ts`), but its check is no longer the one that counts.
+  `crates/referee-wasi/src/cmd/enroll.rs` (`admit`). The relay also checks the attestation
+  (`apps/server/src/enroll.ts`), but its check is not the one that counts.
 - **Check.** `cargo test -p appattest` runs the verifier on a real iPhone capture
-  (`crates/appattest/tests/data/s3-tail-attest.json`) and on negative cases. In a replay, each
-  player's `Enrolled` entry decides the label, and `attested: false` shows as "test player (no
-  Apple attestation)".
-- **Limit.** The replay shows the referee's record, not the attestation object, so you trust
-  the referee to have checked it. App Attest says "a genuine Apple device and our App ID". It
-  does not rule out a jailbroken phone, and Apple's fraud-risk receipt is not used. The active
-  OutLayer build predates this check. With the local test referee, the relay's machine runs it.
+  (`crates/appattest/tests/data/s3-tail-attest.json`) and on negative cases.
+  `cd crates/referee-wasi && cargo test` covers re-enrolment with and without `rebind_sig`. In a
+  replay, each player's `Enrolled` entry decides the label, and `attested: false` shows as "test
+  player (no Apple attestation)". `tail-verify` checks that each released device key hashes to
+  its `Enrolled` key hash.
+- **Limit.** Neither the replay nor `tail-verify` sees the attestation object, so you trust the
+  referee's `attested` flag. App Attest says "a genuine Apple device and our App ID". It does not
+  rule out a jailbroken phone, nor one person with many accounts (one iPhone can make any number
+  of App Attest keys; the relay caps new enrolments per address and per day). Apple's fraud-risk
+  receipt is not used. The active OutLayer build predates these checks. With the local test
+  referee, the relay's machine runs them.
 
 ### 2. The report was not altered
 
@@ -114,11 +137,14 @@ Paths are relative to the repo root. "Referee" means `crates/referee-core` (the 
   hash, code}`.
 - **Enforced.** `crates/referee-core/src/engine.rs` (authentication: seq, prev, assertion,
   counter, before any rule runs).
-- **Check.** After End the replay bundle carries the declassified batches. The browser checks
-  each batch's SHA-256 against its `Batch` log entry and its `prev` link
-  (`apps/web/src/verify/checks.ts`, `checkBatches`).
-- **Limit.** Nothing outside the referee re-checks the assertions yet. `declassify_batches`
-  returns them, but the replay bundle does not carry them.
+- **Check.** After End the replay bundle carries the declassified batches, each one's App
+  Attest assertion, each device's App Attest key and the refused batches. `tail-verify` re-checks
+  every assertion against the device key, with the counter rule, during re-execution (claim 15).
+  The browser checks each batch's SHA-256 against its `Batch` log entry and its `prev` link
+  (`apps/web/src/verify/checks.ts`, `checkBatches`), not the assertions.
+- **Limit.** A batch that never opened is not released, so its refusal is the referee's word
+  (`tail-verify` lists it as trusted). The bundle names its App ID (`match.appId`), and
+  `tail-verify` warns when that is not the production one.
 
 ### 3. The report is from its 15-second window
 
@@ -135,7 +161,8 @@ Paths are relative to the repo root. "Referee" means `crates/referee-core` (the 
   scenarios. `packages/protocol/vectors/beacon.json` pins the token bytes in both languages.
 - **Limit.** The window is set by when the token was advertised, give or take one epoch. A token
   rebroadcast before the end of the next epoch (15 to 30 s later) still counts. Batch times come
-  from the device clock, within the bounds above. The browser does not recompute tokens.
+  from the device clock, within the bounds above. `tail-verify` resolves every token again from
+  the released `K_m`; the browser does not.
 
 ### 4. The two phones were in mutual radio contact
 
@@ -151,13 +178,15 @@ Paths are relative to the repo root. "Referee" means `crates/referee-core` (the 
   Before each Tag the referee logs `Evidence{hunter, target, strike_seq, strike_epoch, epochs,
   salt}`.
 - **Enforced.** `crates/referee-core/src/engine.rs` (`contact_holds`, `lock_epochs`).
-- **Check.** Click a tag in the replay. "The referee logged N contact windows" re-checks the
-  Evidence entry against the rule. It also checks each cited `Contact` entry's Merkle path to an
-  anchored root (`apps/web/src/verify/evidence.ts`). Scenarios `mutual` and `one-sided` in
+- **Check.** `tail-verify` recomputes every contact from the released batches' sightings and
+  fixes, and every `Evidence` entry, and requires them byte for byte (claim 15). In the replay,
+  click a tag: "The referee logged N contact windows" re-checks the Evidence entry against the
+  rule, and each cited `Contact` entry's Merkle path to an anchored root
+  (`apps/web/src/verify/evidence.ts`). Scenarios `mutual` and `one-sided` in
   `crates/referee-sim/scenarios`.
-- **Limit.** The browser checks the referee's entries, not the raw sightings. The sightings are
-  in the declassified batches, but contact is not recomputed from them. There is no distance
-  bounding: see the wormhole attack in the threat model.
+- **Limit.** The browser checks the referee's entries, not the raw sightings; only `tail-verify`
+  recomputes contact, and only after End, from what was released. The contract never sees it
+  (claim 7). There is no distance bounding: see the wormhole attack in the threat model.
 
 ### 5. The movement was physically plausible
 
@@ -207,9 +236,13 @@ Money only becomes withdrawable after the contract has replayed and checked the 
 
 - **Mechanism.** During play the ring is secret, so the contract applies each money verdict as
   it lands, inside the match only:
-  - `Hint { from, amount, hint_id, hint }` names only the asker. The amount must be the kind's
-    price (`HINT_BPS[kind] × stake / 10 000`). It leaves the asker's head for the match's hint
-    pool, onto nobody's head.
+  - `Hint { from, amount, hint_id, hint, t_ms }` names only the asker. The amount must be the
+    demand price: `hint_price(stake, kind, recent)`, the kind's base price (`HINT_BPS[kind] ×
+    stake / 10 000`) times `1 + 25 %` per hint the match charged in the 5 minutes of match time
+    up to `t_ms`, at most 4×. The contract recomputes `recent` from the `t_ms` of the earlier
+    hints it stored, requires `t_ms` to be in `[start_ms, end_ms]` and not before the previous
+    hint's, and refuses any other amount (`crates/tail-protocol/src/pricing.rs`). The money
+    leaves the asker's head for the match's hint pool, onto nobody's head.
   - `Tag { hunter, target, credit }` and `Forfeit { player, to, credit }` first move `credit`
     from the pool onto the loser's head (at most what the pool holds), then the loser's whole
     head to the winner. `credit` is what hints about the loser paid in and nobody was credited.
@@ -230,6 +263,7 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   back, sponsors get theirs, `get_match` shows `settled_as: "refunded_rule_violation"` with the
   first broken rule in `violation`, and the contract logs a `match_refunded` event. `abort` (the
   referee went silent, or never sent End) refunds every original stake too, hint money with it.
+  The live contract's `abort` pays the current heads instead.
   So no Tag, Forfeit or hint transfer pays out unless the whole match checked.
 - **Enforced.** `contracts/tail/src/lib.rs` (`settle`, `refund_stakes`, `abort`),
   `crates/tail-protocol/src/settle.rs` (the replay; twin `packages/protocol/src/settle.ts`). The
@@ -241,11 +275,15 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   `referee-sim` applies every scenario's verdicts as the contract does and requires the replay
   to pass and pay exactly the referee's heads. The web replay runs the same replay in the browser
   and shows "Refunded: rule violation" when it fails.
-- **Limit.** It proves who hunted whom and whom each hint was about, not that the proximity
-  evidence was real. A referee that breaks the rules cannot take money with it, but it can still
-  force a refund. Checks that come before the replay (signature, `prev`, consistency proof, the
-  VRF reveal opening its commitment) refuse the End instead, and the match then settles by
-  `abort`, also as a refund.
+- **Limit.** "Rules" here means the ring, the hint targets, the credits, the pool and the hint
+  price. It proves who hunted whom and whom each hint was about, not that the proximity evidence
+  was real. A referee that breaks one of those rules cannot take money with it, but it can still
+  force a refund. A referee that logs fabricated contact for a tag of the hunter's actual target
+  breaks none of them, and the contract pays that match out. Only `tail-verify` catches it, by
+  recomputing contact from the released batches (claim 15), after End and off-chain; the payout
+  stands. The `t_ms` of each hint is the referee's clock (see "Gaps"). Checks that come before
+  the replay (signature, `prev`, consistency proof, the VRF reveal opening its commitment) refuse
+  the End instead, and the match then settles by `abort`, also as a refund.
 
 ### 8. The verdict history cannot fork (after the upgrade)
 
@@ -280,10 +318,18 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   All signatures and the verdict chain hold, the links 4→5 and 5→6 fail, and the page reports
   "The log was rewritten". `cargo test -p tail-protocol` tests the proofs for every
   0 < m ≤ n ≤ 70.
-- **Limit.** Entries newer than the last anchor (up to about a minute) are covered only by the
-  root in each signed HUD, and the phone does not check those roots for consistency. The proofs
-  say the log only grew, not that its entries are true. The deployed contract stores roots
-  without a proof.
+- **Phones as monitors.** Entries newer than the last anchor (up to about a minute) are covered
+  by the root in each signed HUD. Each phone checks every new HUD root against the last one it
+  verified with a consistency proof from the relay, and checks each root anchored on NEAR
+  (through its own RPC) against its newest HUD root, the way a Certificate Transparency monitor
+  watches a log (`apps/mobile/src/proximity/monitor.ts`). Two roots the referee committed to that
+  contradict each other with no help from the relay (a later HUD with a smaller log, or one size
+  with two roots) are a fork: the phone raises an alarm and keeps both signed HUDs as evidence
+  anyone can check. A proof that does not verify convicts only the relay that sent it, so the
+  phone keeps it as relay-fault evidence, shows it softly and asks again later.
+- **Limit.** The proofs say the log only grew, not that its entries are true. A fork is caught
+  only by a phone that saw both roots, and only while it is in the match. The deployed contract
+  stores roots without a proof. The log monitor has not run on a phone.
 
 ### 10. My reports were not dropped
 
@@ -337,12 +383,21 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   - The Handler request carries `HMAC(K_log, "tail/voice-nonce" ‖ u32le(hint_id))[0..16]`, so
     NEAR AI's public `sha256(request)` does not name the fact.
   - Low-order X25519 keys and all-zero shared secrets are refused.
+  - Everything sealed to a phone (player keys, HUDs, Handler lines) is padded to `PHONE_PAD`
+    (1024 bytes) first, so each seals to 1072 bytes. Otherwise the keys' length would name the
+    target's account and a template line's length its hint. A model line that does not fit is
+    replaced by the template.
+  - `voice` returns only the sealed line, the public signed text and a receipt: no model name,
+    latency or fallback reason. The receipt is `u32le(hint_id) ‖ SHA256(sealed line) ‖` the
+    `HintReceipt` sealed to the referee with that prefix bound in, so it stands for one line of
+    one hint, and the engine logs one receipt per hint however often it is passed.
   - A mesh envelope is always 4144 bytes.
-- **Enforced.** The referee (`crates/referee-wasi/src/vault.rs`, `src/cmd/tick.rs`),
-  `packages/protocol` / `crates/tail-protocol` (sealing), and the phone
-  (`apps/mobile/src/proximity/referee.ts` and `hud.ts`: signature checks).
-- **Check.** After End the replay checks every salt against the released `K_m` (`checkSalts`).
-  The vectors `seal.json` and `hud.json` pin the sealing and signing.
+- **Enforced.** The referee (`crates/referee-wasi/src/vault.rs`, `src/cmd/mod.rs`,
+  `src/cmd/tick.rs`), `packages/protocol` / `crates/tail-protocol` (sealing, `pad.ts`), and the
+  phone (`apps/mobile/src/proximity/referee.ts` and `hud.ts`: signature checks).
+- **Check.** After End the replay checks every salt against the released `K_m` (`checkSalts`),
+  and `tail-verify` re-derives each one. The vectors `seal.json` and `hud.json` pin the sealing,
+  padding and signing; a referee test seals every template line to the same length.
 - **Limit.** During play the relay still learns:
   - the accounts, the lobby, and the zone and safehouses (it creates the match);
   - the IP address, time and size of every upload, and which player each HUD goes to;
@@ -370,14 +425,30 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   hashes to be of its exact bytes. It logs `HintReceipt{hint_id, chat_id, text_hash, signature,
   signing_address, salt}` and seals the signed line to the asker. The replay bundle carries the
   signed text.
+- **The key is NEAR AI's attested key.** `scripts/verify-nearai.ts` and the replay's Handler
+  panel fetch `GET /v1/attestation/report?model=…&signing_algo=ecdsa&nonce=…` with a fresh 32-byte
+  nonce and check: the Intel TDX quote verifies to Intel's root (dcap-qvl, Intel-signed
+  collateral); the quote's report data holds the signing address and our nonce; `mr_config_id`
+  is the hash of the container manifest; NVIDIA's attestation service (NRAS) passed the GPUs for
+  the same nonce and its tokens verify against NVIDIA's keys; and the address a `HintReceipt`
+  logs is one of the attested keys (`apps/web/src/verify/nearai.ts`).
+- **The phone got the logged line.** The receipt reaches the log through the relay, so after
+  End each phone compares the hint id and `SHA256(text)` of every line it received with the
+  logged `HintReceipt`, using the log only if it hashes to End's root on NEAR, and Results says
+  so when the relay delivered a different line (`apps/mobile/src/tail/handler.ts`).
 - **Enforced.** `crates/referee-wasi/src/voice.rs`. The browser recovers the signer with
   secp256k1 and keccak-256 and compares it with `signing_address`
   (`apps/web/src/verify/checks.ts`, `checkHandler`).
-- **Check.** The Handler entries in the replay.
-- **Limit.** It shows that the logged address signed those hashes. It does not show that the
-  address is a TEE key (no attestation report is fetched). The browser check is tested on fixture
-  signatures; a real NEAR AI signature was verified only in a spike. The local test referee has
-  no network and always uses templates, so no v2 match has a model line yet.
+- **Check.** The Handler entries in the replay, and their "Verified" panel.
+  `bun scripts/verify-nearai.ts` prints each check (it needs `NEARAI_API_KEY`, never printed).
+- **Limit.** The attestation is of NEAR AI's key at the time you check, not at the time of the
+  hint, so it binds a line only while NEAR AI keeps that key. NRAS refuses browsers, so the
+  panel's GPU row is the script's saved result (`apps/web/public/nearai-attestation.json`,
+  2026-11-13) and says so; the browser's TDX check needs NEAR AI's API to answer it. The response
+  hash is not matched to the words, which only the asker's phone holds. The browser signature
+  check is tested on fixture signatures; a real NEAR AI signature was verified only in a spike.
+  The local test referee has no network and always uses templates, so no v2 match has a model
+  line yet.
 
 ### 14. Which referee code signed
 
@@ -400,6 +471,81 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   is uploaded and pinned. Whether the build reproduces byte for byte on another machine has not
   been tested. The local test referee has no attestation at all.
 
+### 15. Every verdict follows from the logged inputs (re-execution)
+
+- **Mechanism.** After End the relay's replay bundle (`GET /replay/:id`) carries the plaintext
+  log, `K_m`, the VRF reveal, every released batch with its App Attest assertion, each device's
+  App Attest key, the batches the referee refused, and the App ID. `tail-verify` checks every
+  leaf, every verdict signature and the VRF signature, then re-runs `referee-core`: `init` from
+  the match, the `Enrolled` entries and `K_m`; one engine tick per logged `Tick{tick_no, now_ms,
+  call_id}` with exactly the batches its `Batch` and `Rejected` entries name, found by hash; and
+  `finish`. Every new log entry (contacts, salts, `Evidence`, refusals) and every verdict digest,
+  `prev` included, must equal the bundle's byte for byte. The first difference names the tick and
+  the entry.
+- **Enforced.** Off-chain, by whoever runs it: `crates/referee-verify` (binary `tail-verify`).
+  `--referee-pk` and `--vrf-pk` pin the keys to the contract's `get_match` values; `--app-id`
+  sets the expected App ID. Exit 0: everything was re-executed; 1: a check failed, a pinned key
+  differs or the run diverged; 2: not a v2 bundle; 3: it matched only with items taken from the
+  log (each printed as `trusted`), unless `--allow-trusted`.
+- **Check.** `cargo run -q -p referee-verify --example demo-bundle > m.json` then
+  `cargo run -q -p referee-verify -- m.json` passes; the same with `--forge-tag` (a Tag with
+  hunter and target swapped, validly signed) fails at tick 13.
+  `apps/server/test/replay-verify.test.ts` plays a match through the relay against the local
+  referee and runs it on the bundle the relay serves. The economy fixture passes too:
+  `examples/economy-bundle.rs` plays a 12-player, 60-minute match through the real engine, with
+  scripted walkers that buy hints in waves (the price reaches its 4× cap and falls back) and hunt
+  along the ring; the replay's economy view rebuilds every head, the pool and the price from its
+  signed verdicts.
+- **Limit.** It shows the verdicts follow from the logged inputs, not that the inputs are all
+  the phones sent: a batch dropped before the tick is not in the log (claim 10), and a refused
+  batch that never opened is not released, so its refusal is taken as given (exit 3). It trusts
+  the logged times (see "Gaps") and the `attested` flags (claim 1). Without the pins it checks
+  the bundle against its own keys, and a bundle made up under its own keys passes just as well.
+  It does not query NEAR; the web replay compares roots, heads and payouts with the chain. No
+  real v2 match exists yet; it has run on generated and test matches only.
+
+### 16. A dossier counts only matches the contract checked (after the upgrade)
+
+- **Mechanism.** Every registered player holds one NEP-171 token on the tail contract, `token_id`
+  = their account. Its metadata is computed on every read from the matches the contract settled:
+  End's payout after the replay held (survived, tagged or forfeit, tags landed, payout), or a
+  refund (End's replay failed, or `abort`), which is listed and counts for nothing. Each entry
+  keeps the match's last anchored log size and root, so it points at a log anyone can check
+  inclusions against. `media` is an SVG the contract draws from the record (`src/art.rs`).
+  `nft_transfer` and `nft_transfer_call` always refuse, and there are no approvals. A match
+  created with `requires: {min_matches, min_survived}` refuses `join_match` from a lower record.
+- **Enforced.** `contracts/tail/src/dossier.rs`, `art.rs`, `lib.rs` (`join_match`).
+- **Check.** `cd contracts/tail && cargo test`; `packages/brand/vectors/dossier.json` pins the
+  SVG in both builders. The replay's `/dossier/<account>` reads `get_dossier` and each entry's
+  `get_match`, and draws the card with the same builder.
+- **Limit.** It counts matches that passed the End replay, so it inherits claim 7's limit: a
+  match with fabricated contact counts. A group can farm records by playing many small matches
+  among themselves, and whoever holds a player account's key carries its record. With the local
+  test referee pinned, a record costs only that machine's cooperation. The relay and the app do
+  not set `requires` yet. The live contract has no dossiers.
+
+## Gaps the proofs leave
+
+- **The referee's clock.** Each tick's `now_ms` is the referee's word: the referee host's clock,
+  which the relay may hold back by any amount but not run more than 20 s ahead
+  (`crates/referee-wasi/src/cmd/tick.rs`). The engine requires it never to go back. `tail-verify`
+  replays with the logged times, so it cannot check them. On-chain the bounds are loose (after the
+  upgrade, except the first, which the live contract has too): `Start.start_ms` must be within 5
+  minutes of block time and `end_ms − start_ms` the match duration; hint `t_ms` must lie in
+  `[start_ms, end_ms]`; and the k-th checkpoint may land
+  only after `k × 30 s` of block time, while the referee anchors one per 60 s of its own clock. A
+  referee clock running more than about twice as fast as the chain therefore has a checkpoint
+  refused, which blocks the verdicts behind it until `abort` refunds the match. A clock that runs
+  slow is bounded only by `end_ms` plus the 15-minute grace. Within those bounds a skewed clock
+  can move dark timers, hint cooldowns and hint prices.
+- **Censorship.** The relay can drop a report before the referee sees it; nothing proves it, but
+  the phone's receipts list the missing report (claim 10). The referee can refuse a report with a
+  logged `Rejected{player, seq, hash, code}`. When it releases the refused batch, `tail-verify`
+  re-checks the refusal; when it does not (it says the batch never opened), the refusal is
+  "Withheld" and `tail-verify` exits 3 listing it. A refused report also shows on its phone, in
+  the next HUD's `rejected` and in the receipts. Sustained refusals count as dark time for that
+  player.
+
 ## Trust
 
 The relay account, the contract owner and the OutLayer project owner are the same testnet
@@ -408,31 +554,36 @@ account today, `tail-dev-a38d13.testnet`. That account is us.
 | Party                       | Trusted for                                                       | Not trusted for                                        | What bounds it                                                                                                                                                                                                                                                         |
 | --------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Phone (attested app)        | Honest sensor readings from a real device                         | Anything else                                          | App Attest (claims 1, 2). Each phone's report is checked against the other's (claim 4).                                                                                                                                                                                |
-| Relay (`apps/server`)       | Liveness: forwarding, ticking, paying gas                         | Secrets, positions, verdicts, money                    | Sealing (12), signed verdicts (8), the contract's checks. A stalled match refunds every stake by `abort` after 15 min.                                                                                                                                                 |
-| Referee                     | The rules, the secrecy of the ring and the trails, honest entries | Money (the contract checks order, chain, ring, proofs) | Code identity through the per-call attestation record (14). With the local test referee pinned now: nothing but the machine's operator.                                                                                                                                |
+| Relay (`apps/server`)       | Liveness: forwarding, ticking on time, paying gas                 | Secrets, positions, verdicts, money                    | Sealing (12), signed verdicts (8), the contract's checks, the phones' receipts and log monitor (9, 10). A stalled match refunds every stake by `abort` after 15 min. It runs on the same machine and account as the local test referee today.                          |
+| Referee                     | The rules, the secrecy of the ring and the trails, honest entries | Money (the contract checks order, chain, ring, proofs) | Code identity through the per-call attestation record (14). After End, re-execution from the released inputs (15). With the local test referee pinned now, during play: nothing but the machine's operator.                                                            |
 | Contract (`contracts/tail`) | Custody and settlement                                            | —                                                      | Public code and state. Its full-access key (ours) can redeploy it, and the owner key (the relay's account) can pin a different referee or VRF key for matches created afterwards. `get_match` shows each match's own keys, and the replay compares them with its pins. |
-| NEAR AI Cloud               | Flavour text                                                      | Facts, money                                           | The model sees one coarse fact (13). The signature shows who signed, not the hardware.                                                                                                                                                                                 |
+| NEAR AI Cloud               | Flavour text                                                      | Facts, money                                           | The model sees one coarse fact (13). The signature shows which key signed; NEAR AI's attestation report shows that key is held in Intel TDX with attested NVIDIA GPUs, as of when you check.                                                                           |
 | OutLayer                    | Running the published wasm in TDX, guarding the verdict key       | —                                                      | The attestation record per call. Its own governance is early: operator-held keys (their `NON_CUSTODIAL.md`).                                                                                                                                                           |
 
 ## Threat model
 
-| Attack                                                     | Result                                                                                                                                                                                                                                                |
-| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GPS spoofing app, simulator                                | The source flags refuse the batch. A modified app fails App Attest. Even with a fake position, a tag needs mutual radio contact.                                                                                                                      |
-| Relay enrols a software key to fake a player               | The v2 referee refuses a device without an Apple attestation, unless `ALLOW_UNATTESTED=1` (testnet), and then logs it as `attested: false` and the replay labels it. The relay owns the OutLayer project, so it can set that flag, but not hide it.   |
-| Relay forges a tag or a verdict                            | It cannot sign verdicts. With the local test referee, the relay's machine holds the verdict key, so it can sign, but an off-ring Tag or a wrong hint target is refunded at End (claim 7, after the upgrade).                                          |
-| Relay drops batches                                        | It can prevent tags but not create them. The phone finds the gap in its receipts (claim 10). Sustained drops count as dark for the protected player.                                                                                                  |
-| Relay replays or forks the sealed state                    | The referee refuses a blob whose last seq is not the caller's `last_seq`. Two forks give two verdicts with one seq, and the contract takes one.                                                                                                       |
-| Referee rewrites logged history                            | Refused on-chain once a covering root is anchored (claim 9, after the upgrade). The replay catches it from the roots either way.                                                                                                                      |
-| Wormhole: an accomplice relays both phones' Bluetooth live | Not closed: there is no distance bounding. It needs a two-way relay within about 30 s (claim 3) and fixes within 40 m plus accuracies, so one side's GPS must also be spoofed on an attested phone. The `relayed-live-token` scenario shows the hole. |
-| Replaying a recorded token later                           | Refused after about one epoch (claim 3), and contact must be mutual.                                                                                                                                                                                  |
-| Reading NEAR during play                                   | A Hint names only its asker, so the chain does not say who hunts whom (after the upgrade). A Tag or Forfeit still names both players as it lands, and its credit, set against earlier hint amounts, can show who was hunting the loser before.        |
-| Relay traffic analysis                                     | It learns what claim 12 lists: timing, sizes, refusal codes, who asked a hint, the number of new contacts per tick, and who carried whose batch.                                                                                                      |
-| Target kills the app or turns on airplane mode             | Dark rules: the hunter gets a 100 m cell after 45 s, and 180 s of total dark time forfeits the head. Mesh carry (off by default) would reduce honest dark time.                                                                                       |
-| Riding a car or train                                      | The speed rule freezes contact.                                                                                                                                                                                                                       |
-| Referee or relay stalls                                    | `abort` after 15 min of silence, or 15 min past `end_ms`, refunds every original stake (after the upgrade; the deployed contract refunds the current heads).                                                                                          |
-| Operator swaps the referee code on OutLayer                | The key survives new versions, so a swap is caught after the fact by the attestation record (claim 14), not prevented. This is bounded by OutLayer's governance.                                                                                      |
-| Owner pins another referee key                             | Only for matches created afterwards. Each match keeps its key, and the replay names the referee by NEAR's key for that match. This is how the local test referee is pinned now.                                                                       |
-| Prompt injection against the Handler                       | The model sees one coarse fact and has no say over money.                                                                                                                                                                                             |
-| Tracking players by their beacons                          | Tokens change every 15 s and are unlinkable without `K_p`. The Bluetooth address rotates on Apple's schedule. With mesh carry on, the mesh link tells two phones that some TAIL phone is in range.                                                    |
-| Sybil players                                              | Friends-only lobbies (`invites`). Public matches have no answer yet.                                                                                                                                                                                  |
+| Attack                                                     | Result                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GPS spoofing app, simulator                                | The source flags refuse the batch. A modified app fails App Attest. Even with a fake position, a tag needs mutual radio contact.                                                                                                                                                                                                       |
+| Relay enrols a software key to fake a player               | The v2 referee refuses a device without an Apple attestation, unless `ALLOW_UNATTESTED=1` (testnet), and then logs it as `attested: false` and the replay labels it. The relay owns the OutLayer project, so it can set that flag, but not hide it.                                                                                    |
+| Relay forges a tag or a verdict                            | With the enclave pinned it holds no verdict key. With the local test referee pinned (now), the relay's machine holds it and can sign anything: an off-ring Tag or a wrong hint target is refunded at End (claim 7, after the upgrade), but a ring-valid Tag with invented contact is paid, and only `tail-verify` shows it (claim 15). |
+| Referee invents contact for a tag of the right target      | The contract pays it (claim 7). `tail-verify` recomputes contact from the released batches and fails at that tick (claim 15), after End.                                                                                                                                                                                               |
+| Relay binds a player's account to an iPhone of its own     | The referee keeps the first device it enrolled for an account and moves it only with `rebind_sig` from that device's NEAR key (claim 1). The phone attests only for the account its build names.                                                                                                                                       |
+| Relay swaps or replays a Handler line                      | Lines are signed by the referee and sealed to the asker; each receipt is bound to one line of one hint and logged once; after End the phone compares its lines with the logged receipts (claim 13).                                                                                                                                    |
+| Relay drops batches                                        | It can prevent tags but not create them. The phone finds the gap in its receipts (claim 10). Sustained drops count as dark for the protected player.                                                                                                                                                                                   |
+| Relay replays or forks the sealed state                    | The referee refuses a blob whose last seq is not the caller's `last_seq`. Two forks give two verdicts with one seq, and the contract takes one.                                                                                                                                                                                        |
+| Referee rewrites logged history                            | Refused on-chain once a covering root is anchored (claim 9, after the upgrade). The replay catches it from the roots either way, and a phone that saw both roots in its HUDs raises a fork alarm with the signed evidence.                                                                                                             |
+| Referee or relay skews the clock                           | Not proven either way: `tail-verify` trusts the logged times. A fast referee clock stalls into a refund once it outruns the checkpoint spacing; a slow one is bounded by `end_ms` plus the grace (Gaps).                                                                                                                               |
+| Referee censors a player's reports                         | A logged refusal is re-checked by `tail-verify` when the batch is released, and listed as trusted when it is not; the phone sees it in its HUD and receipts (Gaps).                                                                                                                                                                    |
+| Wormhole: an accomplice relays both phones' Bluetooth live | Not closed: there is no distance bounding. It needs a two-way relay within about 30 s (claim 3) and fixes within 40 m plus accuracies, so one side's GPS must also be spoofed on an attested phone. The `relayed-live-token` scenario shows the hole.                                                                                  |
+| Replaying a recorded token later                           | Refused after about one epoch (claim 3), and contact must be mutual.                                                                                                                                                                                                                                                                   |
+| Reading NEAR during play                                   | A Hint names only its asker, so the chain does not say who hunts whom (after the upgrade). A Tag or Forfeit still names both players as it lands, and its credit, set against earlier hint amounts, can show who was hunting the loser before.                                                                                         |
+| Relay traffic analysis                                     | It learns what claim 12 lists: timing, upload sizes, refusal codes, who asked a hint, the number of new contacts per tick, and who carried whose batch. What it delivers to a phone is always 1072 bytes.                                                                                                                              |
+| Target kills the app or turns on airplane mode             | Dark rules: the hunter gets a 100 m cell after 45 s, and 180 s of total dark time forfeits the head. Mesh carry (off by default) would reduce honest dark time.                                                                                                                                                                        |
+| Riding a car or train                                      | The speed rule freezes contact.                                                                                                                                                                                                                                                                                                        |
+| Referee or relay stalls                                    | `abort` after 15 min of silence, or 15 min past `end_ms`, refunds every original stake (after the upgrade; the deployed contract refunds the current heads).                                                                                                                                                                           |
+| Operator swaps the referee code on OutLayer                | The key survives new versions, so a swap is caught after the fact by the attestation record (claim 14), not prevented. This is bounded by OutLayer's governance.                                                                                                                                                                       |
+| Owner pins another referee key                             | Only for matches created afterwards. Each match keeps its key, and the replay names the referee by NEAR's key for that match. This is how the local test referee is pinned now.                                                                                                                                                        |
+| Prompt injection against the Handler                       | The model sees one coarse fact and has no say over money.                                                                                                                                                                                                                                                                              |
+| Tracking players by their beacons                          | Tokens change every 15 s and are unlinkable without `K_p`. The Bluetooth address rotates on Apple's schedule. With mesh carry on, the mesh link tells two phones that some TAIL phone is in range.                                                                                                                                     |
+| Sybil players                                              | Friends-only lobbies (`invites`), and dossier-gated ones (`requires`, after the upgrade). App Attest does not stop one iPhone from making many accounts; the relay caps new enrolments at 3 per address and 100 in all per day. Public matches have no full answer.                                                                    |
