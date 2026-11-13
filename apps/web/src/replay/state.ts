@@ -16,7 +16,8 @@ export type Selection =
   | { kind: "contact"; hunter: number; target: number }
   | { kind: "summary" };
 
-export type SpeedMode = "film" | 1 | 10 | 60;
+/** "film" is the directed speed; a number is a fixed rate (the economy view's fast-forward sets its own). */
+export type SpeedMode = "film" | number;
 
 export interface PlayState {
   /** Match time, ms after the start. */

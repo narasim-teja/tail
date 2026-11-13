@@ -19,12 +19,12 @@ import type { BatchCheck } from "../verify/checks.ts";
 import { PINS } from "../verify/pins.ts";
 import { Caption } from "./Caption.tsx";
 import { type Replay, ReplayProvider, useMedia } from "./context.tsx";
+import { EconomySlot } from "./Economy.tsx";
 import { Finale } from "./Finale.tsx";
 import { Header } from "./Header.tsx";
 import { Inspector } from "./Inspector.tsx";
 import { Intro } from "./Intro.tsx";
 import { TrailMark } from "./icons.tsx";
-import { Roster } from "./Roster.tsx";
 import { ProgressLine } from "./States.tsx";
 import { Timeline } from "./Timeline.tsx";
 
@@ -177,7 +177,7 @@ export function Stage(props: { decoded: DecodedBundle; match: Match; batches: Ba
             <div className={cn("flex flex-col gap-3", selection && "invisible")}>
               <Header place={place} compact />
               {/* At the end the standings carry everyone; the strip would only repeat them. */}
-              {!ended && <Roster compact />}
+              {!ended && <EconomySlot compact />}
             </div>
           ) : (
             <div
@@ -186,7 +186,7 @@ export function Stage(props: { decoded: DecodedBundle; match: Match; batches: Ba
                 selection && "pr-[27rem]",
               )}
             >
-              <Roster compact={false} />
+              <EconomySlot compact={false} />
               <Header place={place} compact={false} />
             </div>
           )}

@@ -14,6 +14,18 @@ stake, what they won or lost, and how each one went out, with Watch again and Wh
 Space pauses, the timeline scrubs, a tick jumps to its moment, a player or line opens the
 details sheet, Esc closes it.
 
+**Economy** (under the roster, or `&view=economy`) swaps the roster for the match's money,
+synced to the playhead: the hint pool, the hint price, every player's head on one shared scale
+(small multiples; the player you pick is persimmon, everyone else neutral), and each transfer as
+it lands (winner ← loser's head + the hint credit the pool owed the loser, then End's payout of the
+pool to the survivors), each with its verdict's mark. **Whole match in 1 min** plays the match at
+duration ÷ 1 minute (60× for the economy fixture). Every figure comes from the signed verdicts in
+the bundle, applied in order as the contract applies them (`src/model/economy.ts`); there is no
+other data path. The price chart is the demand multiplier (1× to 4× the base price) rebuilt from
+each Hint verdict's `tMs` with `demandBps`/`recentHints` from `@tail/protocol`, with a dot for what
+each hint actually paid (its amount ÷ the base price). A bundle whose Hint verdicts carry no time
+(v1) shows hints bought per 5 minutes instead.
+
 Pages with no film to play (loading, private, not finished, missing, broken) carry the Chase,
 the brand's ambient scene: the Trail mark tailing a target round a dotted zone, drawn from the
 same `@tail/brand` geometry as the phone app. Reduced motion holds it still and skips the
@@ -47,6 +59,8 @@ The fixture is a generated match, not a real one (see below). Other URL options:
 | `/?fixture=boston-common-tampered-log` | history rewritten behind a checkpoint (consistency fails)     |
 | `/?fixture=boston-common-refunded`     | signed, but End names a hint's target wrongly: refunded       |
 | `/?fixture=boston-common-v1`           | the same match as recorded before protocol v2 (read only)     |
+| `/?fixture=boston-common-economy`      | 12 players, 60 minutes, from the Rust engine (see below)      |
+| `&view=economy`                        | open on the economy view                                      |
 | `/?presence=<proof>` or `/?presence`   | the presence proof page: check one, or paste one              |
 | `/?match=<32 hex>`                     | a real match from the relay's `GET /replay/:id`               |
 | `&relay=<url>`                         | which relay to read (default `VITE_RELAY_URL`, else `/relay`) |
@@ -168,6 +182,23 @@ chained and logged like the honest match, but End names Bo as the target of Eli'
 the settlement replay finds "event 0: a hint was not about its asker's target" and every stake
 is refunded; and **v1**, the same match in the pre-v2 format. The tests also build one whose
 second Tag is signed for Dee, who was hunting Eli, which the replay refunds as off the ring.
+
+### The economy fixture
+
+`boston-common-economy` is not built by `fixture.ts`: it is a 12-player, 60-minute match played
+through the real engine (`referee-core`) by `crates/referee-verify/examples/economy-bundle.rs`,
+with `referee-sim`'s phones (real tokens, hash chains and App Attest assertions). Scripted walkers
+wander the Common's paths, buy hints in four waves (so the price climbs to its 4× cap in the third
+and falls back), and hunt along the ring: a hunter closes in, shadows its target until the lock
+fills and strikes. One phone goes dark and one player walks out of the zone; both forfeit. Seven
+tags, two forfeits, three survivors. `scripts/economy-fixture.ts` (run by `make-fixture.ts`) needs
+`cargo`; it plays the match again only when the example binary is newer than the file (about a
+minute in a debug build), and skips it without cargo. Its Handler lines are templates, so their
+receipts are unsigned. Check it the way you would a real match:
+
+```sh
+cargo run -q -p referee-verify --bin tail-verify -- --strict apps/web/public/fixtures/boston-common-economy.json
+```
 
 **The referee, VRF and Handler-model keys in the fixture are public test keys** derived from
 strings in the script. They were never used on NEAR, the bundle names no transactions, and the page labels it

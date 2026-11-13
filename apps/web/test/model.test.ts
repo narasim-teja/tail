@@ -54,9 +54,10 @@ describe("the match model", () => {
   test("moves heads like the contract: the stake is conserved, the winner ends with it", () => {
     const end = snapshotAt(m, m.durationMs);
     expect(end.heads.reduce((a, b) => a + b, 0n)).toBe(m.stake * BigInt(m.players.length));
-    // Eli paid 0.25 for a hint about Dee after taking Ana's head; End credits it to Dee.
-    expect(money(end.heads[m.players.findIndex((p) => p.name === "Eli")] ?? 0n, 6)).toBe("19.75");
-    expect(money(end.heads[m.players.findIndex((p) => p.name === "Dee")] ?? 0n, 6)).toBe("5.25");
+    // Eli paid 0.3125 for a hint about Dee after taking Ana's head (a Bearing at 1.25x: one hint
+    // in the 5 minutes before); End credits it to Dee.
+    expect(money(end.heads[m.players.findIndex((p) => p.name === "Eli")] ?? 0n, 6)).toBe("19.6875");
+    expect(money(end.heads[m.players.findIndex((p) => p.name === "Dee")] ?? 0n, 6)).toBe("5.3125");
     expect(end.alive.filter(Boolean).length).toBe(2);
     expect(end.pool).toBe(0n);
   });

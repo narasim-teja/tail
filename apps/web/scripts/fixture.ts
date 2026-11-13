@@ -48,6 +48,7 @@ import {
   playersHash,
   type ReplayBundle,
   type ReplayBundleV2,
+  recentHints,
   ringCommit,
   type Sighting,
   type SignedVerdict,
@@ -634,6 +635,8 @@ function generate(opts: Options) {
   // v2: hint money sits in the pool, owed to each target until it goes out or the match ends.
   const pending = new Array<bigint>(N).fill(0n);
   const hintTargets: number[] = [];
+  /** When each hint was charged (referee clock), for its demand price. */
+  const hintTimes: bigint[] = [];
   /** Moves the pool's debt to `loser` onto their head; the verdict carries it as `credit`. */
   const creditOf = (loser: number) => {
     const credit = V2 ? (pending[loser] as bigint) : 0n;
@@ -772,7 +775,11 @@ function generate(opts: Options) {
         const hunter = opts.forge === "tag" && tagsSigned === 2 ? idx("dee") : p;
         verdict({ kind: "Tag", hunter, target: tg, credit }, call, { kind: "Tag", hunter, target: tg });
       } else {
-        const price = hintPrice(STAKE, action.hint as HintKind);
+        // v2 prices follow demand over the last 5 minutes, on the referee clock (clamped to the
+        // end like the referee does); v1 hints paid the base price.
+        const chargedMs = BigInt(START_MS + Math.min(now, DURATION_MS));
+        const price = hintPrice(STAKE, action.hint as HintKind, V2 ? recentHints(hintTimes, chargedMs) : 0);
+        hintTimes.push(chargedMs);
         const a = pos(p, t / 1000);
         const b = pos(tg, t / 1000);
         const value = action.hint === HintKind.Near ? Number(dist(a, b) <= HINT_NEAR_M) : bearing8(a, b);
@@ -781,7 +788,7 @@ function generate(opts: Options) {
         else heads[tg] = (heads[tg] as bigint) + price;
         hintTargets.push(tg);
         const hintId = nextHintId++;
-        verdict({ kind: "Hint", from: p, amount: price, hintId, hint: action.hint }, call, {
+        verdict({ kind: "Hint", from: p, amount: price, hintId, hint: action.hint, tMs: chargedMs }, call, {
           kind: "Hint",
           from: p,
           to: tg,
