@@ -23,4 +23,15 @@ describe("referee box key", () => {
       checkedRefereeBox({ refereePk: otherRef, refereeBoxPk: boxPk, boxPkSig: sig }, refPk),
     ).toThrow("another referee");
   });
+
+  test("is checked by strict ed25519, as every other referee signature is", () => {
+    // A small-order key with a trivial signature passes the permissive (ZIP 215) check for any
+    // message; RFC 8032's strict check, as the referee's verify_strict, refuses it.
+    const smallOrder = new Uint8Array(32);
+    smallOrder[0] = 1;
+    const trivial = concat(smallOrder, new Uint8Array(32));
+    expect(() =>
+      checkedRefereeBox({ refereePk: smallOrder, refereeBoxPk: boxPk, boxPkSig: trivial }, smallOrder),
+    ).toThrow("not signed");
+  });
 });
