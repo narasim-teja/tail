@@ -110,3 +110,48 @@ describe("verdicts", () => {
     expect(env.store.pendingVerdicts(m.id)).toEqual([]);
   });
 });
+
+describe("finality", () => {
+  /** A relay whose loop the test steps itself. */
+  function stepped() {
+    const env = setup({ tickMs: 60_000 });
+    env.matches.stop();
+    const steps = async (id: string) => {
+      for (let k = 0; k < 20; k++) if (!(await env.matches.step(id))) return true;
+      return false;
+    };
+    return { env, steps };
+  }
+
+  test("a verdict seen only in an optimistic block that is then dropped is sent again", async () => {
+    const { env, steps } = stepped();
+    // Start lands in a block that optimistic reads show and the chain then drops.
+    env.chain.nextApplyUnfinal = true;
+    const m = await started(env);
+    expect((await env.chain.getMatch(m.id))?.seq).toBe(1);
+    expect((await env.chain.getMatch(m.id, "final"))?.seq).toBe(0);
+    env.chain.dropUnfinal();
+    // The relay never counted Start as applied, so it sends it again and the match goes on.
+    expect(await steps(m.id)).toBe(true);
+    expect(env.store.match(m.id)?.phase).toBe("ended");
+    expect(appliedSeqs(env)).toEqual([1, 2, 3]);
+    expect(env.store.pendingVerdicts(m.id)).toEqual([]);
+  });
+
+  test("the reveal waits until End is final", async () => {
+    const { env } = stepped();
+    env.referee.overAt = 1;
+    const m = await started(env);
+    // Tick 1 is over and has no verdict; End goes out in an optimistic block.
+    env.chain.nextApplyUnfinal = true;
+    expect(await env.matches.step(m.id)).toBe(true);
+    expect(env.store.match(m.id)?.phase).toBe("ending");
+    expect(env.store.verdicts(m.id).at(-1)?.kind).toBe("End");
+    expect(env.store.match(m.id)?.reveal).toBeNull();
+    env.chain.dropUnfinal();
+    // The next step sends End again and, once it is final, declassifies the match.
+    expect(await env.matches.step(m.id)).toBe(false);
+    expect(env.store.match(m.id)?.phase).toBe("ended");
+    expect(appliedSeqs(env).at(-1)).toBe(2);
+  });
+});

@@ -244,10 +244,12 @@ started, and never while it is still running, because OutLayer calls take 2–11
 on one sealed state would fork it. Each step:
 
 1. **Flush verdicts.** Read `get_match().seq` (optimistic finality, so the read sees the
-   relay's own last apply), mark everything up to it applied, submit the rest
-   in seq order (≤ 20 per `apply`). After an unclear result (timeout, lost answer) the next pass
-   reads the seq again before sending anything, so no verdict is submitted twice. The loop does
-   not tick while a verdict is unapplied: the referee refuses a state ahead of `last_seq`.
+   relay's own last apply) and submit every stored verdict after it in seq order (≤ 20 per
+   `apply`). After an unclear result (timeout, lost answer) the next pass reads the seq again
+   before sending anything, so no verdict is submitted twice. A verdict counts as applied only
+   once a `final` read shows it: one in an optimistic block that is dropped is sent again. The
+   loop does not tick while a verdict is unsent: the referee refuses a state ahead of
+   `last_seq`. After End, nothing is declassified until End is final.
 2. **Voice hints.** For each hint the referee issued (an opaque blob sealed to the referee), call
    `voice` with the state and the blob; push the sealed line to the asker only; keep the answer's
    sealed `receipt` for the next tick, and its `hint_id` and `signed_text` for the replay.

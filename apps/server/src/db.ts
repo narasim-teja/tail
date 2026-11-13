@@ -967,14 +967,15 @@ export class Store {
     for (const s of seqs) q.run(txHash, matchId, s);
   }
 
-  /** Everything up to `seq` is on chain (read back from get_match().seq). */
+  /**
+   * Everything up to `seq` is final on chain (get_match().seq read at `final` finality). A verdict
+   * seen only in an optimistic block stays pending: that block can be dropped, and a verdict
+   * marked applied would then never be sent again.
+   */
   markApplied(matchId: string, seq: number, nowMs: number) {
-    this.tx(() => {
-      this.db
-        .query("UPDATE verdicts SET applied_ms = ? WHERE match_id = ? AND seq <= ? AND applied_ms IS NULL")
-        .run(nowMs, matchId, seq);
-      this.setLastSeq(matchId, seq);
-    });
+    this.db
+      .query("UPDATE verdicts SET applied_ms = ? WHERE match_id = ? AND seq <= ? AND applied_ms IS NULL")
+      .run(nowMs, matchId, seq);
   }
 
   // ── Log ──────────────────────────────────────────────────────────────────────────

@@ -606,6 +606,9 @@ export class Matches {
       this.d.log.info({ matchId, verdicts: r.verdicts.map((v) => `${v.v.seq}:${v.v.body.kind}`) }, "end");
     }
     if (!(await this.flushVerdicts(matchId))) return false;
+    // The match's secrets are released only once End is final on chain: until then the block
+    // holding it could be dropped, and End would have to go again.
+    if (this.d.store.pendingVerdicts(matchId).length) return false;
     m = this.d.store.match(matchId);
     if (!m?.reveal) {
       const d = await this.d.referee.declassify(idBytes(matchId), this.d.store.logSealed(matchId));
@@ -756,7 +759,9 @@ export class Matches {
   /**
    * Submits stored verdicts not yet on chain, in seq order. The chain's own seq decides what is
    * left to send, so retrying after an unclear result (timeout, lost answer) is always safe.
-   * Returns true when nothing is left pending.
+   * Returns true when nothing is left to send. A verdict counts as applied (no longer pending)
+   * only once a `final` read shows it; until then each flush checks it again, so one in an
+   * optimistic block that was dropped is sent again rather than leaving a gap.
    */
   async flushVerdicts(matchId: string): Promise<boolean> {
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -764,9 +769,13 @@ export class Matches {
       if (!pending.length) return true;
       const chain = await this.d.chain.getMatch(matchId);
       if (!chain) throw new Error("match vanished from chain");
-      this.d.store.markApplied(matchId, chain.seq, this.now());
+      this.d.store.setLastSeq(matchId, chain.seq);
       const left = pending.filter((v) => v.seq > chain.seq);
-      if (!left.length) return true;
+      if (!left.length) {
+        const final = await this.d.chain.getMatch(matchId, "final");
+        if (final) this.d.store.markApplied(matchId, final.seq, this.now());
+        return true;
+      }
       if (left[0]?.seq !== chain.seq + 1) {
         this.d.log.error({ matchId, chainSeq: chain.seq, next: left[0]?.seq }, "verdict gap; cannot apply");
         return false;

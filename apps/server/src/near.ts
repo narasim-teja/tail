@@ -158,7 +158,11 @@ export interface Chain {
   createMatch(cfg: MatchCfg): Promise<string>;
   /** Freezes joins and leaves; the referee `start` follows. Host (relay) only. */
   lockLobby(matchId: string): Promise<void>;
-  getMatch(matchId: string): Promise<ChainMatch | null>;
+  /**
+   * The match as of the latest block (`optimistic`, the default) or the latest final one. An
+   * optimistic block can still be dropped; only a `final` read says a verdict is there for good.
+   */
+  getMatch(matchId: string, finality?: Finality): Promise<ChainMatch | null>;
   getRoots(matchId: string): Promise<ChainRoots | null>;
   getHeads(matchId: string): Promise<string[] | null>;
   getBalance(accountId: string, token: string): Promise<bigint>;
@@ -175,6 +179,8 @@ export interface Chain {
    */
   joinAsGhost(accountId: string, nearSeed: Uint8Array, matchId: string): Promise<void>;
 }
+
+export type Finality = "optimistic" | "final";
 
 /** The account exists and is not one this relay created for this key. */
 export class AccountTakenError extends Error {
@@ -227,15 +233,20 @@ export class NearChain implements Chain {
     this.relay = new Account(o.relayAccount, this.provider, o.relayPrivateKey as KeyPairString);
   }
 
-  // Optimistic finality: the loop reads get_match().seq right after its own apply, and a
-  // `final` read lags a few blocks, which would resend verdicts the chain already has.
-  private view<T>(method: string, args: Record<string, unknown>, contractId = this.o.contract): Promise<T> {
+  // Optimistic finality by default: the loop reads get_match().seq right after its own apply, and
+  // a `final` read lags a few blocks, which would resend verdicts the chain already has.
+  private view<T>(
+    method: string,
+    args: Record<string, unknown>,
+    contractId = this.o.contract,
+    finality: Finality = "optimistic",
+  ): Promise<T> {
     return deadline(
       this.provider.callFunction({
         contractId,
         method,
         args,
-        blockQuery: { finality: "optimistic" },
+        blockQuery: { finality },
       }) as Promise<T>,
       this.o.deadlines?.viewMs ?? VIEW_DEADLINE_MS,
       method,
@@ -355,8 +366,8 @@ export class NearChain implements Chain {
     });
   }
 
-  getMatch(matchId: string) {
-    return this.view<ChainMatch | null>("get_match", { match_id: matchId });
+  getMatch(matchId: string, finality: Finality = "optimistic") {
+    return this.view<ChainMatch | null>("get_match", { match_id: matchId }, this.o.contract, finality);
   }
 
   getRoots(matchId: string) {

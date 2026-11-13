@@ -53,7 +53,15 @@ import {
   writeLogEntry,
 } from "@tail/protocol";
 import type { Store } from "../src/db.ts";
-import type { ApplyProof, Chain, ChainMatch, ChainRoots, ContractConfig, MatchCfg } from "../src/near.ts";
+import type {
+  ApplyProof,
+  Chain,
+  ChainMatch,
+  ChainRoots,
+  ContractConfig,
+  Finality,
+  MatchCfg,
+} from "../src/near.ts";
 import {
   type DeclassifyBatchesInput,
   type DeclassifyBatchesResult,
@@ -207,9 +215,34 @@ export class FakeChain implements Chain {
     m.locked_until_ms = Date.now() + 600_000;
     this.locked.push(matchId);
   }
-  async getMatch(id: string) {
+  async getMatch(id: string, finality: Finality = "optimistic") {
+    if (finality === "final" && this.unfinal?.id === id) return structuredClone(this.unfinal.match);
     const m = this.matches.get(id);
     return m ? structuredClone(m) : null;
+  }
+  /**
+   * The next apply lands only in an optimistic block: `optimistic` reads show it, `final` reads
+   * do not, and `dropUnfinal()` drops it as a fork would.
+   */
+  nextApplyUnfinal = false;
+  private unfinal: {
+    id: string;
+    match: ChainMatch;
+    tip: { digest: Uint8Array; size: number; root: Uint8Array } | undefined;
+    roots: ChainRoots | undefined;
+    applied: number;
+  } | null = null;
+  /** The optimistic block of the last unfinal apply is dropped: the chain is as before it. */
+  dropUnfinal() {
+    const u = this.unfinal;
+    if (!u) throw new Error("no unfinal apply to drop");
+    this.matches.set(u.id, u.match);
+    if (u.tip) this.chainTip.set(u.id, u.tip);
+    else this.chainTip.delete(u.id);
+    if (u.roots) this.roots.set(u.id, u.roots);
+    else this.roots.delete(u.id);
+    this.applied.length = u.applied;
+    this.unfinal = null;
   }
   async getRoots(id: string): Promise<ChainRoots> {
     return structuredClone(this.roots.get(id) ?? { checkpoints: [], final_root: null });
@@ -259,6 +292,17 @@ export class FakeChain implements Chain {
       seqs.set(id, v.seq);
     }
     this.proofs.push(proofs);
+    if (this.nextApplyUnfinal) {
+      this.nextApplyUnfinal = false;
+      const id = toHex((decoded[0] as { v: { matchId: Uint8Array } }).v.matchId);
+      this.unfinal = {
+        id,
+        match: structuredClone(this.matches.get(id) as ChainMatch),
+        tip: this.chainTip.get(id),
+        roots: structuredClone(this.roots.get(id)),
+        applied: this.applied.length,
+      };
+    }
     for (const { raw, v } of decoded) {
       const id = toHex(v.matchId);
       const m = this.matches.get(id) as ChainMatch;
