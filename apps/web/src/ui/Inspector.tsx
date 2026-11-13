@@ -703,8 +703,8 @@ function ContactBody({ hunter, target }: { hunter: number; target: number }) {
       </p>
       <Section label="Windows in the last two minutes">
         <p className="mb-2 text-[0.8125rem] leading-snug text-text-2">
-          A presence proof shows two phones were near each other in a window, and anyone can check it against
-          NEAR alone.
+          A presence proof shows the referee logged these two phones near each other in a window, under a root
+          NEAR anchored, and anyone can check it against NEAR alone.
         </p>
         <ul>
           {windows.map((c) =>

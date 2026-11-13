@@ -1,6 +1,7 @@
-// The presence proof page (`/?presence=<proof>`, or `/?presence` to paste one): checks that two
-// phones were near each other in one fifteen-second window, against the pinned contract alone.
-// The anchored roots and the player list are read from NEAR over RPC; nothing comes from a relay.
+// The presence proof page (`/?presence=<proof>`, or `/?presence` to paste one): checks that the
+// referee logged two phones near each other in one fifteen-second window, under a root the
+// pinned contract anchored, against that contract alone. The anchored roots, the player list and
+// the referee key are read from NEAR over RPC; nothing comes from a relay.
 
 import { EPOCH_MS, encodeLogEntry, type PresenceProof, toHex } from "@tail/protocol";
 import { useCallback, useEffect, useState } from "react";
@@ -12,6 +13,8 @@ import { toB64 } from "../verify/bundle.ts";
 import { type InclusionAnswer, nearReader } from "../verify/chain.ts";
 import { PINS } from "../verify/pins.ts";
 import { checkPresence, fromPresenceParam, type PresenceCheck, parsePresence } from "../verify/presence.ts";
+import { signerOf } from "../verify/signer.ts";
+import { Chip } from "./Header.tsx";
 import { ProofLine } from "./sheet.tsx";
 
 type Result =
@@ -80,7 +83,7 @@ export function PresencePage({ initial }: { initial: string }) {
     <main className="min-h-dvh bg-dusk px-4 py-10 sm:px-6">
       <div className="mx-auto w-full max-w-[34rem]">
         <h1 className="text-[1.75rem] font-bold leading-tight tracking-[-0.01em] text-balance [font-stretch:104%]">
-          Were these two phones near each other?
+          Did the referee log these two phones near each other?
         </h1>
         <p className="mt-3 text-[1rem] leading-relaxed text-text-2 text-pretty">
           A presence proof is one contact from a TAIL match log with its path to a root NEAR stored. This page
@@ -118,7 +121,7 @@ export function PresencePage({ initial }: { initial: string }) {
   );
 }
 
-function Outcome({
+export function Outcome({
   result,
   nearCheck,
   onAskNear,
@@ -145,13 +148,15 @@ function Outcome({
     );
   }
   const start = chain.kind === "found" ? chain.match.start_ms : null;
+  // Which referee signed the root, from NEAR's key for the match, as on the replay.
+  const testReferee = signerOf(false, chain, PINS) === "local";
   const from = start === null ? null : start + check.epoch * EPOCH_MS;
   const at = (ms: number) =>
     new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
   return (
     <>
       <h2 className="text-[1.375rem] font-bold leading-snug">
-        {displayName(a)} and {displayName(b)} were near each other
+        The referee logged {displayName(a)} and {displayName(b)} near each other
       </h2>
       <p className="numeral mt-1.5 text-[0.9375rem] text-text-2">
         {from === null
@@ -159,6 +164,11 @@ function Outcome({
           : `${day(from)}, ${at(from)} to ${at(from + EPOCH_MS)}`}{" "}
         · match {toHex(proof.matchId).slice(0, 8)}
       </p>
+      {testReferee && (
+        <p className="mt-2">
+          <Chip>Test referee</Chip>
+        </p>
+      )}
       <ul className="mt-5 rounded-3xl bg-surface px-5 py-2">
         <ProofLine
           check="pass"
@@ -169,7 +179,7 @@ function Outcome({
         </ProofLine>
         <ProofLine
           check="info"
-          detail="No new signature: the proof is as strong as the referee's signature on that root, which NEAR checked before storing it. The contact itself is the referee's: the phones' sightings behind it stay sealed."
+          detail={`No new signature: the proof is as strong as the referee's signature on that root, which NEAR checked before storing it. The contact itself is the referee's: the phones' sightings behind it stay sealed.${testReferee ? " NEAR's referee key for this match is the local test referee's: the same code, run on the relay's computer, not in an enclave." : ""}`}
         >
           What it rests on
         </ProofLine>

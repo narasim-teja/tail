@@ -2,10 +2,17 @@
 // glyph and title must follow from what its check showed.
 
 import { describe, expect, test } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
 import { forgedFixture, makeFixtures } from "../scripts/fixture.ts";
+import { displayName } from "../src/model/match.ts";
 import { Finale } from "../src/ui/Finale.tsx";
 import { Header } from "../src/ui/Header.tsx";
 import { Inspector } from "../src/ui/Inspector.tsx";
+import { Outcome } from "../src/ui/Presence.tsx";
+import { anchoredRoots } from "../src/verify/history.ts";
+import { PINS } from "../src/verify/pins.ts";
+import { checkPresence, presenceFor } from "../src/verify/presence.ts";
+import { chainFor } from "./chain.ts";
 import { html, replayOf, row, text } from "./render.tsx";
 
 const fx = makeFixtures();
@@ -153,5 +160,36 @@ describe("NEAR unreachable is not NEAR saying no", () => {
     expect(text(h)).toContain(
       "NEAR has no match with this id, so it holds no root to check the path against.",
     );
+  });
+});
+
+describe("the presence page", () => {
+  const d = replayOf(fx.full);
+  const chain = chainFor(d.decoded);
+  const at = d.match.contacts[10]?.logIndex as number;
+  const proof = presenceFor(d.decoded, at, anchoredRoots(d.decoded, chain).roots);
+  if (!proof) throw new Error("no proof");
+  const outcome = (c: typeof chain) =>
+    text(
+      renderToStaticMarkup(
+        <Outcome
+          result={{ kind: "done", proof, chain: c, check: checkPresence(proof, c, PINS.contract) }}
+          nearCheck={null}
+          onAskNear={() => {}}
+        />,
+      ),
+    );
+
+  test("says the referee logged the contact, and names the test referee when NEAR's key is its", () => {
+    const [a, b] = proof.accounts.map(displayName);
+    const plain = outcome(chain);
+    expect(plain).toContain(`The referee logged ${a} and ${b} near each other`);
+    expect(plain).not.toContain("Test referee");
+    const local = outcome({
+      ...chain,
+      match: { ...chain.match, referee_pk: PINS.localRefereePks[0] as string },
+    });
+    expect(local).toContain("Test referee");
+    expect(local).toContain("NEAR's referee key for this match is the local test referee's");
   });
 });
