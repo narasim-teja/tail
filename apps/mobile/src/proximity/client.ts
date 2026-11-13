@@ -54,7 +54,7 @@ import { type Confirmed, planChain } from "./chain";
 import { currentEpoch, EpochTimer, realTimers, type Timers } from "./epoch";
 import { FIX_MAX_AGE_MS, FixCollector } from "./fixes";
 import { type HudMessage, openSignedHudBytes, type Seat, type SocketState } from "./hud";
-import { type LogFork, LogMonitor, type MonitorRecord } from "./monitor";
+import { type LogFork, LogMonitor, type MonitorRecord, type RelayFault } from "./monitor";
 import { Outbox, Uploader, type UploadState } from "./outbox";
 import type { Report } from "./receipts";
 import type { CarryKey, CarryReply, SignedRequest } from "./relay";
@@ -180,6 +180,8 @@ export interface ProximityStatus {
   noPocketSensor: boolean;
   /** The referee committed to two logs that do not fit together; kept for good once found. */
   logFork: LogFork | null;
+  /** The relay's newest consistency proof that did not verify; the monitor keeps asking. */
+  relayFault: RelayFault | null;
 }
 
 /** Things the game may want to tell the player about; the words are the game's. */
@@ -194,7 +196,9 @@ export type ProximityNotice =
   /** Back in the foreground after `seconds` in which no one could hear this phone. */
   | { kind: "invisible"; seconds: number }
   /** The referee's log roots do not fit together (monitor.ts); `fork` is the evidence. */
-  | { kind: "log-forked"; fork: LogFork };
+  | { kind: "log-forked"; fork: LogFork }
+  /** The relay sent a consistency proof that does not verify (monitor.ts); it is asked again later. */
+  | { kind: "relay-bad-proof"; fault: RelayFault };
 
 /** Your own reports offered to the mesh at once while offline, oldest first. */
 const CARRY_AHEAD = 3;
@@ -314,6 +318,7 @@ export class ProximityClient {
           this.refresh();
         },
         onFork: (fork) => this.on.notice.emit({ kind: "log-forked", fork }),
+        onRelayFault: (fault) => this.on.notice.emit({ kind: "relay-bad-proof", fault }),
         now: this.now,
         timers: this.timers,
       },
@@ -501,6 +506,7 @@ export class ProximityClient {
       carry: this.mesh?.status ?? { kind: "off", why: this.d.carry.kind === "off" ? this.d.carry.why : "" },
       pendingActions: this.unsentActions().length,
       logFork: this.monitor.fork,
+      relayFault: this.monitor.relayFault,
     };
   }
 

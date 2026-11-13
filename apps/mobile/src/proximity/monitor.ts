@@ -10,13 +10,16 @@
 //
 // Fetches are rate-limited: one at a time, started by a HUD, an anchor read or a retry. HUDs that
 // arrive meanwhile only move the target, so the phone catches up with one proof from the last
-// verified root to the newest. The relay only supplies proofs: a fetch that fails, or an answer
-// that is not a proof, is retried later and counts for nothing.
+// verified root to the newest.
 //
-// A fork stops the monitor and is kept as evidence: the signed HUD bytes exactly as the referee
-// signed them (both, or the HUD and the anchored root) and the proof that failed. Two signed roots
-// that contradict by size alone convict the referee on their own. A proof that fails to verify
-// could in principle be the relay lying, which `check` in forkJson says plainly.
+// Who is to blame decides what is final. A fork is two roots the referee committed to (two signed
+// HUDs, or a signed HUD and an anchor on NEAR) that contradict each other with no help from the
+// relay: a later log that is smaller, or one size with two roots. That convicts the referee on its
+// own, so the monitor stops there and keeps the signed bytes as evidence. A consistency proof that
+// does not verify convicts nobody but the relay that sent it: the relay is untrusted, and one bad
+// answer must not be able to raise the referee alarm. It is kept as relay-fault evidence, shown
+// softly, and the same check is asked again later with a growing wait, so monitoring goes on.
+// A relay it can't reach is retried the same way and counts for nothing.
 
 import { type AnchoredRoot, equal, type Hud, toHex, verifyConsistency } from "@tail/protocol";
 import { toB64 } from "../lib/b64";
@@ -36,14 +39,37 @@ export interface Anchor {
   root: Uint8Array;
 }
 
-/** Two roots the referee committed to that are not one growing log. */
+/** The second root in a check: a later signed HUD, or a root anchored on NEAR. */
+export type OtherRoot = { kind: "hud"; hud: SignedRoot } | { kind: "anchor"; anchor: Anchor };
+
+/**
+ * Two roots the referee committed to that contradict each other by themselves: a later signed
+ * log that is smaller, or one log size with two roots. No relay answer is part of it.
+ */
 export interface LogFork {
   atMs: number;
   /** The signed HUD root the phone had verified (or last took in). */
   hud: SignedRoot;
   /** What contradicts it: a later signed HUD, or a root anchored on NEAR. */
-  other: { kind: "hud"; hud: SignedRoot } | { kind: "anchor"; anchor: Anchor };
-  /** The relay's consistency proof between the two, which did not verify; empty when the sizes alone contradict. */
+  other: OtherRoot;
+}
+
+/**
+ * The relay answered a consistency check with a proof that does not verify. Either the relay
+ * lied or the referee's log really did change; the proof alone cannot say which, so this blames
+ * the relay and the check is asked again. The newest such answer is kept, with how many there were.
+ */
+export interface RelayFault {
+  atMs: number;
+  /** Bad proofs so far in this match. */
+  count: number;
+  /** True until a later check passes; the evidence stays either way. */
+  outstanding: boolean;
+  hud: SignedRoot;
+  other: OtherRoot;
+  from: number;
+  to: number;
+  /** The relay's proof, exactly as it sent it. */
   proof: Uint8Array[];
 }
 
@@ -57,22 +83,41 @@ export interface MonitorRecord {
   anchored: number;
   /** Set once; the monitor stops there. */
   fork: LogFork | null;
+  /** The relay's newest proof that did not verify; the monitor carries on. */
+  relayFault: RelayFault | null;
 }
 
-export const freshMonitor = (): MonitorRecord => ({ verified: null, pending: null, anchored: 0, fork: null });
+export const freshMonitor = (): MonitorRecord => ({
+  verified: null,
+  pending: null,
+  anchored: 0,
+  fork: null,
+  relayFault: null,
+});
 
 export interface MonitorDeps {
   /** The relay's consistency proof from size `from` to `to`, unverified. Throws when it can't be had. */
   consistency: (from: number, to: number) => Promise<Uint8Array[]>;
-  /** The record changed outside `onHud` (a proof checked, an anchor checked, a fork): save it. */
+  /** The record changed outside `onHud` (a proof checked, an anchor checked, a fork, a fault): save it. */
   changed: () => void;
   onFork: (fork: LogFork) => void;
+  /** The relay sent a proof that does not verify; the check is asked again later. */
+  onRelayFault?: (fault: RelayFault) => void;
   now: () => number;
   timers: Timers;
 }
 
-/** How long after a failed fetch the monitor asks again, unless a HUD starts it sooner. */
+/**
+ * How long after a failed check the monitor asks again, unless a HUD starts it sooner. Each
+ * failure in a row doubles the wait, up to MONITOR_RETRY_MAX_MS: a relay that keeps sending bad
+ * proofs, or stays down, is asked less and less often but never given up on.
+ */
 export const MONITOR_RETRY_MS = 15_000;
+export const MONITOR_RETRY_MAX_MS = 4 * 60_000;
+
+/** The wait before retry number `failures` (1 for the first). */
+export const retryDelay = (failures: number) =>
+  Math.min(MONITOR_RETRY_MS * 2 ** Math.max(0, failures - 1), MONITOR_RETRY_MAX_MS);
 
 /** One check: is the log of `from` with `oldRoot` a prefix of the log of `to` with `newRoot`? */
 interface Job {
@@ -81,7 +126,7 @@ interface Job {
   oldRoot: Uint8Array;
   newRoot: Uint8Array;
   base: SignedRoot;
-  other: LogFork["other"];
+  other: OtherRoot;
 }
 
 export class LogMonitor {
@@ -90,6 +135,13 @@ export class LogMonitor {
   private anchors: Anchor[] = [];
   private busy: Promise<void> | null = null;
   private retry: unknown = null;
+  /** Failed checks in a row; the retry wait grows with it. */
+  private failures = 0;
+  /**
+   * After a bad proof, only the retry asks again: a relay that answers every HUD with a bad proof
+   * would otherwise be asked every few seconds. After an unreachable relay a HUD may ask sooner.
+   */
+  private holding = false;
   private stopped = false;
 
   constructor(
@@ -101,6 +153,10 @@ export class LogMonitor {
 
   get fork(): LogFork | null {
     return this.s.fork;
+  }
+
+  get relayFault(): RelayFault | null {
+    return this.s.relayFault;
   }
 
   record(): MonitorRecord {
@@ -121,7 +177,7 @@ export class LogMonitor {
       return;
     }
     if (seen.size < last.size || (seen.size === last.size && !equal(seen.root, last.root))) {
-      this.forked(last, { kind: "hud", hud: seen }, []);
+      this.forked(last, { kind: "hud", hud: seen });
       return;
     }
     if (seen.size === last.size) return;
@@ -150,6 +206,7 @@ export class LogMonitor {
     this.stopped = true;
     if (this.retry !== null) this.d.timers.clearTimeout(this.retry);
     this.retry = null;
+    this.holding = false;
   }
 
   /**
@@ -159,6 +216,7 @@ export class LogMonitor {
    */
   private kick(): Promise<void> {
     if (this.busy) return this.busy;
+    if (this.holding && this.retry !== null) return Promise.resolve();
     if (this.retry !== null) this.d.timers.clearTimeout(this.retry);
     this.retry = null;
     const p = this.loop()
@@ -172,21 +230,31 @@ export class LogMonitor {
     return p;
   }
 
-  /** Works through every job; "failed" when a proof could not be had. */
+  /** Works through every job; "failed" when a proof could not be had or did not verify. */
   private async loop(): Promise<"done" | "failed"> {
     // `next` is read again after each proof, so HUDs that came in during a fetch are caught up
     // with one proof from the root just verified.
     for (let job = this.next(); job; job = this.next()) {
-      let proof: Uint8Array[] = [];
-      if (job.from !== job.to) {
-        try {
-          proof = await this.d.consistency(job.from, job.to);
-        } catch {
-          // Unreachable relay, or an answer that is not a proof: try again later.
-          return "failed";
-        }
+      if (job.from === job.to) {
+        // One size, two roots the referee committed to: no proof involved, so no relay to blame.
+        if (equal(job.oldRoot, job.newRoot)) this.passed(job);
+        else this.forked(job.base, job.other);
+        continue;
       }
-      this.settle(job, proof);
+      let proof: Uint8Array[];
+      try {
+        proof = await this.d.consistency(job.from, job.to);
+      } catch {
+        // Unreachable relay, or an answer that is not a proof: try again later.
+        return "failed";
+      }
+      if (this.stopped || this.s.fork) return "done";
+      if (!verifyConsistency(job.from, job.to, job.oldRoot, job.newRoot, proof)) {
+        this.blameRelay(job, proof);
+        this.holding = true;
+        return "failed";
+      }
+      this.passed(job);
     }
     return "done";
   }
@@ -212,11 +280,9 @@ export class LogMonitor {
       : { from: a.size, to: base.size, oldRoot: a.root, newRoot: base.root, base, other };
   }
 
-  private settle(job: Job, proof: Uint8Array[]): void {
-    if (!verifyConsistency(job.from, job.to, job.oldRoot, job.newRoot, proof)) {
-      this.forked(job.base, job.other, proof);
-      return;
-    }
+  private passed(job: Job): void {
+    this.failures = 0;
+    if (this.s.relayFault?.outstanding) this.s.relayFault = { ...this.s.relayFault, outstanding: false };
     if (job.other.kind === "hud") {
       this.s.verified = job.other.hud;
       if (this.s.pending === job.other.hud) this.s.pending = null;
@@ -228,8 +294,24 @@ export class LogMonitor {
     this.d.changed();
   }
 
-  private forked(hud: SignedRoot, other: LogFork["other"], proof: Uint8Array[]): void {
-    const fork: LogFork = { atMs: this.d.now(), hud, other, proof };
+  private blameRelay(job: Job, proof: Uint8Array[]): void {
+    const fault: RelayFault = {
+      atMs: this.d.now(),
+      count: (this.s.relayFault?.count ?? 0) + 1,
+      outstanding: true,
+      hud: job.base,
+      other: job.other,
+      from: job.from,
+      to: job.to,
+      proof,
+    };
+    this.s.relayFault = fault;
+    this.d.changed();
+    this.d.onRelayFault?.(fault);
+  }
+
+  private forked(hud: SignedRoot, other: OtherRoot): void {
+    const fork: LogFork = { atMs: this.d.now(), hud, other };
     this.s.fork = fork;
     this.anchors = [];
     this.stop();
@@ -239,31 +321,55 @@ export class LogMonitor {
 
   private scheduleRetry(): void {
     if (this.stopped || this.retry !== null) return;
+    this.failures++;
     this.retry = this.d.timers.setTimeout(() => {
       this.retry = null;
+      this.holding = false;
       void this.kick();
-    }, MONITOR_RETRY_MS);
+    }, retryDelay(this.failures));
   }
 }
 
 const rootJson = (r: SignedRoot) => ({ log_size: r.size, root: toHex(r.root), signed_hud: toB64(r.signed) });
 
+const otherJson = (o: OtherRoot) =>
+  o.kind === "hud"
+    ? { kind: "hud", ...rootJson(o.hud) }
+    : { kind: "anchor", log_size: o.anchor.size, root: toHex(o.anchor.root) };
+
+const CHECK_ROOTS =
+  "decodeSignedHud(signed_hud) and verifySignedHud with referee_pk from get_match on the contract, for match_id; an anchor's root is in get_roots.";
+
 /** The fork as a JSON document to share: everything a third party needs to check it. */
 export function forkJson(f: LogFork, matchId: string): string {
-  const o = f.other;
   return JSON.stringify(
     {
-      kind: "tail/log-fork/v1",
+      kind: "tail/log-fork/v2",
       match_id: matchId,
       found_at_ms: f.atMs,
       hud: rootJson(f.hud),
-      other:
-        o.kind === "hud"
-          ? { kind: "hud", ...rootJson(o.hud) }
-          : { kind: "anchor", log_size: o.anchor.size, root: toHex(o.anchor.root) },
+      other: otherJson(f.other),
+      check: `${CHECK_ROOTS} A later HUD (higher tick) with a smaller log_size, or two roots of one log_size that differ, contradict each other with no other data.`,
+    },
+    null,
+    2,
+  );
+}
+
+/** The relay's bad proof as a JSON document: evidence against the relay, not the referee. */
+export function relayFaultJson(f: RelayFault, matchId: string): string {
+  return JSON.stringify(
+    {
+      kind: "tail/relay-bad-proof/v1",
+      match_id: matchId,
+      found_at_ms: f.atMs,
+      count: f.count,
+      hud: rootJson(f.hud),
+      other: otherJson(f.other),
+      from: f.from,
+      to: f.to,
       proof: f.proof.map(toHex),
-      check:
-        "decodeSignedHud(signed_hud) and verifySignedHud with referee_pk from get_match on the contract, for match_id; an anchor's root is in get_roots. A later HUD (higher tick) with a smaller log_size, or two roots of one log_size that differ, contradict on their own. Otherwise verifyConsistency(smaller size, larger size, its root, the other root, proof) from @tail/protocol fails; proof came from the relay, and anyone holding the log can try to build one that passes.",
+      check: `${CHECK_ROOTS} verifyConsistency(from, to, root of size from, root of size to, proof) from @tail/protocol fails. The relay sent proof; anyone holding the log can try to build one that passes. If none can, the referee's log changed.`,
     },
     null,
     2,

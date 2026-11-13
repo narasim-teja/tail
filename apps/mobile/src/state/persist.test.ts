@@ -1,17 +1,26 @@
 import { describe, expect, test } from "bun:test";
 import { RejectCode } from "@tail/protocol";
-import { freshMonitor, type LogFork } from "../proximity/monitor";
+import { freshMonitor, type LogFork, type RelayFault } from "../proximity/monitor";
 import { decodeMatchRecord, emptyRecord, encodeMatchRecord, type MatchRecord } from "./persist";
 
 const h = (n: number) => new Uint8Array(32).fill(n);
 
 describe("match record", () => {
-  test("chain, outbox, confirmation, reports, tags, fix time, unsent actions and the log monitor survive a write and read", () => {
+  test("chain, outbox, confirmation, reports, tags, fix time, unsent actions, the log monitor and Handler lines survive a write and read", () => {
     const fork: LogFork = {
       atMs: 1_800_000_200_000,
       hud: { size: 4, root: h(4), signed: Uint8Array.of(4, 4) },
       other: { kind: "hud", hud: { size: 6, root: h(6), signed: Uint8Array.of(6) } },
-      proof: [h(5)],
+    };
+    const relayFault: RelayFault = {
+      atMs: 1_800_000_100_000,
+      count: 2,
+      outstanding: true,
+      hud: { size: 4, root: h(4), signed: Uint8Array.of(4, 4) },
+      other: { kind: "anchor", anchor: { size: 8, root: h(8) } },
+      from: 4,
+      to: 8,
+      proof: [h(5), h(6)],
     };
     const r: MatchRecord = {
       matchId: "ab".repeat(16),
@@ -45,7 +54,9 @@ describe("match record", () => {
         pending: null,
         anchored: 3,
         fork,
+        relayFault,
       },
+      handler: [{ hintId: 7, textHash: h(7) }],
     };
     expect(decodeMatchRecord(encodeMatchRecord(r))).toEqual(r);
     const anchor = {

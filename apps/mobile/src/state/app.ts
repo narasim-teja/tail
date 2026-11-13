@@ -6,7 +6,7 @@ import Constants from "expo-constants";
 import { useSyncExternalStore } from "react";
 import { Share } from "react-native";
 import TailRadio from "../../modules/tail-radio";
-import { enrol } from "../identity/enrol";
+import { enrol, REFRESHED, refreshEnrolment, withRefresh } from "../identity/enrol";
 import { forgetAccount, type Identity, loadIdentity, nearSigner } from "../identity/identity";
 import { keychain } from "../identity/keychain";
 import { anchoredRoots, matchFacts } from "../near/chain";
@@ -18,7 +18,7 @@ import { offlineProtocolLink } from "../proximity/carry/sdk";
 import type { CarryPlan } from "../proximity/client";
 import { realTimers } from "../proximity/epoch";
 import { HudSocket, openPlayerKeys } from "../proximity/hud";
-import { forkJson, type LogFork, LogMonitor } from "../proximity/monitor";
+import { forkJson, type LogFork, LogMonitor, type RelayFault } from "../proximity/monitor";
 import {
   checkReceipts,
   type Meeting,
@@ -37,6 +37,7 @@ import {
   type RelayInfo,
   readJoin,
 } from "../relay/client";
+import { checkHandlerLines, type HandlerCheck } from "../tail/handler";
 import { TailHunt } from "../tail/hunt";
 import { checkedZone, type Zone } from "../tail/zone";
 import { assertWith, attestor, radioPort } from "./device";
@@ -65,9 +66,15 @@ export interface RecentMatch {
   atMs: number;
 }
 
-const extra = (Constants.expoConfig?.extra ?? {}) as { contractId?: string | null; nearNetwork?: string };
+const extra = (Constants.expoConfig?.extra ?? {}) as {
+  contractId?: string | null;
+  nearNetwork?: string;
+  accountParent?: string | null;
+};
 /** The NEAR network this build plays on (app.config.ts); testnet unlocks free top-ups. */
 export const NEAR_NETWORK = extra.nearNetwork ?? "testnet";
+/** Player accounts are `<handle>.<this>` (app.config.ts); enrolment refuses any other name. */
+export const ACCOUNT_PARENT = extra.accountParent ?? null;
 /** A testnet top-up: 10 test USDC from the relay, in 6-decimal units. */
 export const TOP_UP = 10_000_000n;
 
@@ -150,13 +157,21 @@ class AppModel {
   private savedTags = 0;
   /** The log fork the open match's file holds, if the monitor found one (a relaunch has no session). */
   private savedFork: LogFork | null = null;
+  /** The relay's bad log proof the open match's file holds, if any. */
+  private savedRelayFault: RelayFault | null = null;
+  /** After End: each Handler line this phone got against the receipt the referee logged for it. */
+  handlerCheck: HandlerCheck | null = null;
   receipts: Receipts = { kind: "idle" };
   /** Presence proofs this player can share once the match has ended; null until looked up. */
   meetings: Meeting[] | null = null;
   private relayClient: RelayClient | null = null;
   busy: string | null = null;
   error: string | null = null;
+  /** One plain line the app did something on its own (a re-enrolment); shown until the next action. */
+  notice: string | null = null;
   ready = false;
+  /** The re-enrolment in flight, so a status check and a refused Start never run two at once. */
+  private refreshing: Promise<void> | null = null;
 
   private version = 0;
   private listeners = new Set<() => void>();
@@ -209,6 +224,7 @@ class AppModel {
   private async act<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
     this.busy = label;
     this.error = null;
+    this.notice = null;
     this.emit();
     try {
       return await fn();
@@ -240,6 +256,7 @@ class AppModel {
     }
     this.ready = true;
     this.emit();
+    void this.ensureEnrolled();
   }
 
   saveSettings(s: Settings): void {
@@ -362,12 +379,64 @@ class AppModel {
         relay: this.relay,
         attest: attestor,
         secrets: keychain,
+        parent: ACCOUNT_PARENT,
         onStep: (label) => {
           this.busy = label;
           this.emit();
         },
       });
     });
+  }
+
+  /**
+   * Asks the relay whether the referee it runs with holds this phone's device, and re-enrols if
+   * not (the contract pinned another referee since this phone enrolled). Quiet when the relay
+   * can't be reached or doesn't say: the next Start says so if it matters.
+   */
+  async ensureEnrolled(): Promise<void> {
+    const id = this.identity;
+    if (!id?.accountId || !this.settings.relayUrl || this.session) return;
+    let withReferee: boolean;
+    try {
+      withReferee = (await this.relay.enrolStatus(nearSigner(id))).withReferee;
+    } catch {
+      return;
+    }
+    if (!withReferee) await this.reenrol().catch((e: unknown) => this.fail(e));
+  }
+
+  /**
+   * Re-enrols this phone with the referee the relay runs with now (identity/enrol.ts
+   * refreshEnrolment): same account, a new App Attest key. Never during a hunt, whose batches are
+   * asserted with the current key.
+   */
+  private reenrol(): Promise<void> {
+    this.refreshing ??= (async () => {
+      const id = this.need();
+      if (this.session) throw new Error("Can't re-enrol this phone during a hunt.");
+      const before = this.busy;
+      this.busy = "Re-enrolling this phone";
+      this.emit();
+      try {
+        this.identity = await refreshEnrolment(id, {
+          relay: this.relay,
+          attest: attestor,
+          secrets: keychain,
+        });
+        this.notice = REFRESHED;
+      } finally {
+        this.busy = before;
+        this.emit();
+      }
+    })().finally(() => {
+      this.refreshing = null;
+    });
+    return this.refreshing;
+  }
+
+  private fail(e: unknown): void {
+    this.error = message(e);
+    this.emit();
   }
 
   // ── Location for creating a match (the zone is centred on the host) ─────────────────────
@@ -447,9 +516,23 @@ class AppModel {
     });
   }
 
+  /**
+   * Starts the match. A relay that refuses because the referee doesn't know this phone yet gets
+   * a re-enrolment and one more try; other players it names re-enrol from their own lobbies.
+   */
   start() {
     return this.act("Starting", async () => {
-      await this.relay.startMatch(nearSigner(this.need()), this.needMatch());
+      const matchId = this.needMatch();
+      const accountId = this.need().accountId as string;
+      await withRefresh(
+        accountId,
+        () => this.relay.startMatch(nearSigner(this.need()), matchId),
+        async () => {
+          await this.reenrol();
+          this.busy = "Starting";
+          this.emit();
+        },
+      );
       await this.refresh();
     });
   }
@@ -470,7 +553,10 @@ class AppModel {
     return theirs && theirs !== this.settings.contractId ? theirs : null;
   }
 
-  /** Reads what the relay says about itself. No answer leaves the safe defaults. */
+  /**
+   * Reads what the relay says about itself, and whether its referee knows this phone (re-enrolling
+   * if not). No answer leaves the safe defaults.
+   */
   async checkRelay(): Promise<void> {
     if (!this.settings.relayUrl) return;
     try {
@@ -478,7 +564,9 @@ class AppModel {
       this.emit();
     } catch {
       // Unreachable relay: no test players and no mismatch to report; the next call says why.
+      return;
     }
+    await this.ensureEnrolled();
   }
 
   /** Test relays only: play as a new handle on this phone (keys kept; see forgetAccount). */
@@ -548,14 +636,17 @@ class AppModel {
     this.briefing = null;
     this.receipts = { kind: "idle" };
     this.meetings = null;
+    this.handlerCheck = null;
     try {
       const r = this.loadRecord(id);
       this.savedTags = r.tags;
       this.savedFork = r.monitor.fork;
+      this.savedRelayFault = r.monitor.relayFault;
     } catch {
       // An unreadable file only costs the tag count here; beginHunt reads it again and stops on it.
       this.savedTags = 0;
       this.savedFork = null;
+      this.savedRelayFault = null;
     }
     files.write(CURRENT_FILE, JSON.stringify({ matchId: id }));
     this.startPolling();
@@ -597,9 +688,12 @@ class AppModel {
       this.match = m;
       // Once this player's keys are in, the signed view has nothing more to say.
       if (!this.matchZone?.keys.length && this.inMatch(m)) {
+        const before = this.matchZone?.error ?? null;
         const z = await this.loadZone(id);
         if (this.matchId !== id) return;
         this.matchZone = z;
+        // A Start that failed may have been refused for this phone's device: check, and re-enrol.
+        if (z?.error && z.error !== before) void this.ensureEnrolled();
       }
       if (m.chain && this.me && this.settings.contractId) {
         const bal = await this.rpc.view<string>(this.settings.contractId, "get_balance", {
@@ -737,7 +831,12 @@ class AppModel {
     return this.session?.snapshot().logFork ?? this.savedFork;
   }
 
-  /** Shares the fork's evidence (both signed roots and the failed proof) as a JSON document. */
+  /** The relay's newest bad log proof (proximity/monitor.ts): kept, shown quietly, checked again. */
+  get relayFault(): RelayFault | null {
+    return this.session?.snapshot().relayFault ?? this.savedRelayFault;
+  }
+
+  /** Shares the fork's evidence (both signed roots) as a JSON document. */
   async shareFork(): Promise<void> {
     const f = this.logFork;
     if (!f || !this.matchId) return;
@@ -817,12 +916,17 @@ class AppModel {
     );
     await monitor.checkAnchors(roots);
     monitor.stop();
-    if (this.matchId === id) this.savedFork = monitor.fork;
+    if (this.matchId === id) {
+      this.savedFork = monitor.fork;
+      this.savedRelayFault = monitor.relayFault;
+    }
   }
 
   /**
    * After End: the plaintext log from the replay bundle, turned into one presence proof per
-   * player this phone met, each verified against End's root on NEAR before it is offered.
+   * player this phone met, each verified against End's root on NEAR before it is offered. The
+   * same log checks each Handler line this phone got against the receipt the referee logged
+   * (tail/handler.ts), counted only if the whole log hashes to End's root.
    */
   async findMeetings(): Promise<void> {
     const id = this.matchId;
@@ -845,7 +949,11 @@ class AppModel {
         players: facts.players,
         root: roots.final,
       });
-      if (this.matchId === id) this.meetings = found;
+      const handler = checkHandlerLines(this.loadRecord(id).handler, log, roots.final);
+      if (this.matchId === id) {
+        this.meetings = found;
+        this.handlerCheck = handler;
+      }
     } catch {
       // The replay is not open yet, or its trails were purged: no proofs to offer, nothing broken.
       return;

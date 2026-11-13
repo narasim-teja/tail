@@ -16,7 +16,7 @@ import {
   decodeSignedHud,
   equal,
   type Hud,
-  open,
+  openOnPhone,
   openSignedPlayerKeys,
   type PlayerKeys,
   SealContext,
@@ -49,7 +49,8 @@ export function openSignedHudBytes(
   refereePk: Uint8Array,
   seat: Seat,
 ): { hud: Hud; signed: Uint8Array } {
-  const signed = open(boxSk, sealed, SealContext.hud);
+  // Unpadded (openOnPhone): the referee pads everything it seals to a phone to one size.
+  const signed = openOnPhone(boxSk, sealed, SealContext.hud);
   const s = decodeSignedHud(signed);
   if (!verifySignedHud(s, refereePk)) throw new Error("HUD not signed by the referee");
   return { hud: forSeat(s.hud, seat, "HUD"), signed };

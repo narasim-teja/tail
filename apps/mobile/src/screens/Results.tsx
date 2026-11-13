@@ -6,9 +6,10 @@ import { useEffect, useState } from "react";
 import { Animated, Linking, Pressable, StyleSheet, View } from "react-native";
 import type { RefereeKind } from "../relay/client";
 import { type Receipts, useApp } from "../state/app";
+import { handlerProblem } from "../tail/handler";
 import { LOG_FORKED } from "../tail/hud";
 import { handleOf, howVerified, money, type Outcome, resultOutcome } from "../tail/huntModel";
-import { type FinalMoney, finalMoney, receiptLines } from "../tail/results";
+import { type FinalMoney, finalMoney, receiptLines, relayFaultLine } from "../tail/results";
 import { Icon, Mark } from "../ui/brand";
 import { RollingMoney } from "../ui/game";
 import {
@@ -46,6 +47,10 @@ export interface ResultsModel {
   met: string[];
   /** The referee showed this phone a log it later changed; the evidence is in the match file. */
   forked: boolean;
+  /** The relay sent log proofs that didn't check out: a quiet note, not an alarm. */
+  relayNote: string | null;
+  /** The relay delivered a Handler line other than the one the referee logged. */
+  handlerProblem: string | null;
 }
 
 /** The receipt check as lines for the screen, and problems apart. */
@@ -224,6 +229,13 @@ export function ResultsView({
           ))}
         </View>
       ) : null}
+      {m.handlerProblem ? (
+        <View style={styles.receipts} accessible>
+          <Eyebrow muted>Handler lines</Eyebrow>
+          <Strong>{m.handlerProblem}</Strong>
+        </View>
+      ) : null}
+      {m.relayNote ? <Caption muted>{m.relayNote}</Caption> : null}
       {m.met.length > 0 ? (
         <View style={styles.receipts}>
           <Eyebrow muted>Proof you met</Eyebrow>
@@ -296,6 +308,8 @@ export function Results() {
         receipts: app.receipts,
         met: app.meetings?.map((x) => x.other) ?? [],
         forked: app.logFork !== null,
+        relayNote: relayFaultLine(app.relayFault),
+        handlerProblem: handlerProblem(app.handlerCheck),
       }}
       onReplay={() => replay && void Linking.openURL(replay)}
       onDone={() => app.finishMatch()}

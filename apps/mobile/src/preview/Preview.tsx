@@ -359,6 +359,8 @@ export const STATES: Record<string, () => ReactNode> = {
         receipts: RECEIPTS,
         met: ["maya.tail-dev.testnet"],
         forked: false,
+        relayNote: null,
+        handlerProblem: null,
       }}
       onReplay={noop}
       onDone={noop}
@@ -378,6 +380,8 @@ export const STATES: Record<string, () => ReactNode> = {
         receipts: RECEIPTS,
         met: ["maya.tail-dev.testnet"],
         forked: false,
+        relayNote: null,
+        handlerProblem: null,
       }}
       onReplay={noop}
       onDone={noop}
@@ -402,6 +406,29 @@ export const STATES: Record<string, () => ReactNode> = {
         receipts: RECEIPTS,
         met: [],
         forked: false,
+        relayNote: null,
+        handlerProblem: null,
+      }}
+      onReplay={noop}
+      onDone={noop}
+      onProve={noop}
+      onExportFork={noop}
+    />
+  ),
+  "results-relay": () => (
+    <ResultsView
+      m={{
+        outcome: "survived",
+        money: { label: "Final head", units: 10_400_000n, refund: null },
+        tags: 0,
+        replayUrl: "https://replay.example/?match=x",
+        seed: 0,
+        referee: "local",
+        receipts: RECEIPTS,
+        met: [],
+        forked: false,
+        relayNote: "The relay sent a log proof that didn't check out 2 times. A later check passed.",
+        handlerProblem: "The relay delivered a different Handler line than the referee logged.",
       }}
       onReplay={noop}
       onDone={noop}
@@ -421,6 +448,8 @@ export const STATES: Record<string, () => ReactNode> = {
         receipts: { kind: "checking" },
         met: [],
         forked: true,
+        relayNote: null,
+        handlerProblem: null,
       }}
       onReplay={noop}
       onDone={noop}

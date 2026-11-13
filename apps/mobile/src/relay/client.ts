@@ -37,6 +37,17 @@ export interface Enrolled {
   accountId: string;
 }
 
+/**
+ * The relay refused because the referee it runs with does not know these players' devices (the
+ * contract pinned another referee since they enrolled): each must refresh its enrolment. Start
+ * answers this with the accounts named.
+ */
+export function refreshNeeded(e: unknown, accountId: string): boolean {
+  if (!(e instanceof RelayError) || e.status !== 409 || e.detail["code"] !== "refresh") return false;
+  const accounts = e.detail["accounts"];
+  return !Array.isArray(accounts) || accounts.includes(accountId);
+}
+
 export interface Circle {
   latE7: number;
   lonE7: number;
@@ -245,6 +256,47 @@ export class RelayClient extends RelayTransport {
       {},
       SLOW_CALL_MS,
     );
+    return { accountId: read.str(r, "account_id") };
+  }
+
+  /** Whether the referee the relay runs with now holds this account's device. */
+  async enrolStatus(signer: Signer): Promise<{ accountId: string; withReferee: boolean }> {
+    const r = await this.send(await this.sign(signer, "GET", "/enroll/status", ""));
+    return { accountId: read.str(r, "account_id"), withReferee: read.bool(r, "with_referee") };
+  }
+
+  /** A challenge to refresh the signer's own enrolment (a new referee needs a fresh attestation). */
+  async refreshChallenge(signer: Signer): Promise<Challenge> {
+    const r = await this.send(await this.sign(signer, "POST", "/enroll/refresh/challenge", "{}"));
+    return {
+      challenge: read.b64(r, "challenge"),
+      accountId: read.str(r, "account_id"),
+      expiresMs: read.int(r, "expires_ms"),
+    };
+  }
+
+  /**
+   * The fresh attestation, and `rebind_sig`: the account's NEAR key agreeing to move it to this
+   * App Attest key. The relay answers only once the referee has taken the device.
+   */
+  async refreshEnrolment(
+    signer: Signer,
+    i: {
+      challenge: Uint8Array;
+      keyId: string;
+      attestation: string;
+      playerBoxPk: Uint8Array;
+      rebindSig: Uint8Array;
+    },
+  ): Promise<Enrolled> {
+    const body = JSON.stringify({
+      challenge: toB64(i.challenge),
+      key_id: i.keyId,
+      attestation: i.attestation,
+      player_box_pk: toB64(i.playerBoxPk),
+      rebind_sig: toB64(i.rebindSig),
+    });
+    const r = await this.send(await this.sign(signer, "POST", "/enroll/refresh", body), SLOW_CALL_MS);
     return { accountId: read.str(r, "account_id") };
   }
 

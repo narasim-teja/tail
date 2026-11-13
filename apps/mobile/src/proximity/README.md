@@ -21,7 +21,9 @@ It does:
 - **Receipts**: after the match, every report checked against the log root anchored on NEAR, and
   presence proofs ("these two phones met") from the replay log (`receipts.ts`).
 - **Log monitor**: every signed HUD root, and every root anchored on NEAR, checked with consistency
-  proofs to be one growing log; a fork is kept with both signed HUDs as evidence (`monitor.ts`).
+  proofs to be one growing log; a fork (two committed roots that contradict by themselves) is kept
+  with both signed HUDs as evidence, and a relay proof that does not verify is kept as a relay
+  fault and asked again with a growing wait (`monitor.ts`).
 - **Request signing**: relay requests signed with the player's NEAR key (`auth.ts`, `relay.ts`).
 
 `client.ts` wires all of it into one `ProximityClient`.
@@ -36,11 +38,11 @@ client.stopReporting(); // the game says this player is done; socket stays open
 client.queueAction(action); // a wire Action, carried in the next batch unread
 await client.batchNow(); // send now instead of waiting for the next round
 await client.checkAnchors(roots); // anchored roots read from NEAR, checked against the HUD roots
-client.status(); // ProximityStatus: epoch, token, seq, queued, upload, socket, over, blocked, logFork, …
+client.status(); // ProximityStatus: epoch, token, seq, queued, upload, socket, over, blocked, logFork, relayFault, …
 client.onHud((hud, previous) => {}); // each verified HUD newer than the last
 client.onReceipt((report) => {}); // each batch the relay took, once (HTTP or carried)
 client.onFrame((message) => {}); // the game's socket frames: sealed lines, refusals
-client.onNotice((notice) => {}); // unsigned, build-failed, rejected, rebuilt, invisible, log-forked
+client.onNotice((notice) => {}); // unsigned, build-failed, rejected, rebuilt, invisible, log-forked, relay-bad-proof
 client.onFix((fix) => {}); // each fresh location fix
 client.onChange(() => {}); // status() may have changed
 ```
@@ -49,7 +51,7 @@ Every `on…` returns an unsubscribe function. `deps` brings the device and rela
 (`RadioPort`, `assert`, `batchRequest`, `upload`, `hud`, `carry`, `log`, `save`), so tests drive it
 with fakes (`client.test.ts`). `log` brings consistency proofs from the relay and anchored roots
 from NEAR. `save` receives a `ProximityRecord` (chain, outbox, confirmed position, reports, HUD
-tick, last fix time, unsent actions, the log monitor's place and any fork); the game stores it
+tick, last fix time, unsent actions, the log monitor's place, any fork and relay fault); the game stores it
 beside its own state.
 
 The notices carry facts, not words: the game decides what to tell the player.

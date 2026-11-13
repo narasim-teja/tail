@@ -3,8 +3,9 @@
 // cost reports; the chain itself is rebuilt from the next signed HUD if it has to be
 // (proximity/chain.ts). Beside them: every report the relay took (seq and batch hash, for the
 // inclusion receipts after the match), the referee's tag count, the newest fix time (so fixes
-// stay in order after a relaunch), strikes or hints not yet inside a committed batch, and the log
-// monitor's place, with a fork's evidence once found (proximity/monitor.ts). Sealed
+// stay in order after a relaunch), strikes or hints not yet inside a committed batch, the log
+// monitor's place, with a fork's or a relay fault's evidence once found (proximity/monitor.ts),
+// and the hash of each Handler line received (checked against the log after End). Sealed
 // batches are ciphertext to the enclave and hashes reveal nothing, so a file is fine; secrets
 // stay in the Keychain.
 
@@ -12,7 +13,14 @@ import { type Action, fromHex, toHex } from "@tail/protocol";
 import { fromB64, toB64 } from "../lib/b64";
 import { genesis, type OutboxItem } from "../proximity/batch";
 import { unconfirmed } from "../proximity/chain";
-import { freshMonitor, type LogFork, type MonitorRecord, type SignedRoot } from "../proximity/monitor";
+import {
+  freshMonitor,
+  type LogFork,
+  type MonitorRecord,
+  type OtherRoot,
+  type RelayFault,
+  type SignedRoot,
+} from "../proximity/monitor";
 import type { HuntRecord } from "../tail/hunt";
 
 export interface MatchRecord extends HuntRecord {
@@ -37,10 +45,22 @@ interface RootJson {
   signed: string;
 }
 
+type OtherJson = { kind: "hud"; hud: RootJson } | { kind: "anchor"; size: number; root: string };
+
 interface ForkJson {
   atMs: number;
   hud: RootJson;
-  other: { kind: "hud"; hud: RootJson } | { kind: "anchor"; size: number; root: string };
+  other: OtherJson;
+}
+
+interface FaultJson {
+  atMs: number;
+  count: number;
+  outstanding: boolean;
+  hud: RootJson;
+  other: OtherJson;
+  from: number;
+  to: number;
   proof: string[];
 }
 
@@ -49,6 +69,7 @@ interface MonitorJson {
   pending: RootJson | null;
   anchored: number;
   fork: ForkJson | null;
+  relayFault?: FaultJson | null;
 }
 
 interface MatchJson {
@@ -64,6 +85,7 @@ interface MatchJson {
   lastFixMs?: number | null;
   actions?: Action[];
   monitor?: MonitorJson;
+  handler?: { hintId: number; textHash: string }[];
 }
 
 export const emptyRecord = (matchId: string): MatchRecord => ({
@@ -77,6 +99,7 @@ export const emptyRecord = (matchId: string): MatchRecord => ({
   lastFixMs: null,
   actions: [],
   monitor: freshMonitor(),
+  handler: [],
 });
 
 const itemJson = (o: OutboxItem): ItemJson => ({
@@ -94,18 +117,25 @@ const rootJson = (r: SignedRoot): RootJson => ({
   signed: toB64(r.signed),
 });
 
+const otherJson = (o: OtherRoot): OtherJson =>
+  o.kind === "hud"
+    ? { kind: "hud", hud: rootJson(o.hud) }
+    : { kind: "anchor", size: o.anchor.size, root: toHex(o.anchor.root) };
+
 const monitorJson = (m: MonitorRecord): MonitorJson => ({
   verified: m.verified && rootJson(m.verified),
   pending: m.pending && rootJson(m.pending),
   anchored: m.anchored,
-  fork: m.fork && {
-    atMs: m.fork.atMs,
-    hud: rootJson(m.fork.hud),
-    other:
-      m.fork.other.kind === "hud"
-        ? { kind: "hud", hud: rootJson(m.fork.other.hud) }
-        : { kind: "anchor", size: m.fork.other.anchor.size, root: toHex(m.fork.other.anchor.root) },
-    proof: m.fork.proof.map(toHex),
+  fork: m.fork && { atMs: m.fork.atMs, hud: rootJson(m.fork.hud), other: otherJson(m.fork.other) },
+  relayFault: m.relayFault && {
+    atMs: m.relayFault.atMs,
+    count: m.relayFault.count,
+    outstanding: m.relayFault.outstanding,
+    hud: rootJson(m.relayFault.hud),
+    other: otherJson(m.relayFault.other),
+    from: m.relayFault.from,
+    to: m.relayFault.to,
+    proof: m.relayFault.proof.map(toHex),
   },
 });
 
@@ -115,18 +145,27 @@ const readRoot = (r: RootJson): SignedRoot => ({
   signed: fromB64(r.signed),
 });
 
-function readFork(f: ForkJson): LogFork {
-  const o = f.other;
-  return {
-    atMs: f.atMs,
-    hud: readRoot(f.hud),
-    other:
-      o.kind === "hud"
-        ? { kind: "hud", hud: readRoot(o.hud) }
-        : { kind: "anchor", anchor: { size: o.size, root: fromHex(o.root) } },
-    proof: f.proof.map(fromHex),
-  };
-}
+const readOther = (o: OtherJson): OtherRoot =>
+  o.kind === "hud"
+    ? { kind: "hud", hud: readRoot(o.hud) }
+    : { kind: "anchor", anchor: { size: o.size, root: fromHex(o.root) } };
+
+const readFork = (f: ForkJson): LogFork => ({
+  atMs: f.atMs,
+  hud: readRoot(f.hud),
+  other: readOther(f.other),
+});
+
+const readFault = (f: FaultJson): RelayFault => ({
+  atMs: f.atMs,
+  count: f.count,
+  outstanding: f.outstanding === true,
+  hud: readRoot(f.hud),
+  other: readOther(f.other),
+  from: f.from,
+  to: f.to,
+  proof: f.proof.map(fromHex),
+});
 
 /** The monitor's place; a file from before it starts the monitor afresh. */
 function readMonitor(m: MonitorJson | undefined): MonitorRecord {
@@ -136,6 +175,7 @@ function readMonitor(m: MonitorJson | undefined): MonitorRecord {
     pending: m.pending ? readRoot(m.pending) : null,
     anchored: Number.isSafeInteger(m.anchored) ? m.anchored : 0,
     fork: m.fork ? readFork(m.fork) : null,
+    relayFault: m.relayFault ? readFault(m.relayFault) : null,
   };
 }
 
@@ -157,6 +197,7 @@ export const encodeMatchRecord = (r: MatchRecord): string =>
     lastFixMs: r.lastFixMs,
     actions: r.actions,
     monitor: monitorJson(r.monitor),
+    handler: r.handler.map((l) => ({ hintId: l.hintId, textHash: toHex(l.textHash) })),
   } satisfies MatchJson);
 
 const isU32 = (v: unknown): v is number =>
@@ -213,6 +254,13 @@ export function decodeMatchRecord(text: string): MatchRecord {
     lastFixMs: Number.isSafeInteger(j.lastFixMs) ? (j.lastFixMs as number) : null,
     actions: Array.isArray(j.actions) ? j.actions.flatMap((a) => readAction(a) ?? []) : [],
     monitor: v2 ? readMonitor(j.monitor) : freshMonitor(),
+    handler: Array.isArray(j.handler)
+      ? j.handler.flatMap((l) =>
+          isU32(l?.hintId) && typeof l.textHash === "string" && /^[0-9a-f]{64}$/.test(l.textHash)
+            ? [{ hintId: l.hintId, textHash: fromHex(l.textHash) }]
+            : [],
+        )
+      : [],
   };
 }
 

@@ -18,8 +18,8 @@ import {
   type PlayerKeys,
   RejectCode,
   SealContext,
-  seal,
   sealSignedVoiceLine,
+  sealToPhone,
   sha256,
   signCarryAck,
   signVoiceLine,
@@ -44,6 +44,7 @@ import type { HudMessage } from "../proximity/hud";
 import { freshMonitor } from "../proximity/monitor";
 import { OFFLINE_CARRY_MS } from "../proximity/outbox";
 import { type CarryReply, RelayError, type SignedRequest } from "../proximity/relay";
+import { handlerLine } from "./handler";
 import { NOT_SIGNED } from "./hud";
 import { type HuntRecord, TailHunt } from "./hunt";
 
@@ -135,6 +136,7 @@ const fresh = (): HuntRecord => ({
   lastFixMs: null,
   actions: [],
   monitor: freshMonitor(),
+  handler: [],
 });
 
 /** The relay's carry keys and a stand-in for `POST /carry`: opens the envelope, signs the receipt. */
@@ -334,12 +336,33 @@ describe("hunt", () => {
     ]);
   });
 
+  test("each signed Handler line is saved by hint id and text hash, once, and survives a relaunch", () => {
+    const r = rig();
+    r.s.start();
+    const say = (hintId: number, text: string, sk = refereeSk) =>
+      r.hud({
+        type: "handler",
+        sealed: sealSignedVoiceLine(
+          r.boxPk,
+          signVoiceLine({ matchId: keys.matchId, player: 0, hintId, text }, sk),
+        ),
+      });
+    say(4, "Bearing north-east.");
+    say(4, "Bearing north-east.");
+    say(5, "Go south.", ed25519.utils.randomSecretKey());
+    expect(r.last().handler).toEqual([handlerLine(4, "Bearing north-east.")]);
+    const again = rig({ record: r.last() });
+    again.s.start();
+    again.sendHud({ lock: 1 });
+    expect(again.last().handler).toEqual([handlerLine(4, "Bearing north-east.")]);
+  });
+
   test("a HUD or Handler line the referee did not sign is named as such and changes nothing", () => {
     const r = rig();
     r.s.start();
     r.sendHud({ lock: 1 });
     const forged = hudOf({ tick: 9, lock: LOCK_EPOCHS, tags: 3 });
-    r.hud({ type: "hud", tick: 9, sealed: seal(r.boxPk, encodeHud(forged), SealContext.hud) });
+    r.hud({ type: "hud", tick: 9, sealed: sealToPhone(r.boxPk, encodeHud(forged), SealContext.hud) });
     r.hud({ type: "hud", tick: 9, sealed: sealedHud(r.boxPk, forged, ed25519.utils.randomSecretKey()) });
     const line = { matchId: keys.matchId, player: 0, hintId: 1, text: "Go north." };
     r.hud({

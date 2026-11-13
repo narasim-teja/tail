@@ -116,7 +116,7 @@ bun install
 
 ```sh
 cd apps/mobile
-bun test                                   # 204 tests
+bun test                                   # 235 tests
 bunx tsc -p . && bunx tsc -p tsconfig.test.json
 bunx expo export --platform ios --output-dir /tmp/tail-export
 CI=1 bunx expo prebuild --platform ios --clean
@@ -149,11 +149,20 @@ What the tests prove:
   anchored root, a missing one is a problem, and a tampered path, a wrong size or a made-up root
   does not count; presence proofs from the log verify with `verifyPresence`, and a tampered log
   yields none.
-- **Log monitor** (`src/proximity/monitor.test.ts`, client tests): honest growth verifies; a root
-  from a rewritten log, a later HUD with a smaller log, or an anchored root from another log is a
-  fork, kept with both signed HUDs (their referee signatures verify); a relay it can't reach is
-  retried, not a failure; HUDs that arrive during a fetch are caught up with one proof; a saved
-  pending root is proven after a relaunch.
+- **Log monitor** (`src/proximity/monitor.test.ts`, client tests): honest growth verifies; a later
+  HUD with a smaller log, or two signed roots (HUD or anchor) of one size that differ, is a fork,
+  kept with both signed HUDs (their referee signatures verify); a consistency proof that does not
+  verify is a relay fault, kept as evidence and asked again with a doubling wait while the
+  monitor carries on; a relay it can't reach is retried; HUDs that arrive during a fetch are
+  caught up with one proof; a saved pending root is proven after a relaunch.
+- **Enrolment and refresh** (`src/identity/identity.test.ts`): the phone attests nothing for an
+  account other than `<handle>.<NEAR_RELAY_ACCOUNT>` pinned in the build; a refresh attests a new
+  key over the fresh challenge, signs `rebind_sig` with the NEAR key over the App Attest key read
+  out of the attestation (checked against a real iPhone attestation), keeps the account, and a
+  Start refused with `code: "refresh"` for this account re-enrols and tries once more.
+- **Handler lines** (`src/tail/handler.test.ts`, hunt tests): each signed line's hint id and text
+  hash are kept in the match file; after End a line whose logged HintReceipt hashes another text
+  is named, and a log that does not hash to End's root counts for nothing.
 - **Mesh carry** (`src/proximity/carry/mesh.test.ts`, hunt tests): envelopes are 4144 bytes of
   ciphertext with no account, path or match id in the clear; a forwarder posts an envelope once
   however often it hears it and sends the relay's answer back; a report counts as delivered only
@@ -204,7 +213,8 @@ Use xcodebuild directly (the route that worked in the device spike on 2026-11-12
    it). **Save**.
 2. Enter a handle, **Join**. The phone generates its keys, App Attest attests them over the
    relay's challenge, and the relay creates `<handle>.<relay account>` with only this phone's
-   function-call key.
+   function-call key. The phone attests only for `<handle>.<NEAR_RELAY_ACCOUNT>` as the build
+   pinned it (`app.config.ts`); a relay that names any other account is refused.
 3. Host: fill **New match** and **Create** (the zone is centred on you). The lobby shows a short
    code (`K7M-4QX`) and a QR of `tail://join/<match id>`. **Share** sends the code and
    `tail://join/<code>`; others scan the QR, open the link, or type the code into **Or enter a
@@ -241,6 +251,12 @@ All served by `apps/server` (shapes in its README):
 - `GET /join/:code`: a short lobby code (`K7M-4QX`) to a match id.
 - `POST /matches` answers 409 with the `match_id` when the host already has an open lobby; Create
   says so and offers to open it. 429 (limits) and 413 (too large) show as short sentences.
+- `GET /enroll/status`, `POST /enroll/refresh/challenge`, `POST /enroll/refresh` (signed): when
+  the contract pins another referee, that referee knows no device. The phone asks on start-up,
+  when the relay is checked and when a Start fails; if the referee doesn't hold its device, or
+  Start answers 409 with `code: "refresh"` naming it, the phone attests a new App Attest key over
+  a fresh challenge for the same account and signs `rebind_sig` (`rebindDigest`) with the NEAR
+  key from the Keychain. It says so in one line on Home and the lobby. Not run on a phone yet.
 - `POST /enroll/challenge`, `POST /enroll`, `POST /matches/:id/start`,
   `POST /batch`, `GET /hud` (WebSocket), `POST /dev/topup` (testnet).
 - `GET /matches/:id/inclusion?leaf=&size=`: audit paths for the receipts. The size is always one
@@ -269,6 +285,12 @@ dark banner is the referee's `dark_ms`; tags are the referee's `tags`.
 
 ## Receipts and presence proofs
 
+The relay passes each Handler line's HintReceipt (SHA256 of the text) to the referee's next
+tick. The phone keeps the hint id and text hash of every signed line it received; after End it
+checks them against the HintReceipts in the replay log, once that log hashes to End's root on
+NEAR. A different hash shows on Results as "The relay delivered a different Handler line than
+the referee logged".
+
 Each report the relay takes is kept in the match file (seq, batch hash). On Results the phone
 computes each one's log leaf (`Batch`, or `Rejected` with the refusal code), asks the relay for a
 path at the size of the newest root anchored on NEAR, and verifies it against that root. It says
@@ -292,12 +314,18 @@ HUDs that arrive meanwhile are caught up with a single proof, and a fetch that f
 15 s later. A later HUD with a smaller log, or a root of the same size that differs, needs no
 proof.
 
-A fork is a hard alarm in the hunt and on Results ("The referee showed you a log it later
-changed"), saved in the match file. **Export the proof** shares a JSON document with both signed
-HUDs as the referee signed them (borsh `SignedHud`, base64), or the HUD and the anchored root, and
-the proof that failed. A contradiction by size alone convicts the referee by itself; a failed
-proof came from the relay, so the document says so and anyone holding the log can try to build a
-passing one.
+A fork is two roots the referee committed to that contradict each other with no relay data: a
+later signed HUD with a smaller log, or two roots (signed HUDs, or a HUD and an anchor on NEAR)
+for one log size. It is a hard alarm in the hunt and on Results ("The referee showed you a log
+it later changed"), saved in the match file, and the monitor stops. **Export the proof** shares a
+JSON document (`tail/log-fork/v2`) with both signed HUDs as the referee signed them (borsh
+`SignedHud`, base64), or the HUD and the anchored root.
+
+A consistency proof that does not verify came from the relay, which is untrusted, so it blames
+the relay only: it is kept in the match file (with the proof, and a count), shown quietly in the
+hunt's status line and on Results, and the same check is asked again after 15 s, doubling up to
+4 minutes. HUDs that arrive meanwhile only move the target. Monitoring carries on; if the
+referee's log really changed, the next signed root that contradicts by itself is the fork.
 
 The tagged screen names who got you from the HUD's `tagged_by` (the hunter for a tag, the
 receiver for a forfeit). A HUD without it falls back to "your hunter".

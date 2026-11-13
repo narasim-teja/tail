@@ -56,6 +56,8 @@ export interface LobbyModel {
   testPlayers: boolean;
   busy: string | null;
   error: string | null;
+  /** Something the app did on its own, in one line (a re-enrolment). */
+  notice?: string | null;
 }
 
 export interface LobbyActions {
@@ -273,6 +275,7 @@ export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions
         ) : null}
       </View>
       {m.error ? <Notice title="That didn't go through" detail={m.error} /> : null}
+      {m.notice ? <Notice icon="verified" title={m.notice} /> : null}
     </Screen>
   );
 }
@@ -319,6 +322,7 @@ export function Lobby() {
         testPlayers: app.testPlayers,
         busy: app.busy,
         error: app.error,
+        notice: app.notice,
       }}
       actions={{
         onJoin: () => void app.join(),

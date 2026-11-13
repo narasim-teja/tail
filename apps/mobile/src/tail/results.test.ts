@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { RejectCode } from "@tail/protocol";
+import type { RelayFault } from "../proximity/monitor";
 import type { ReceiptResult } from "../proximity/receipts";
-import { finalMoney, receiptLines } from "./results";
+import { finalMoney, receiptLines, relayFaultLine } from "./results";
 
 const result = (o: Partial<ReceiptResult>): ReceiptResult => ({
   size: 8,
@@ -76,6 +77,27 @@ describe("final money", () => {
     });
     expect(finalMoney({ ...f, paid: 1_000_000n, settledAs: "refunded_abort" }).refund).toBe(
       "Refunded: the match was called off, so every player got their stake back.",
+    );
+  });
+
+  test("the relay's bad log proofs are one quiet line, which says whether a later check passed", () => {
+    const root = { size: 4, root: new Uint8Array(32), signed: new Uint8Array(0) };
+    const fault: RelayFault = {
+      atMs: 1,
+      count: 1,
+      outstanding: true,
+      hud: root,
+      other: { kind: "hud", hud: { ...root, size: 6 } },
+      from: 4,
+      to: 6,
+      proof: [],
+    };
+    expect(relayFaultLine(null)).toBeNull();
+    expect(relayFaultLine(fault)).toBe(
+      "The relay sent a log proof that didn't check out. Your phone kept it and is still checking.",
+    );
+    expect(relayFaultLine({ ...fault, count: 3, outstanding: false })).toBe(
+      "The relay sent a log proof that didn't check out 3 times. A later check passed.",
     );
   });
 });

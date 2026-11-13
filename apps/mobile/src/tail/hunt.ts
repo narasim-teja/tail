@@ -6,7 +6,8 @@
 //   and dark time come from the referee, not from the phone's guesses
 // - the phone's own warnings before the referee acts: out of the zone, vehicle speed (rules.ts)
 // - the Handler's signed lines, and every notice in plain words (a log fork above all)
-// - the tag count, saved beside the proximity record so a relaunch keeps it
+// - the tag count and the hash of each Handler line, saved beside the proximity record so a
+//   relaunch keeps them (the lines are checked against the referee's log after End: handler.ts)
 
 import type { AnchoredRoot, HintKind, Hud, PlayerKeys } from "@tail/protocol";
 import type { RadioFix } from "../../modules/tail-radio";
@@ -20,6 +21,7 @@ import {
 import type { HudMessage } from "../proximity/hud";
 import { TailActions } from "./actions";
 import { type Circle, inCircle } from "./geo";
+import { type HandlerLine, handlerLine } from "./handler";
 import {
   describeRefusal,
   describeRejectCode,
@@ -30,6 +32,7 @@ import {
   NOT_SIGNED,
   openVoice,
   priceNow,
+  RELAY_BAD_PROOF,
 } from "./hud";
 import { type DarkInfo, VehicleWatch } from "./rules";
 
@@ -37,6 +40,8 @@ import { type DarkInfo, VehicleWatch } from "./rules";
 export interface HuntRecord extends ProximityRecord {
   /** Tags this player made, as the referee's last HUD counted them. */
   tags: number;
+  /** Each signed Handler line received, by hint id and text hash. */
+  handler: HandlerLine[];
 }
 
 export interface TailHuntDeps extends Omit<ProximityDeps, "record" | "save"> {
@@ -84,6 +89,9 @@ export class TailHunt {
   private listeners = new Set<() => void>();
   private ui: TailState;
   private snap: HuntSnapshot;
+  /** The proximity layer's newest record, so a Handler line can be saved without waiting for it. */
+  private proxRecord: ProximityRecord;
+  private handler: HandlerLine[];
 
   constructor(private readonly d: TailHuntDeps) {
     this.now = d.now ?? Date.now;
@@ -97,7 +105,15 @@ export class TailHunt {
       dark: null,
       outSinceMs: null,
     };
-    this.prox = new ProximityClient({ ...d, save: (r) => d.save({ ...r, tags: this.ui.tags }) });
+    this.proxRecord = d.record;
+    this.handler = [...d.record.handler];
+    this.prox = new ProximityClient({
+      ...d,
+      save: (r) => {
+        this.proxRecord = r;
+        this.persist();
+      },
+    });
     this.prox.onChange(() => this.refresh());
     this.prox.onHud((hud, before) => this.onHud(hud, before));
     this.prox.onFrame((m) => this.onFrame(m));
@@ -157,10 +173,17 @@ export class TailHunt {
     switch (m.type) {
       case "handler": {
         const seat = { matchId: this.d.keys.matchId, player: this.d.keys.player };
+        let line: { hintId: number; text: string };
         try {
-          this.note("handler", openVoice(this.d.boxSk, m.sealed, this.d.refereePk, seat).text);
+          line = openVoice(this.d.boxSk, m.sealed, this.d.refereePk, seat);
         } catch {
           this.note("info", `${NOT_SIGNED}.`);
+          return;
+        }
+        this.note("handler", line.text);
+        if (!this.handler.some((l) => l.hintId === line.hintId)) {
+          this.handler = [...this.handler, handlerLine(line.hintId, line.text)];
+          this.persist();
         }
         return;
       }
@@ -204,6 +227,10 @@ export class TailHunt {
       case "log-forked":
         this.note("info", `${LOG_FORKED}. Your phone kept the signed proof; export it from Results.`);
         return;
+      case "relay-bad-proof":
+        // Said once: the monitor keeps asking, and the status line shows it meanwhile.
+        if (n.fault.count === 1) this.note("info", `${RELAY_BAD_PROOF}. Checking again later.`);
+        return;
     }
   }
 
@@ -242,6 +269,10 @@ export class TailHunt {
       counting: grew > 0,
       atMs: this.now(),
     };
+  }
+
+  private persist(): void {
+    this.d.save({ ...this.proxRecord, tags: this.ui.tags, handler: this.handler });
   }
 
   private note(kind: Note["kind"], text: string): void {

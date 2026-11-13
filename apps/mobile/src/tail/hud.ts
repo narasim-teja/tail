@@ -23,6 +23,12 @@ export const NOT_SIGNED = "This update was not signed by the referee";
 /** What the phone shows, in the hunt and on Results, once the log monitor finds a fork. */
 export const LOG_FORKED = "The referee showed you a log it later changed";
 
+/**
+ * What the phone says, quietly, when the relay's log proof does not check out. That blames the
+ * relay, not the referee (proximity/monitor.ts), and the phone asks again later.
+ */
+export const RELAY_BAD_PROOF = "The relay sent a log proof that didn't check out";
+
 /** Opens one Handler line, signed by the referee and sealed to this player. */
 export const openVoice = (
   boxSk: Uint8Array,

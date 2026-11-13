@@ -147,6 +147,8 @@ function status(s: HuntSnapshot): string {
   if (s.queued > 1) parts.push(`${s.queued - 1} waiting`);
   if (s.socket !== "live") parts.push("Reconnecting");
   if (s.carry.kind === "on") parts.push("Mesh on");
+  // Soft on purpose: a bad proof convicts only the relay, and the check is asked again.
+  if (s.relayFault?.outstanding && !s.logFork) parts.push("Relay proof failed, rechecking");
   return parts.join(" · ");
 }
 

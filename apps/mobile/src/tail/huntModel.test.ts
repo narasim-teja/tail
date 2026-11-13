@@ -66,6 +66,7 @@ const snap = (o: Partial<HuntSnapshot> = {}): HuntSnapshot => ({
   invisible: null,
   noPocketSensor: false,
   logFork: null,
+  relayFault: null,
   ...o,
 });
 /** The referee counting a dark run of `ms`, as of now. */
@@ -170,10 +171,29 @@ describe("hunt model", () => {
       atMs: NOW,
       hud: { size: 3, root: new Uint8Array(32), signed: new Uint8Array(1) },
       other: { kind: "anchor" as const, anchor: { size: 5, root: new Uint8Array(32).fill(1) } },
-      proof: [],
     };
     const b = huntModel(snap({ logFork: fork, dark: darkRun(25_000) }), ctx, NOW).banner;
     expect(b).toMatchObject({ kind: "fork", title: "The referee showed you a log it later changed" });
+  });
+
+  test("a relay's bad log proof is only a word in the status line while it is being checked again", () => {
+    const root = { size: 3, root: new Uint8Array(32), signed: new Uint8Array(1) };
+    const relayFault = {
+      atMs: NOW,
+      count: 1,
+      outstanding: true,
+      hud: root,
+      other: { kind: "hud" as const, hud: { ...root, size: 5 } },
+      from: 3,
+      to: 5,
+      proof: [],
+    };
+    const m = huntModel(snap({ relayFault }), ctx, NOW);
+    expect(m.banner).toBeNull();
+    expect(m.status).toContain("Relay proof failed, rechecking");
+    expect(
+      huntModel(snap({ relayFault: { ...relayFault, outstanding: false } }), ctx, NOW).status,
+    ).not.toContain("Relay proof");
   });
 
   test("a phone without a proximity sensor is warned that the screen won't go off in a pocket", () => {

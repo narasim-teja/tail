@@ -3,11 +3,18 @@ import { resolve } from "node:path";
 import type { ExpoConfig } from "expo/config";
 import { colors } from "../../packages/brand/src/index.ts";
 
-// The team id, bundle id and contract live in the repo-root env files (see /.env.example).
+// The team id, bundle id, contract and the relay's parent account live in the repo-root env files
+// (see /.env.example).
 // Expo only loads env files from this folder, so read the root ones here. Values already in the
 // shell win, then .env.local, then .env. Only these public names are read: everything in
 // `extra` is bundled into the app, so no secret may ever be added to PUBLIC.
-const PUBLIC = ["APPLE_TEAM_ID", "IOS_BUNDLE_ID", "TAIL_CONTRACT", "NEAR_NETWORK"] as const;
+const PUBLIC = [
+  "APPLE_TEAM_ID",
+  "IOS_BUNDLE_ID",
+  "TAIL_CONTRACT",
+  "NEAR_NETWORK",
+  "NEAR_RELAY_ACCOUNT",
+] as const;
 
 function rootEnv(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -101,6 +108,9 @@ const config: ExpoConfig = {
   ],
   extra: {
     contractId: env("TAIL_CONTRACT") ?? null,
+    // Player accounts are `<handle>.<this>`. Pinned here, not read from the relay: the phone
+    // attests its keys for the account the relay names, so it must know which names are right.
+    accountParent: env("NEAR_RELAY_ACCOUNT") ?? null,
     nearNetwork: env("NEAR_NETWORK") ?? "testnet",
   },
 };

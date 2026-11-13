@@ -6,8 +6,8 @@ import {
   type Hud,
   RejectCode,
   SealContext,
-  seal,
   sealSignedPlayerKeys,
+  sealToPhone,
   signPlayerKeys,
 } from "@tail/protocol";
 import * as relayAuth from "../../../server/src/auth.ts";
@@ -38,7 +38,7 @@ describe("opening the referee's word", () => {
   });
 
   test("a HUD sealed without a signature (what the relay could forge) does not open", () => {
-    expect(() => openHud(sk, seal(pk, encodeHud(base), SealContext.hud), refereePk, seat)).toThrow();
+    expect(() => openHud(sk, sealToPhone(pk, encodeHud(base), SealContext.hud), refereePk, seat)).toThrow();
   });
 
   test("a signed HUD for another seat or match is refused", () => {

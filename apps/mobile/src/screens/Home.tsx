@@ -39,6 +39,8 @@ export interface HomeModel {
   balance: bigint | null;
   busy: string | null;
   error: string | null;
+  /** Something the app did on its own, in one line (a re-enrolment). */
+  notice?: string | null;
   recent: RecentMatch[];
   /** The relay's contract when it differs from this app's (ui/contract.tsx). */
   contractMismatch: string | null;
@@ -111,6 +113,7 @@ export function HomeView({
       </Pressable>
       {m.contractMismatch ? <ContractMismatch relay={m.contractMismatch} onUse={onUseRelayContract} /> : null}
       {m.error ? <Notice title="Something didn't go through" detail={m.error} /> : null}
+      {m.notice ? <Notice icon="verified" title={m.notice} /> : null}
 
       <Gap size="m" />
       <Button symbol="plus" title="Create a match" onPress={onCreate} style={styles.big} />
@@ -190,6 +193,7 @@ export function Home() {
         balance: app.wallet?.balance ?? null,
         busy: app.busy,
         error: app.error,
+        notice: app.notice,
         recent: app.recent,
         contractMismatch: app.contractMismatch,
       }}

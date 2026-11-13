@@ -217,7 +217,7 @@ describe("proximity client", () => {
     expect(() => r.client.start(keys)).not.toThrow();
   });
 
-  test("a signed HUD whose log does not extend the last one is a log fork, saved with both signed HUDs", async () => {
+  test("a relay proof that fails is a soft relay fault; two signed roots that contradict are a log fork, saved with both HUDs", async () => {
     const leaves = Array.from({ length: 12 }, (_, i) => sha256(Uint8Array.of(i)));
     const rewritten = leaves.map((l, i) => (i === 1 ? sha256(Uint8Array.of(99)) : l));
     const r = rig(genesisRecord(), {
@@ -231,13 +231,21 @@ describe("proximity client", () => {
     r.hud({ tick: 2, logSize: 6n, root: merkleRoot(leaves.slice(0, 6)) });
     await flush();
     expect(r.client.status().logFork).toBeNull();
+    // The relay can't prove the rewritten root consistent. That blames the relay only.
     r.hud({ tick: 3, logSize: 9n, root: merkleRoot(rewritten.slice(0, 9)) });
     await flush();
-    expect(notices).toEqual(["log-forked"]);
+    expect(notices).toEqual(["relay-bad-proof"]);
+    expect(r.client.status().logFork).toBeNull();
+    expect(r.client.status().relayFault).toMatchObject({ count: 1, from: 6, to: 9, outstanding: true });
+    expect(r.saved.at(-1)?.monitor.relayFault?.count).toBe(1);
+    // The referee then signs another root for the same size: that contradicts by itself.
+    r.hud({ tick: 4, logSize: 9n, root: merkleRoot(leaves.slice(0, 9)) });
+    await flush();
+    expect(notices).toEqual(["relay-bad-proof", "log-forked"]);
     const fork = r.saved.at(-1)?.monitor.fork;
     expect(r.client.status().logFork).toEqual(fork ?? null);
-    expect(fork && decodeSignedHud(fork.hud.signed).hud.tick).toBe(2);
-    expect(fork?.other.kind === "hud" && decodeSignedHud(fork.other.hud.signed).hud.tick).toBe(3);
+    expect(fork && decodeSignedHud(fork.hud.signed).hud.tick).toBe(3);
+    expect(fork?.other.kind === "hud" && decodeSignedHud(fork.other.hud.signed).hud.tick).toBe(4);
   });
 
   test("roots anchored on NEAR are read about once a checkpoint and checked against the HUD roots", async () => {
