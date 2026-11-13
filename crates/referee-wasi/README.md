@@ -167,7 +167,11 @@ The engine's rules are in `crates/referee-core/README.md`.
 - **Submit verdicts in seq order.** The seq is contiguous across `start`, every `tick` and `end`.
   Pass the last seq it holds as `last_seq`.
 - **Keep exactly the state blob that came with that seq.** A failed call changes nothing; retry
-  it with the same blob.
+  it with the same blob. `end` stores its End before it answers, so after a lost `end` answer
+  call it again with the same blob and the same `receipts`: it answers with that End. Settle
+  every hint first (voiced, or given up on) so the receipts do not change between the calls.
+- **Ask `devices` before locking a lobby.** A receipt says the referee held a device once; only
+  `devices` says `start` can read it now.
 - **Voice every hint.** For each entry in a tick's `hints`, call `voice` with its blob and a
   state blob, send `sealed` to the asker, keep `signed_text` for the replay, and pass
   `receipt` in the next tick's `receipts` (or `end`'s): the one whose prefix names the `sealed`
@@ -429,3 +433,9 @@ Active version on OutLayer: wasm sha256 `3f9320a61236f02f72481c2ec2b920854f22c75
 the same keys as the v1 build `20446c64…08664` before it. `ALLOW_UNATTESTED` is not set there,
 so `enroll` refuses a device without an Apple attestation, and `scripts/smoke.ts` (which enrols
 unattested ghosts) stops at `enroll` against it; against the local test referee it passes.
+
+That build predates `devices`, the idempotent `end`, the legacy device record read by `enroll`,
+`pubkeys` `app_id` and state version 7, so it is no longer what this crate builds: a local
+`scripts/build.ts` of this source gave `5e9cbb689229010b5ca91be184f8f3a76fb1150b095876783a4afec4a6514f4b`
+(776,147 bytes; WASI imports 0.2.6, HTTP 0.2.4), not uploaded. Against the active build the relay
+cannot run Start (it asks `devices` first).
