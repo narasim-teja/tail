@@ -66,6 +66,7 @@ const snap = (o: Partial<HuntSnapshot> = {}): HuntSnapshot => ({
   dark: null,
   outSinceMs: null,
   refused: null,
+  leftAtMs: null,
   frozenUntilMs: null,
   blocked: null,
   invisible: null,
@@ -250,6 +251,31 @@ describe("hunt model", () => {
     expect(taggedLines("maya.tail.testnet", "$5.40")).toEqual({
       title: "maya got you",
       line: "Your head, $5.40, is theirs now.",
+      more: null,
+    });
+  });
+
+  test("Leave match is on offer while hunting; leaving counts down from the referee's dark count", () => {
+    const playing = huntModel(snap(), ctx, NOW);
+    expect(playing.leaveNow).toEqual({ forfeitIn: "3:00", due: false, endsFirst: false, endsIn: "12:40" });
+    expect(playing.leaving).toBeNull();
+    const leaving = huntModel(snap({ leftAtMs: NOW - 30_000 }), ctx, NOW);
+    expect(leaving.leaveNow).toBeNull();
+    expect(leaving.leaving).toMatchObject({ forfeitIn: "2:30", due: false });
+    // Out after leaving: the out screen says you left, and there is nothing left to count.
+    const out = snap({
+      leftAtMs: NOW - 200_000,
+      hud: hudView(hudOf({ status: TargetStatus.Out, taggedBy: "maya.tail.testnet" })),
+    });
+    expect(huntModel(out, ctx, NOW)).toMatchObject({
+      leaving: null,
+      leaveNow: null,
+      left: true,
+      tagged: true,
+    });
+    expect(taggedLines("maya.tail.testnet", "$5.40", true)).toEqual({
+      title: "You left the match",
+      line: "Your head, $5.40, went to maya.",
       more: null,
     });
   });

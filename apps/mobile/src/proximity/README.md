@@ -33,8 +33,10 @@ It does:
 ```ts
 const client = new ProximityClient(deps); // deps: ProximityDeps (ports and the saved record)
 client.start(keys); // PlayerKeys from the referee; one client per match
+client.start(keys, { reporting: false }); // socket, outbox and monitor only; the radio stays off
 client.stop(); // radio and timers off; the outbox stays saved
-client.stopReporting(); // the game says this player is done; socket stays open
+client.stopReporting(); // the game says this player is done; socket stays open, no batch is built
+client.resumeReporting(); // the radio and the batch loop again, while the match runs
 client.queueAction(action); // a wire Action, carried in the next batch unread
 await client.batchNow(); // send now instead of waiting for the next round
 await client.checkAnchors(roots); // anchored roots read from NEAR, checked against the HUD roots

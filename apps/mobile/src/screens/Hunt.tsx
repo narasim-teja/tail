@@ -1,11 +1,12 @@
 // The hero screen (docs/briefs/mobile.md 5). Glanced at for two seconds in sunlight: target and
 // time left small at the top; LOCK and HEAT huge in the upper two-thirds, HEAD between them; the
 // live map below; Handler at thumb reach. Lock full floods the screen persimmon and STRIKE takes
-// the map's place. Tagged drops the screen to ink.
+// the map's place. Tagged drops the screen to ink. Leave match sits small under the clock, far
+// from STRIKE and the thumb, and asks first; while leaving, the screen counts down to the forfeit.
 
 import type { HintKind } from "@tail/protocol";
 import { useEffect, useRef, useState } from "react";
-import { Animated, Linking, StyleSheet, Text, View } from "react-native";
+import { Animated, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { Blocked } from "../proximity/client";
 import { useApp } from "../state/app";
@@ -15,6 +16,7 @@ import {
   handleOf,
   huntModel,
   isTestPlayer,
+  type LeaveTime,
   taggedLines,
 } from "../tail/huntModel";
 import { Icon } from "../ui/brand";
@@ -28,6 +30,7 @@ import {
   Display,
   Eyebrow,
   Figure,
+  Num,
   Screen,
   Strong,
   type Tone,
@@ -36,7 +39,7 @@ import {
 import { MapPanel } from "../ui/map";
 import { ease, rise, useArrive, useReduceMotion } from "../ui/motion";
 import { Breathe, Ripple } from "../ui/scene";
-import { HintSheet } from "../ui/sheet";
+import { HintSheet, LeaveSheet } from "../ui/sheet";
 import { color, font, maxScale, motion, radius, space } from "../ui/theme";
 import { DispatchStrip, WarningBanner } from "../ui/top";
 
@@ -45,6 +48,8 @@ export interface HuntActions {
   onHint: (kind: HintKind, question: string) => void;
   onOpenSettings: () => void;
   onResults: () => void;
+  onLeave: () => void;
+  onRejoin: () => void;
 }
 
 export function HuntView({
@@ -63,6 +68,7 @@ export function HuntView({
 }) {
   const inset = useSafeAreaInsets();
   const [sheet, setSheet] = useState(sheetOpenInitial);
+  const [leaveSheet, setLeaveSheet] = useState(false);
   // The arc gives way on short screens and while a banner or dispatch is up, so the map keeps
   // a usable height on a small iPhone.
   const [height, setHeight] = useState(0);
@@ -103,10 +109,13 @@ export function HuntView({
       <TaggedView
         head={m.head}
         taggedBy={m.taggedBy}
+        left={m.left}
         onResults={actions.onResults}
         reduceMotion={reduceMotion}
       />
     );
+  // Leaving reports nothing, so nothing blocks it: Bluetooth or the device key no longer matter.
+  if (m.leaving) return <LeavingView time={m.leaving} head={m.head} onRejoin={actions.onRejoin} />;
   if (m.blocked) return <BlockedView what={m.blocked} onOpenSettings={actions.onOpenSettings} />;
 
   const tone: Tone = full ? "persimmon" : "paper";
@@ -140,8 +149,21 @@ export function HuntView({
                 <Strong lines={1}>{handleOf(m.target)}</Strong>
               </Animated.View>
             </View>
-            <View style={styles.right} accessible accessibilityLabel={m.timeLeft}>
-              <Figure>{m.timeLeft}</Figure>
+            <View style={styles.right}>
+              <View accessible accessibilityLabel={m.timeLeft}>
+                <Figure>{m.timeLeft}</Figure>
+              </View>
+              {m.leaveNow ? (
+                <Pressable
+                  onPress={() => setLeaveSheet(true)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Leave match"
+                  accessibilityHint="Asks first. Your head goes to your hunter."
+                  hitSlop={{ top: 6, bottom: 14, left: 20, right: 20 }}
+                >
+                  <Caption muted>Leave</Caption>
+                </Pressable>
+              ) : null}
             </View>
           </View>
 
@@ -221,6 +243,19 @@ export function HuntView({
             setSheet(false);
           }}
         />
+        {m.leaveNow ? (
+          <LeaveSheet
+            open={leaveSheet}
+            head={m.head}
+            time={m.leaveNow}
+            reduceMotion={reduceMotion}
+            onClose={() => setLeaveSheet(false)}
+            onLeave={() => {
+              setLeaveSheet(false);
+              actions.onLeave();
+            }}
+          />
+        ) : null}
       </View>
     </ToneProvider>
   );
@@ -258,15 +293,18 @@ function StrikeSent({ reduceMotion }: { reduceMotion: boolean }) {
 export function TaggedView({
   head,
   taggedBy,
+  left = false,
   onResults,
   reduceMotion = false,
 }: {
   head: string;
   taggedBy: string | null;
+  /** Out after Leave match: the dark rule took the head, not a tag. */
+  left?: boolean;
   onResults: () => void;
   reduceMotion?: boolean;
 }) {
-  const t = taggedLines(taggedBy, head);
+  const t = taggedLines(taggedBy, head, left);
   const hit = useArrive(t.title, reduceMotion, { ms: motion.takeover });
   const words = useArrive(t.title, reduceMotion, { ms: motion.slow, delay: motion.base });
   return (
@@ -289,6 +327,64 @@ export function TaggedView({
             </Caption>
           ) : null}
         </Animated.View>
+      </View>
+    </Screen>
+  );
+}
+
+/**
+ * Leaving: the phone has stopped reporting and the referee's dark count runs to the forfeit. The
+ * count is the referee's own (`dark_ms`), so it is shown as "about". Rejoin is the one action.
+ */
+export function LeavingView({
+  time,
+  head,
+  onRejoin,
+}: {
+  time: LeaveTime;
+  head: string;
+  onRejoin: () => void;
+}) {
+  const [label, figure, line] = time.endsFirst
+    ? [
+        "Match ends in",
+        time.endsIn,
+        `The match ends before the referee would call it, so your head, ${head}, stays yours.`,
+      ]
+    : time.due
+      ? [
+          null,
+          null,
+          `The referee calls it at its next update. Your head, ${head}, goes to whoever is hunting you.`,
+        ]
+      : [
+          "Referee calls it in about",
+          time.forfeitIn,
+          `Then your head, ${head}, goes to whoever is hunting you.`,
+        ];
+  return (
+    <Screen
+      scroll={false}
+      footer={<Button title="Rejoin the hunt" hint="Your phone starts reporting again" onPress={onRejoin} />}
+    >
+      <View style={styles.center}>
+        <Icon name="dark" size={48} tint={color.ink} />
+        <Display center>Leaving the match</Display>
+        <Body center muted>
+          Your phone has stopped reporting.
+        </Body>
+        {label && figure ? (
+          <View style={styles.count} accessible accessibilityLabel={`${label} ${figure}`}>
+            <Eyebrow muted center>
+              {label}
+            </Eyebrow>
+            <Num>{figure}</Num>
+          </View>
+        ) : null}
+        <Body center>{line}</Body>
+        <Caption center muted>
+          Rejoin to keep playing. Dark time already counted stays counted.
+        </Caption>
       </View>
     </Screen>
   );
@@ -363,8 +459,8 @@ export function Hunt() {
         )
       : null;
 
-  // Heat is felt in the pocket: a beat whose cadence follows heat.
-  const heat = m?.heat ?? 0;
+  // Heat is felt in the pocket: a beat whose cadence follows heat. Not for a player leaving.
+  const heat = m && !m.leaving ? m.heat : 0;
   useEffect(() => {
     const every = heatIntervalMs(heat);
     if (every === null) return;
@@ -389,6 +485,8 @@ export function Hunt() {
         onHint: (kind, q) => session.hint(kind, q),
         onOpenSettings: () => void Linking.openSettings(),
         onResults: () => app.showResults(),
+        onLeave: () => app.leaveMatch(),
+        onRejoin: () => app.rejoinHunt(),
       }}
     />
   );
@@ -443,6 +541,7 @@ const styles = StyleSheet.create({
   handler: { paddingHorizontal: space.l },
   status: { flex: 1, textAlign: "right" },
   words: { gap: space.m, alignItems: "center" },
+  count: { alignItems: "center", paddingVertical: space.s },
   center: {
     flex: 1,
     alignItems: "center",

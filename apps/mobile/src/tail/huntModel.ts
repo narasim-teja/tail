@@ -7,6 +7,7 @@ import type { RefereeKind } from "../relay/client";
 import type { LatLon } from "./geo";
 import { type Board, formatAmount, LOG_FORKED, priceNow, refusalBanner } from "./hud";
 import type { HuntSnapshot, Note } from "./hunt";
+import { leaveCountdown } from "./leave";
 import { clock, darkState, zoneState } from "./rules";
 import type { Zone } from "./zone";
 
@@ -80,6 +81,15 @@ export function dispatchCard(
   };
 }
 
+/** How long until the referee should call a forfeit (leave.ts), and whether the match ends first. */
+export interface LeaveTime {
+  forfeitIn: string;
+  /** The referee should call it at its next update. */
+  due: boolean;
+  endsFirst: boolean;
+  endsIn: string;
+}
+
 export interface HuntModel {
   target: string;
   timeLeft: string;
@@ -110,6 +120,15 @@ export interface HuntModel {
   hints: HintOption[];
   status: string;
   blocked: Blocked | null;
+  /**
+   * Leave match is on offer (still in the hunt, not leaving already): what leaving now would
+   * cost, for the sheet that asks first. Null when it is not on offer.
+   */
+  leaveNow: LeaveTime | null;
+  /** The player chose to leave and the referee has not called it yet. */
+  leaving: LeaveTime | null;
+  /** The player had chosen to leave when they went out: the out screen says so. */
+  left: boolean;
 }
 
 export const money = (units: bigint) => `$${formatAmount(units)}`;
@@ -165,7 +184,16 @@ export function resultOutcome(f: {
 export function taggedLines(
   taggedBy: string | null,
   head: string,
+  left = false,
 ): { title: string; line: string; more: string | null } {
+  // Out by the dark rule after Leave match: no one got you, you went.
+  if (left) {
+    return {
+      title: "You left the match",
+      line: `Your head, ${head}, went to ${taggedBy ? handleOf(taggedBy) : "your hunter"}.`,
+      more: null,
+    };
+  }
   if (taggedBy) {
     return { title: `${handleOf(taggedBy)} got you`, line: `Your head, ${head}, is theirs now.`, more: null };
   }
@@ -254,6 +282,17 @@ export function huntModel(
     };
   }
   const handler = s.notes.find((n) => n.kind === "handler") ?? null;
+  const endMs = Number(ctx.keys.endMs);
+  const inPlay = !s.over && (!hud || hud.status === "hunting");
+  const leaveTime = (leftAtMs: number): LeaveTime => {
+    const c = leaveCountdown(nowMs, leftAtMs, s.dark, endMs);
+    return {
+      forfeitIn: clock(c.seconds * 1000),
+      due: c.seconds === 0,
+      endsFirst: c.endsFirst,
+      endsIn: clock(endMs - nowMs),
+    };
+  };
   return {
     target: hud?.target ?? ctx.keys.target,
     timeLeft: `${clock(Number(ctx.keys.endMs) - nowMs)} left`,
@@ -278,5 +317,8 @@ export function huntModel(
     hints: hintOptions(ctx.stake, hud),
     status: status(s),
     blocked: s.blocked,
+    leaveNow: inPlay && s.leftAtMs === null ? leaveTime(nowMs) : null,
+    leaving: inPlay && s.leftAtMs !== null ? leaveTime(s.leftAtMs) : null,
+    left: s.leftAtMs !== null,
   };
 }

@@ -58,6 +58,8 @@ const ZONE = {
 };
 const ME = { lat: 42.35468, lon: -71.06612, heading: 60 };
 
+const LEAVE = { forfeitIn: "3:00", due: false, endsFirst: false, endsIn: "23:41" };
+
 const hunt = (o: Partial<HuntModel> = {}): HuntModel => ({
   target: "maya.tail-dev.testnet",
   timeLeft: "23:41 left",
@@ -82,10 +84,20 @@ const hunt = (o: Partial<HuntModel> = {}): HuntModel => ({
   hints: hintOptions(5_000_000n),
   status: "",
   blocked: null,
+  leaveNow: LEAVE,
+  leaving: null,
+  left: false,
   ...o,
 });
 
-const huntActions = { onStrike: noop, onHint: noop, onOpenSettings: noop, onResults: noop };
+const huntActions = {
+  onStrike: noop,
+  onHint: noop,
+  onOpenSettings: noop,
+  onResults: noop,
+  onLeave: noop,
+  onRejoin: noop,
+};
 
 const lobby = (o: Partial<LobbyModel> = {}): LobbyModel => ({
   matchId: ID,
@@ -360,10 +372,18 @@ export const STATES: Record<string, () => ReactNode> = {
   ),
   briefing: () => (
     <BriefingView
-      m={{ target: "maya.tail-dev.testnet", head: 5_000_000n, startsInMs: 42_000, busy: null, error: null }}
+      m={{
+        target: "maya.tail-dev.testnet",
+        head: 5_000_000n,
+        startsInMs: 42_000,
+        busy: null,
+        error: null,
+        leave: { head: "$5.00", time: LEAVE },
+      }}
       onHunt={noop}
       onRetry={noop}
       onSettings={noop}
+      onLeave={noop}
     />
   ),
   hunt: () => H(hunt({ lock: 2, heat: 1 })),
@@ -418,6 +438,15 @@ export const STATES: Record<string, () => ReactNode> = {
     ),
   "hunt-sheet": () => H(hunt({ lock: 1 }), { sheet: true }),
   "hunt-tagged": () => <TaggedView head="$5.40" taggedBy="maya.tail-dev.testnet" onResults={noop} />,
+  "hunt-leaving": () =>
+    H(
+      hunt({ leaveNow: null, leaving: { forfeitIn: "2:14", due: false, endsFirst: false, endsIn: "23:41" } }),
+    ),
+  "hunt-leaving-due": () =>
+    H(hunt({ leaveNow: null, leaving: { forfeitIn: "0:00", due: true, endsFirst: false, endsIn: "23:41" } })),
+  "hunt-leaving-ends-first": () =>
+    H(hunt({ leaveNow: null, leaving: { forfeitIn: "2:14", due: false, endsFirst: true, endsIn: "1:05" } })),
+  "hunt-left": () => <TaggedView head="$5.40" taggedBy="maya.tail-dev.testnet" left onResults={noop} />,
   "hunt-blocked-bt": () => <BlockedView what="bluetooth" onOpenSettings={noop} />,
   "hunt-blocked-loc": () => <BlockedView what="location" onOpenSettings={noop} />,
   "hunt-blocked-approx": () => <BlockedView what="approximate" onOpenSettings={noop} />,

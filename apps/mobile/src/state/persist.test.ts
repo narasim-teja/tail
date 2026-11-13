@@ -57,6 +57,8 @@ describe("match record", () => {
         relayFault,
       },
       handler: [{ hintId: 7, textHash: h(7) }],
+      // The player chose to leave: a relaunch must find it and stay off the radio.
+      leftAtMs: 1_800_000_200_000,
     };
     expect(decodeMatchRecord(encodeMatchRecord(r))).toEqual(r);
     const anchor = {

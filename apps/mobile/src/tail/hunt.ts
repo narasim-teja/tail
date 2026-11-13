@@ -8,6 +8,8 @@
 // - the Handler's signed lines, and every notice in plain words (a log fork above all)
 // - the tag count and the hash of each Handler line, saved beside the proximity record so a
 //   relaunch keeps them (the lines are checked against the referee's log after End: handler.ts)
+// - leaving the match: the player stops reporting and the referee's dark rule forfeits their
+//   head (leave.ts); saved too, so a relaunch does not quietly start reporting again
 
 import type { AnchoredRoot, HintKind, Hud, PlayerKeys } from "@tail/protocol";
 import type { RadioFix } from "../../modules/tail-radio";
@@ -34,6 +36,7 @@ import {
   priceNow,
   RELAY_BAD_PROOF,
 } from "./hud";
+import { type LeaveFacts, leaveStep, reports } from "./leave";
 import { type DarkInfo, VehicleWatch } from "./rules";
 
 /** What the hunt keeps in the match file (state/persist.ts) so a relaunch carries on. */
@@ -42,6 +45,8 @@ export interface HuntRecord extends ProximityRecord {
   tags: number;
   /** Each signed Handler line received, by hint id and text hash. */
   handler: HandlerLine[];
+  /** When the player chose to leave the match (leave.ts); null while playing. */
+  leftAtMs: number | null;
 }
 
 export interface TailHuntDeps extends Omit<ProximityDeps, "record" | "save"> {
@@ -76,6 +81,8 @@ interface TailState {
   outSinceMs: number | null;
   /** The referee's last refusal of one of your actions (a strike out of range, a hint too soon). */
   refused: { atMs: number; action: string; code: number | null } | null;
+  /** When the player chose to leave the match; null while playing (leave.ts). */
+  leftAtMs: number | null;
 }
 
 export interface HuntSnapshot extends ProximityStatus, TailState {
@@ -107,6 +114,7 @@ export class TailHunt {
       dark: null,
       outSinceMs: null,
       refused: null,
+      leftAtMs: d.record.leftAtMs,
     };
     this.proxRecord = d.record;
     this.handler = [...d.record.handler];
@@ -127,8 +135,9 @@ export class TailHunt {
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────────────────
 
+  /** Starts the hunt; a player who chose to leave before a relaunch stays off the radio. */
   start(): void {
-    this.prox.start(this.d.keys);
+    this.prox.start(this.d.keys, { reporting: reports(this.leaveFacts()) });
   }
 
   /** Stops the radio and timers. Unsent batches stay in the outbox file. */
@@ -158,6 +167,28 @@ export class TailHunt {
     this.update({ strikeSentAtMs: this.now() });
     // Sent with the very next batch instead of waiting up to BATCH_MS: the lock may not last.
     void this.prox.batchNow();
+  }
+
+  /**
+   * Leaves the match: this phone stops reporting (radio, fixes, batches) and keeps its HUD socket
+   * for the outcome. The referee forfeits the head to the hunter once it has counted
+   * DARK_FORFEIT_MS of dark time. Saved first, so a relaunch keeps the choice.
+   */
+  leave(): void {
+    const leftAtMs = leaveStep(this.leaveFacts(), { kind: "leave", atMs: this.now() });
+    if (leftAtMs === this.ui.leftAtMs) return;
+    this.update({ leftAtMs });
+    this.persist();
+    this.prox.stopReporting();
+  }
+
+  /** Back in the hunt before the referee called the forfeit: reporting again. */
+  rejoin(): void {
+    const leftAtMs = leaveStep(this.leaveFacts(), { kind: "rejoin" });
+    if (leftAtMs === this.ui.leftAtMs) return;
+    this.update({ leftAtMs });
+    this.persist();
+    this.prox.resumeReporting();
   }
 
   /** One line in the hunt's log from the app, about something it did not do mid-hunt. */
@@ -281,8 +312,17 @@ export class TailHunt {
     };
   }
 
+  private leaveFacts(): LeaveFacts {
+    return { leftAtMs: this.ui.leftAtMs, status: this.ui.hud?.status ?? null, over: this.prox.status().over };
+  }
+
   private persist(): void {
-    this.d.save({ ...this.proxRecord, tags: this.ui.tags, handler: this.handler });
+    this.d.save({
+      ...this.proxRecord,
+      tags: this.ui.tags,
+      handler: this.handler,
+      leftAtMs: this.ui.leftAtMs,
+    });
   }
 
   private note(kind: Note["kind"], text: string): void {

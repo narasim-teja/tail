@@ -43,8 +43,10 @@ export class EpochTimer {
     this.fire();
   }
 
+  /** Stops the clock; a later start announces the current epoch again (the radio needs its token). */
   stop(): void {
     this.running = false;
+    this.last = null;
     if (this.handle !== null) this.timers.clearTimeout(this.handle);
     this.handle = null;
   }

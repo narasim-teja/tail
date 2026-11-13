@@ -26,9 +26,10 @@ export interface RouteFacts {
   resultsNow: boolean;
   /**
    * The running hunt session, if any. It starts as soon as the orders open, so the phone reports
-   * while the player reads them; `shown` once they tapped Hunt to leave the briefing.
+   * while the player reads them; `shown` once they tapped Hunt to leave the briefing; `leaving`
+   * once they chose Leave match, from the briefing or the hunt, before a relaunch or after.
    */
-  session: { over: boolean; shown: boolean } | null;
+  session: { over: boolean; shown: boolean; leaving: boolean } | null;
   /** The relay's phase for the match. */
   phase: string | undefined;
   /** The chain says this player is out. */
@@ -41,7 +42,9 @@ export function routeFor(f: RouteFacts): Route {
   if (!f.primerSeen) return "primer";
   if (!f.matchId) return f.page ?? "home";
   if (f.resultsNow) return "results";
-  if (f.session) return f.session.over ? "results" : f.session.shown ? "hunt" : "briefing";
+  // Leaving shows on the hunt screen (its countdown and Rejoin), wherever it was chosen.
+  if (f.session)
+    return f.session.over ? "results" : f.session.shown || f.session.leaving ? "hunt" : "briefing";
   // Out is final: a reopened app must not offer the hunt again while the others play on.
   if (f.out || f.phase === "ended") return "results";
   if (f.phase === "running" || f.phase === "ending") return "briefing";

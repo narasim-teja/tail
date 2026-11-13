@@ -5,7 +5,8 @@
 // inclusion receipts after the match), the referee's tag count, the newest fix time (so fixes
 // stay in order after a relaunch), strikes or hints not yet inside a committed batch, the log
 // monitor's place, with a fork's or a relay fault's evidence once found (proximity/monitor.ts),
-// and the hash of each Handler line received (checked against the log after End). Sealed
+// the hash of each Handler line received (checked against the log after End), and when the
+// player chose to leave the match, so a relaunch keeps them off the radio. Sealed
 // batches are ciphertext to the enclave and hashes reveal nothing, so a file is fine; secrets
 // stay in the Keychain.
 
@@ -86,6 +87,7 @@ interface MatchJson {
   actions?: Action[];
   monitor?: MonitorJson;
   handler?: { hintId: number; textHash: string }[];
+  leftAtMs?: number | null;
 }
 
 export const emptyRecord = (matchId: string): MatchRecord => ({
@@ -100,6 +102,7 @@ export const emptyRecord = (matchId: string): MatchRecord => ({
   actions: [],
   monitor: freshMonitor(),
   handler: [],
+  leftAtMs: null,
 });
 
 const itemJson = (o: OutboxItem): ItemJson => ({
@@ -198,6 +201,7 @@ export const encodeMatchRecord = (r: MatchRecord): string =>
     actions: r.actions,
     monitor: monitorJson(r.monitor),
     handler: r.handler.map((l) => ({ hintId: l.hintId, textHash: toHex(l.textHash) })),
+    leftAtMs: r.leftAtMs,
   } satisfies MatchJson);
 
 const isU32 = (v: unknown): v is number =>
@@ -261,6 +265,8 @@ export function decodeMatchRecord(text: string): MatchRecord {
             : [],
         )
       : [],
+    // A file from before Leave match has no choice in it: that player was playing.
+    leftAtMs: Number.isSafeInteger(j.leftAtMs) ? (j.leftAtMs as number) : null,
   };
 }
 

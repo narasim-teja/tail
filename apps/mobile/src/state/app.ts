@@ -222,7 +222,13 @@ class AppModel {
       matchId: this.matchId,
       page: this.page,
       resultsNow: this.resultsNow,
-      session: this.session ? { over: this.session.snapshot().over, shown: this.huntShown } : null,
+      session: this.session
+        ? {
+            over: this.session.snapshot().over,
+            shown: this.huntShown,
+            leaving: this.session.snapshot().leftAtMs !== null,
+          }
+        : null,
       phase: this.match?.phase,
       out: !!this.match?.chain?.players.find((p) => p.accountId === this.me)?.out,
     });
@@ -866,6 +872,21 @@ class AppModel {
     const carryKey = this.settings.meshCarry ? await this.relay.carryKey().catch(() => null) : null;
     this.briefing = { keys, refereeBoxPk, refereePk: facts.refereePk, carryKey };
     this.beginHunt();
+  }
+
+  /**
+   * Leave match (tail/leave.ts): the phone stops reporting and keeps listening for the outcome;
+   * the referee forfeits the head to the hunter once it has counted the dark time. The choice is
+   * saved in the match file, so a relaunch stays off the radio.
+   */
+  leaveMatch(): void {
+    this.session?.leave();
+  }
+
+  /** Back in the hunt before the referee called the forfeit. */
+  rejoinHunt(): void {
+    this.huntShown = true;
+    this.session?.rejoin();
   }
 
   /** Hunt on the briefing: reporting already runs (brief), so this only opens the hunt screen. */

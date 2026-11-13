@@ -23,13 +23,18 @@ describe("which screen shows", () => {
   });
 
   test("a running hunt session decides: hunt until over, then results", () => {
-    expect(routeFor({ ...base, session: { over: false, shown: true } })).toBe("hunt");
-    expect(routeFor({ ...base, session: { over: true, shown: true } })).toBe("results");
+    expect(routeFor({ ...base, session: { over: false, shown: true, leaving: false } })).toBe("hunt");
+    expect(routeFor({ ...base, session: { over: true, shown: true, leaving: false } })).toBe("results");
+  });
+
+  test("leaving shows on the hunt screen, chosen from the briefing or after a relaunch", () => {
+    expect(routeFor({ ...base, session: { over: false, shown: false, leaving: true } })).toBe("hunt");
+    expect(routeFor({ ...base, session: { over: true, shown: false, leaving: true } })).toBe("results");
   });
 
   test("the session reports from the moment the orders open; Hunt only leaves the briefing", () => {
-    expect(routeFor({ ...base, session: { over: false, shown: false } })).toBe("briefing");
-    expect(routeFor({ ...base, session: { over: true, shown: false } })).toBe("results");
+    expect(routeFor({ ...base, session: { over: false, shown: false, leaving: false } })).toBe("briefing");
+    expect(routeFor({ ...base, session: { over: true, shown: false, leaving: false } })).toBe("results");
   });
 
   test("reopened mid-match: briefing while still in, results once the chain says you are out", () => {
@@ -42,7 +47,9 @@ describe("which screen shows", () => {
     expect(routeFor({ ...base, phase: "lobby" })).toBe("lobby");
     expect(routeFor({ ...base, phase: undefined })).toBe("lobby");
     expect(routeFor({ ...base, phase: "ended" })).toBe("results");
-    expect(routeFor({ ...base, resultsNow: true, session: { over: false, shown: true } })).toBe("results");
+    expect(
+      routeFor({ ...base, resultsNow: true, session: { over: false, shown: true, leaving: false } }),
+    ).toBe("results");
   });
 });
 

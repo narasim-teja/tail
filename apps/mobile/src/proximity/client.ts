@@ -345,12 +345,13 @@ export class ProximityClient {
   /**
    * Starts the radio, the epoch clock, the batch loop, the HUD socket and the mesh for the match
    * these keys are for. One client serves one match: a later start must bring the same keys.
+   * `reporting: false` brings up only the socket, the outbox and the log monitor: the player
+   * chose to stop reporting before a relaunch, and the radio stays off until `resumeReporting`.
    */
-  start(keys: PlayerKeys): void {
+  start(keys: PlayerKeys, o: { reporting?: boolean } = {}): void {
     if (this.running) return;
     const k = this.keyed(keys);
     this.running = true;
-    this.reporting = true;
     const r = this.d.radio;
     this.unsub.push(r.onSighting((s) => this.onSighting(s)));
     this.unsub.push(
@@ -383,11 +384,7 @@ export class ProximityClient {
         if (e.pocketMode === true && e.proximitySupported === false) this.update({ noPocketSensor: true });
       }),
     );
-    r.setPocketMode(true);
-    r.startLocation();
-    r.startBeacon();
-    r.startScan();
-    k.epochTimer.start();
+    if (o.reporting !== false) this.startRadio(k);
     this.hudPort = this.d.hud(
       (m) => this.onMessage(m),
       (s) => this.update({ socket: s }),
@@ -398,6 +395,15 @@ export class ProximityClient {
     this.monitor.resume();
     this.scheduleBatch();
     this.scheduleAnchors();
+    this.refresh();
+  }
+
+  /** Reporting again after `stopReporting`, while the match runs: the radio and the batch loop. */
+  resumeReporting(): void {
+    const k = this.k;
+    if (!this.running || this.reporting || this.local.over || !k) return;
+    this.startRadio(k);
+    this.scheduleBatch();
     this.refresh();
   }
 
@@ -441,10 +447,14 @@ export class ProximityClient {
     this.save();
   }
 
-  /** Builds one batch now (if the match has started) and pushes the outbox along. */
+  /**
+   * Builds one batch now (if the match has started and this phone reports) and pushes the
+   * outbox along. A player who stopped reporting sends nothing new: a batch would count as
+   * present and undo the dark time they chose.
+   */
   async batchNow(): Promise<void> {
     const k = this.k;
-    if (!k || !this.running || this.now() < k.startMs || this.local.over) return;
+    if (!k || !this.reporting || this.now() < k.startMs || this.local.over) return;
     try {
       await k.builder.build();
       this.heard = 0;
@@ -585,6 +595,17 @@ export class ProximityClient {
   private finish(): void {
     this.update({ over: true });
     this.stopReporting();
+  }
+
+  /** Pocket mode, location, beacon and scan, and the epoch clock that rotates the token. */
+  private startRadio(k: Keyed): void {
+    this.reporting = true;
+    const r = this.d.radio;
+    r.setPocketMode(true);
+    r.startLocation();
+    r.startBeacon();
+    r.startScan();
+    k.epochTimer.start();
   }
 
   private stopRadio(): void {

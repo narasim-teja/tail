@@ -137,6 +137,7 @@ const fresh = (): HuntRecord => ({
   actions: [],
   monitor: freshMonitor(),
   handler: [],
+  leftAtMs: null,
 });
 
 /** The relay's carry keys and a stand-in for `POST /carry`: opens the envelope, signs the receipt. */
@@ -309,6 +310,71 @@ describe("hunt", () => {
     r.s.strike();
     await flush();
     expect(r.batches().map((b) => b.actions.map((a) => a.kind))).toEqual([["Strike"]]);
+  });
+
+  test("leaving stops the radio and builds no batch, a strike included; the socket still hears the referee", async () => {
+    const r = rig();
+    r.s.start();
+    await r.rounds(2);
+    const before = r.batches().length;
+    expect(before).toBe(2);
+    r.s.leave();
+    expect(r.radio.calls.slice(-4)).toEqual(["stopScan", "stopBeacon", "stopLocation", "pocket:false"]);
+    expect(r.last().leftAtMs).toBe(START + 2 * BATCH_MS);
+    await r.rounds(5);
+    r.s.strike();
+    await flush();
+    expect(r.batches()).toHaveLength(before);
+    // The referee's count comes in: dark time grows, and the out HUD still arrives.
+    r.sendHud({ darkMs: 0 });
+    r.sendHud({ darkMs: 30_000 });
+    expect(r.s.snapshot().dark).toMatchObject({ totalMs: 30_000, counting: true });
+    r.sendHud({ darkMs: 180_000, status: TargetStatus.Out });
+    expect(r.s.snapshot().hud?.status).toBe("out");
+    // The referee called it: rejoining changes nothing.
+    r.s.rejoin();
+    expect(r.s.snapshot().leftAtMs).toBe(START + 2 * BATCH_MS);
+    await r.rounds(2);
+    expect(r.batches()).toHaveLength(before);
+  });
+
+  test("rejoining before the forfeit reports again: radio, this epoch's token, batches", async () => {
+    const r = rig();
+    r.s.start();
+    r.t.advance(EPOCH_MS + 1_000);
+    await flush();
+    r.s.leave();
+    // Back within the same epoch: the clock has no new epoch to announce by itself.
+    r.t.advance(2_000);
+    await flush();
+    const sent = r.batches().length;
+    const tokens = r.radio.tokens.length;
+    r.s.rejoin();
+    expect(r.last().leftAtMs).toBeNull();
+    expect(r.radio.calls.slice(-4)).toEqual(["pocket:true", "startLocation", "startBeacon", "startScan"]);
+    // The radio was off: it gets this epoch's token again.
+    expect(r.radio.tokens.slice(tokens)).toEqual([
+      tokenToUuid(beaconToken(kTag, keys.kPlayer, Math.floor((r.t.now() - START) / EPOCH_MS))),
+    ]);
+    await r.rounds(2);
+    expect(r.batches().length).toBe(sent + 2);
+  });
+
+  test("a relaunch after Leave match stays off the radio and builds nothing, until Rejoin", async () => {
+    const first = rig();
+    first.s.start();
+    first.s.leave();
+    const saved = first.last();
+    expect(saved.leftAtMs).toBe(START);
+    const r = rig({ record: saved });
+    r.s.start();
+    expect(r.s.snapshot().leftAtMs).toBe(START);
+    expect(r.radio.calls).toEqual([]);
+    await r.rounds(3);
+    expect(r.batches()).toEqual([]);
+    r.s.rejoin();
+    await r.rounds(1);
+    expect(r.batches()).toHaveLength(1);
   });
 
   test("a signed HUD drives lock, heat and the STRIKE button", () => {

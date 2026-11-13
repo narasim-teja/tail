@@ -1,17 +1,19 @@
 // Briefing: your target's name is the whole screen; your head and the start countdown below.
 // The reveal is the moment: the chase plays with your target's initials on the ink dot, the
 // name slides up out of a mask with a tick in the hand, and the last seconds count down by feel.
+// The phone already reports here, so Leave match is here too, quiet under Hunt, and asks first.
 import { useEffect, useState } from "react";
 import { Animated, StyleSheet, View } from "react-native";
 import { useApp } from "../state/app";
 import { autoBrief } from "../state/route";
-import { handleOf, isTestPlayer, money } from "../tail/huntModel";
+import { handleOf, huntModel, isTestPlayer, type LeaveTime, money } from "../tail/huntModel";
 import { clock } from "../tail/rules";
 import { Mark } from "../ui/brand";
 import { haptic } from "../ui/haptics";
 import { Body, Button, Caption, Eyebrow, Notice, Num, Poster, Row, Screen } from "../ui/kit";
 import { rise, useArrive, useReduceMotion } from "../ui/motion";
 import { ChaseBand, Ripple } from "../ui/scene";
+import { LeaveSheet } from "../ui/sheet";
 import { motion, space } from "../ui/theme";
 
 /** Seconds before the start that tick in the hand. */
@@ -32,6 +34,8 @@ export interface BriefingModel {
   startsInMs: number;
   busy: string | null;
   error: string | null;
+  /** Leave match is on offer, and what it would cost now; null before the hunt reports. */
+  leave: { head: string; time: LeaveTime } | null;
 }
 
 export function BriefingView({
@@ -39,14 +43,17 @@ export function BriefingView({
   onHunt,
   onRetry,
   onSettings,
+  onLeave,
 }: {
   m: BriefingModel;
   onHunt: () => void;
   onRetry: () => void;
+  onLeave: () => void;
   /** Settings over the briefing: a wrong relay or RPC address is fixed there, the match stays open. */
   onSettings: () => void;
 }) {
   const reduceMotion = useReduceMotion();
+  const [leaving, setLeaving] = useState(false);
   const handle = m.target ? handleOf(m.target) : null;
   const reveal = useArrive(handle, reduceMotion, { ms: motion.slow * 1.4, delay: 120 });
   const secs = Math.ceil(m.startsInMs / 1_000);
@@ -92,57 +99,80 @@ export function BriefingView({
       </Screen>
     );
   }
+  const leave = m.leave;
   return (
-    <Screen
-      scroll={false}
-      footer={
-        <Button
-          title={m.startsInMs > 0 ? "Get ready" : "Hunt"}
-          onPress={onHunt}
-          hint="Opens the hunt screen. Your phone is already reporting."
-        />
-      }
-    >
-      <ChaseBand height={190} reduceMotion={reduceMotion} target={initialsOf(handle)} crowd={2} />
-      <View style={styles.center} accessible accessibilityLabel={`Your target is ${handle}`}>
-        <Eyebrow muted>Your target</Eyebrow>
-        {/* The name rises out of a mask, like a card turned over. */}
-        <View style={styles.mask}>
-          <Animated.View
-            style={{
-              opacity: reveal,
-              transform: [{ translateY: reveal.interpolate({ inputRange: [0, 1], outputRange: [72, 0] }) }],
-            }}
-          >
-            <Poster lines={2} style={styles.name}>
-              {handle}
-            </Poster>
-          </Animated.View>
-        </View>
-        <Animated.View style={rise(reveal, 6)}>
-          <Body muted>
-            {isTestPlayer(m.target)
-              ? "A test player: it never moves, and drops out after 3 minutes."
-              : m.target}
-          </Body>
-        </Animated.View>
-      </View>
-      <Row gap="xxl" style={styles.figures}>
-        <View accessible accessibilityLabel={`Your head ${m.head === null ? "" : money(m.head)}`}>
-          <Eyebrow muted>Your head</Eyebrow>
-          <Num>{m.head === null ? "-" : money(m.head)}</Num>
-        </View>
-        {m.startsInMs > 0 ? (
-          <View accessible accessibilityLabel={`Starts in ${clock(m.startsInMs)}`}>
-            <Eyebrow muted>Starts in</Eyebrow>
-            <Animated.View style={secs <= FINAL ? rise(step, 8) : null}>
-              <Num>{clock(m.startsInMs)}</Num>
+    <View style={styles.fill}>
+      <Screen
+        scroll={false}
+        footer={
+          <>
+            <Button
+              title={m.startsInMs > 0 ? "Get ready" : "Hunt"}
+              onPress={onHunt}
+              hint="Opens the hunt screen. Your phone is already reporting."
+            />
+            {leave ? (
+              <Button kind="quiet" title="Leave match" hint="Asks first" onPress={() => setLeaving(true)} />
+            ) : null}
+          </>
+        }
+      >
+        <ChaseBand height={190} reduceMotion={reduceMotion} target={initialsOf(handle)} crowd={2} />
+        <View style={styles.center} accessible accessibilityLabel={`Your target is ${handle}`}>
+          <Eyebrow muted>Your target</Eyebrow>
+          {/* The name rises out of a mask, like a card turned over. */}
+          <View style={styles.mask}>
+            <Animated.View
+              style={{
+                opacity: reveal,
+                transform: [{ translateY: reveal.interpolate({ inputRange: [0, 1], outputRange: [72, 0] }) }],
+              }}
+            >
+              <Poster lines={2} style={styles.name}>
+                {handle}
+              </Poster>
             </Animated.View>
           </View>
-        ) : null}
-      </Row>
-      <Body muted>Someone has you too. Keep TAIL open; in your pocket the screen goes dark on its own.</Body>
-    </Screen>
+          <Animated.View style={rise(reveal, 6)}>
+            <Body muted>
+              {isTestPlayer(m.target)
+                ? "A test player: it never moves, and drops out after 3 minutes."
+                : m.target}
+            </Body>
+          </Animated.View>
+        </View>
+        <Row gap="xxl" style={styles.figures}>
+          <View accessible accessibilityLabel={`Your head ${m.head === null ? "" : money(m.head)}`}>
+            <Eyebrow muted>Your head</Eyebrow>
+            <Num>{m.head === null ? "-" : money(m.head)}</Num>
+          </View>
+          {m.startsInMs > 0 ? (
+            <View accessible accessibilityLabel={`Starts in ${clock(m.startsInMs)}`}>
+              <Eyebrow muted>Starts in</Eyebrow>
+              <Animated.View style={secs <= FINAL ? rise(step, 8) : null}>
+                <Num>{clock(m.startsInMs)}</Num>
+              </Animated.View>
+            </View>
+          ) : null}
+        </Row>
+        <Body muted>
+          Someone has you too. Keep TAIL open; in your pocket the screen goes dark on its own.
+        </Body>
+      </Screen>
+      {leave ? (
+        <LeaveSheet
+          open={leaving}
+          head={leave.head}
+          time={leave.time}
+          reduceMotion={reduceMotion}
+          onClose={() => setLeaving(false)}
+          onLeave={() => {
+            setLeaving(false);
+            onLeave();
+          }}
+        />
+      ) : null}
+    </View>
   );
 }
 
@@ -160,6 +190,15 @@ export function Briefing() {
     const t = setInterval(() => setNow(Date.now()), 1_000);
     return () => clearInterval(t);
   }, []);
+  const session = app.session;
+  const hunt =
+    session && b
+      ? huntModel(
+          session.snapshot(),
+          { keys: b.keys, stake: app.match?.chain?.stake ?? 0n, zone: app.zone },
+          now,
+        )
+      : null;
   return (
     <BriefingView
       m={{
@@ -168,8 +207,10 @@ export function Briefing() {
         startsInMs: b ? Math.max(0, Number(b.keys.startMs) - now) : 0,
         busy: app.busy,
         error: app.briefError,
+        leave: hunt?.leaveNow ? { head: hunt.head, time: hunt.leaveNow } : null,
       }}
       onHunt={() => app.showHunt()}
+      onLeave={() => app.leaveMatch()}
       onRetry={() => void app.brief()}
       onSettings={() => app.toggleSettings(true)}
     />
@@ -177,6 +218,7 @@ export function Briefing() {
 }
 
 const styles = StyleSheet.create({
+  fill: { flex: 1 },
   center: { flex: 1, justifyContent: "center", gap: space.s },
   middle: { alignItems: "center" },
   mask: { overflow: "hidden" },
