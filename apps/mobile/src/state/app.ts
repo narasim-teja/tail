@@ -34,6 +34,7 @@ import { meshProfile } from "../proximity/carry/mesh";
 import { offlineProtocolLink } from "../proximity/carry/sdk";
 import type { CarryPlan } from "../proximity/client";
 import { realTimers } from "../proximity/epoch";
+import { currentFix } from "../proximity/fixes";
 import { HudSocket, openPlayerKeys } from "../proximity/hud";
 import { forkJson, type LogFork, LogMonitor, type RelayFault } from "../proximity/monitor";
 import { checkReceipts, type Meeting, meetings, presenceJson } from "../proximity/receipts";
@@ -469,7 +470,9 @@ class AppModel {
   startLocating(): void {
     if (this.stopLocating) return;
     const sub = TailRadio.addListener("onFix", (f) => {
-      if (f.acc < 0) return;
+      // iOS hands over a cached fix first, often minutes old: the zone would centre where the
+      // host was, not where they stand. The hunt drops those by the same rule.
+      if (f.acc < 0 || !currentFix(f.tMs, Date.now())) return;
       this.here = { lat: f.lat, lon: f.lon, acc: f.acc };
       this.emit();
     });

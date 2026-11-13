@@ -52,7 +52,7 @@ import {
 } from "./carry/mesh";
 import { type Confirmed, planChain } from "./chain";
 import { currentEpoch, EpochTimer, realTimers, type Timers } from "./epoch";
-import { FIX_MAX_AGE_MS, FixCollector } from "./fixes";
+import { currentFix, FixCollector } from "./fixes";
 import { type HudMessage, openSignedHudBytes, type Seat, type SocketState } from "./hud";
 import { type LogFork, LogMonitor, type MonitorRecord, type RelayFault } from "./monitor";
 import { Outbox, Uploader, type UploadState } from "./outbox";
@@ -357,7 +357,7 @@ export class ProximityClient {
       r.onFix((f) => {
         // A cached fix (iOS hands one over first after a relaunch) says where you were, not
         // where you are: not for the batch, nor for the game.
-        if (f.tMs < this.now() - FIX_MAX_AGE_MS) return;
+        if (!currentFix(f.tMs, this.now())) return;
         this.fixes.add(f);
         this.fixCount++;
         if (f.course >= 0) this.heading = f.course;

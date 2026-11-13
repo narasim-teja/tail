@@ -13,6 +13,9 @@ export const FIX_MIN_GAP_MS = 900;
 /** A fix older than this when it arrives is a cached one, not where the player is now. */
 export const FIX_MAX_AGE_MS = 10_000;
 
+/** Whether a fix taken at `tMs` says where the phone is at `nowMs`, not where it was. */
+export const currentFix = (tMs: number, nowMs: number) => tMs >= nowMs - FIX_MAX_AGE_MS;
+
 const u16 = (n: number) => Math.max(0, Math.min(0xffff, Math.round(n)));
 
 /** CoreLocation fix → wire Fix, or null when it is unusable (no accuracy, bad coordinates). */
@@ -49,7 +52,7 @@ export class FixCollector {
   add(f: RadioFix): boolean {
     const w = toWireFix(f);
     if (!w) return false;
-    if (w.tMs < BigInt(Math.round(this.now() - FIX_MAX_AGE_MS))) return false;
+    if (!currentFix(f.tMs, this.now())) return false;
     if (this.lastT !== null && w.tMs < this.lastT + BigInt(FIX_MIN_GAP_MS)) return false;
     this.lastT = w.tMs;
     this.pending.push(w);

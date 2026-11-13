@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { FixFlag } from "@tail/protocol";
 import type { RadioFix } from "../../modules/tail-radio";
-import { FIX_MAX_AGE_MS, FixCollector, toWireFix } from "./fixes";
+import { currentFix, FIX_MAX_AGE_MS, FixCollector, toWireFix } from "./fixes";
 
 const fix = (tMs: number, o: Partial<RadioFix> = {}): RadioFix => ({
   tMs,
@@ -59,6 +59,13 @@ describe("location fixes", () => {
     expect(c.add(fix(now - FIX_MAX_AGE_MS - 1))).toBe(false);
     expect(c.add(fix(now - FIX_MAX_AGE_MS))).toBe(true);
     expect(c.take(BigInt(now)).map((f) => Number(f.tMs))).toEqual([now - FIX_MAX_AGE_MS]);
+  });
+
+  test("one age rule says whether a fix is where the phone is now, for the hunt and for Create's zone", () => {
+    const now = 100_000;
+    expect(currentFix(now - FIX_MAX_AGE_MS, now)).toBe(true);
+    // iOS's cached fix after a launch: minutes old, not where the host stands.
+    expect(currentFix(now - 5 * 60_000, now)).toBe(false);
   });
 
   test("after a relaunch the saved last fix time keeps the order: nothing at or before it is sent", () => {
