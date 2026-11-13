@@ -1,4 +1,4 @@
-// Presence proofs: "these two phones were near each other", as a file anyone can check later.
+// Presence proofs: "the referee logged these two phones near each other", as a file anyone can check later.
 //
 // A proof is one Contact entry of a match log with its Merkle path to a root the contract
 // anchored, and the two account ids. It holds when the path leads to NEAR's root of that size for
