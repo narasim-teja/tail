@@ -1,6 +1,7 @@
 // Top-left: who is playing, what each head is worth right now, and how tight each hunter's lock
 // is. Heads move as the film plays: on a tag the target's head drains into the hunter's.
 
+import { EPOCH_MS } from "@tail/protocol";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { money } from "../lib/format.ts";
@@ -18,7 +19,7 @@ export function Roster({ compact }: { compact: boolean }) {
     const snap = match.snapshots.indexOf(snapshotAt(match, s.t));
     const f = focusAt(match, s.t);
     const fk = f.kind === "chase" ? `${f.hunter}>${f.target}` : f.kind;
-    return `${snap}|${Math.floor(s.t / 15_000)}|${fk}|${s.selection?.kind === "player" ? s.selection.index : ""}|${s.follow ?? ""}`;
+    return `${snap}|${Math.floor(s.t / EPOCH_MS)}|${fk}|${s.selection?.kind === "player" ? s.selection.index : ""}|${s.follow ?? ""}`;
   });
   const t = play.get().t;
   const snap = snapshotAt(match, t);

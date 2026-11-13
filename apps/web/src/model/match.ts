@@ -10,7 +10,7 @@
 // them, and End credits each survivor what the pool still owes them, or refunds every stake if
 // the contract's replay finds a broken rule. Whom a v2 hint was about is known only from End.
 
-import { EPOCH_MS, ringOrder, WINDOW_EPOCHS } from "@tail/protocol";
+import { CHECKPOINT_MS, EPOCH_MS, ringOrder, WINDOW_EPOCHS } from "@tail/protocol";
 import type { AnyVerdict, DecodedBundle } from "../verify/bundle.ts";
 import { batchKey, enrolments, type HandlerCheck } from "../verify/checks.ts";
 import { applyPlay, type Settlement, settlementOf, startLedger } from "../verify/settle.ts";
@@ -227,7 +227,7 @@ export function buildMatch(
     const li = verdictLog.get(v.seq);
     if (li === undefined) continue;
     if (v.body.kind === "Start") anchorT[li] = 0;
-    else if (v.body.kind === "Checkpoint") anchorT[li] = ++checkpointNo * 60_000;
+    else if (v.body.kind === "Checkpoint") anchorT[li] = ++checkpointNo * CHECKPOINT_MS;
     else if (v.body.kind === "End") anchorT[li] = durationMs;
   }
   const timeAt = logClock(anchorT, durationMs);
