@@ -1,7 +1,7 @@
 // A relay on the fakes (test/fakes.ts) and the requests the tests send it: signed or not, as a
 // phone would. Every relay made here is stopped after its test.
 
-import { afterEach, expect } from "bun:test";
+import { expect, onTestFinished } from "bun:test";
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { createRelay, type RelayDeps } from "../src/app.ts";
 import { hudDigest, signRequestHeaders } from "../src/auth.ts";
@@ -12,10 +12,10 @@ import { FakeChain, FakeReferee, quietLog, seedDevice, until } from "./fakes.ts"
 export const PARENT = "relay.testnet";
 /** The contract the test relay serves; every signed request names it. */
 export const CONTRACT = "tail.relay.testnet";
-const relays: { stop: () => void }[] = [];
-afterEach(() => {
-  for (const r of relays.splice(0)) r.stop();
-});
+// Cleanup is registered by the test that made the relay, not by a module-level afterEach: one
+// `bun test` process loads this module once for every file that imports it, so a top-level hook
+// would only bind to the first such file, and the relays (tick loops, servers) of every later
+// file would keep running into the rest of the run, starving its event loop.
 
 export function setup(over: Partial<RelayDeps> = {}) {
   const store = over.store ?? new Store(":memory:");
@@ -48,11 +48,7 @@ export function setup(over: Partial<RelayDeps> = {}) {
     verifyAttestation: async () => crypto.getRandomValues(new Uint8Array(65)),
     ...over,
   });
-  relays.push({
-    stop: () => {
-      relay.matches.stop();
-    },
-  });
+  onTestFinished(() => relay.matches.stop());
   return { store, chain, referee, carryKeys, ...relay };
 }
 
@@ -142,7 +138,7 @@ export const appliedSeqs = (env: Env) =>
 /** Serves the relay on a free port until the test ends; returns its base URL. */
 export function serve(env: Env): string {
   const server = Bun.serve({ port: 0, fetch: env.app.fetch, websocket: env.websocket });
-  relays.push({ stop: () => server.stop(true) });
+  onTestFinished(() => server.stop(true));
   return `http://localhost:${server.port}`;
 }
 
