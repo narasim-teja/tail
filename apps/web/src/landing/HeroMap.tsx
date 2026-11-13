@@ -385,8 +385,8 @@ export function HeroMap({
           cy={zy}
           r={R}
           className="l-map-zone"
-          strokeWidth={m(2.5)}
-          strokeDasharray={`${m(2.5)} ${m(7)}`}
+          strokeWidth={m(3)}
+          strokeDasharray={`${m(3)} ${m(8)}`}
         />
         {scene.safehouses.map(([hx, hy]) => (
           <g
