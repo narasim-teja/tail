@@ -270,9 +270,8 @@ export function Results() {
   const app = useApp();
   useEffect(() => {
     void app.checkRelay();
-    // Checked once on arrival (to the latest checkpoint while the match runs); the watch checks
+    // The watch checks the receipts on arrival (to the latest checkpoint while the match runs) and
     // again once End's root is anchored.
-    void app.checkReceipts();
     return app.watchResults();
   }, [app]);
   const snap = app.session?.snapshot();

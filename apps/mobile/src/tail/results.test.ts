@@ -123,41 +123,85 @@ describe("final money", () => {
 });
 
 describe("Results keeps reading until the match is over and checked", () => {
-  test("it polls while the match runs, re-checks the receipts once End's root is anchored, then stops", async () => {
+  /**
+   * A Results watch over a fake match: `root` is what NEAR anchors, and each receipt check asks
+   * the relay once per report (3 here) for an inclusion proof, logged as "inclusion".
+   */
+  const watch = () => {
     const t = fakeTime(0);
-    let ended = false;
-    let receipts: Receipts = { kind: "done", result: result({ final: false }) };
-    const calls: string[] = [];
-    const flush = async () => {
-      for (let i = 0; i < 5; i++) await Promise.resolve();
+    const s = {
+      ended: false,
+      root: "checkpoint:4:aa" as string | Error,
+      receipts: { kind: "idle" } as Receipts,
+      calls: [] as string[],
     };
     const stop = watchResults({
       refresh: async () => {
-        calls.push("refresh");
+        s.calls.push("refresh");
       },
-      ended: () => ended,
-      receipts: () => receipts,
+      ended: () => s.ended,
+      rootKey: async () => {
+        if (s.root instanceof Error) throw s.root;
+        return s.root;
+      },
+      receipts: () => s.receipts,
       checkReceipts: async () => {
-        calls.push("receipts");
-        receipts = { kind: "done", result: result({ final: ended }) };
+        s.calls.push("inclusion", "inclusion", "inclusion");
+        s.receipts = { kind: "done", result: result({ final: s.root.toString().startsWith("end") }) };
       },
       findMeetings: async () => {
-        calls.push("meetings");
+        s.calls.push("meetings");
       },
       timers: t.timers,
     });
-    await flush();
-    t.advance(RESULTS_POLL_MS);
-    await flush();
-    // While the match runs: only the match is read again; the checkpoint check stands.
-    expect(calls).toEqual(["refresh", "refresh"]);
-    ended = true;
-    t.advance(RESULTS_POLL_MS);
-    await flush();
-    expect(calls.slice(2)).toEqual(["refresh", "receipts", "meetings"]);
-    t.advance(10 * RESULTS_POLL_MS);
-    await flush();
-    expect(calls).toHaveLength(5);
+    const poll = async () => {
+      t.advance(RESULTS_POLL_MS);
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+    };
+    return { s, stop, poll };
+  };
+  const inclusions = (calls: string[]) => calls.filter((c) => c === "inclusion").length;
+
+  test("receipts are checked on arrival, then not while the match runs", async () => {
+    const { s, stop, poll } = watch();
+    await poll();
+    expect(inclusions(s.calls)).toBe(3);
+    s.root = "checkpoint:9:bb";
+    await poll();
+    await poll();
+    expect(s.calls.slice(4)).toEqual(["refresh", "refresh"]);
+    stop();
+  });
+
+  test("after End, a poll with an unchanged root makes no inclusion requests; End's root gets the final check", async () => {
+    const { s, stop, poll } = watch();
+    await poll();
+    s.ended = true;
+    // The relay says ended, but End's root is not on NEAR yet: the checkpoint already checked stands.
+    await poll();
+    await poll();
+    expect(inclusions(s.calls)).toBe(3);
+    // NEAR not answering is no change either.
+    s.root = new Error("NEAR is down");
+    await poll();
+    expect(inclusions(s.calls)).toBe(3);
+    s.root = "end:12:cc";
+    await poll();
+    expect(inclusions(s.calls)).toBe(6);
+    const after = s.calls.length;
+    await poll();
+    await poll();
+    expect(s.calls).toHaveLength(after);
+    stop();
+  });
+
+  test("a check that failed is tried again on the next poll, root changed or not", async () => {
+    const { s, stop, poll } = watch();
+    await poll();
+    s.ended = true;
+    s.receipts = { kind: "error", message: "Can't reach the relay." };
+    await poll();
+    expect(inclusions(s.calls)).toBe(6);
     stop();
   });
 

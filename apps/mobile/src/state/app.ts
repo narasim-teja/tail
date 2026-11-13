@@ -51,7 +51,7 @@ import {
 } from "../relay/client";
 import { checkHandlerLines, type HandlerCheck } from "../tail/handler";
 import { TailHunt } from "../tail/hunt";
-import { type Receipts, watchResults } from "../tail/results";
+import { type Receipts, receiptRoot, receiptRootKey, watchResults } from "../tail/results";
 import { checkedZone, type Zone } from "../tail/zone";
 import { assertWith, attestor, radioPort } from "./device";
 import { files } from "./files";
@@ -925,9 +925,14 @@ class AppModel {
 
   /** Results reads the match until End is in and checked (tail/results.ts); returns its stop. */
   watchResults(): () => void {
+    const id = this.matchId;
     return watchResults({
       refresh: () => this.refresh(),
       ended: () => this.match?.phase === "ended" || this.match?.chain?.phase === "ended",
+      rootKey: async () => {
+        if (!id) throw new Error("No match open.");
+        return receiptRootKey(await anchoredRoots(this.rpc, CONTRACT_ID, id));
+      },
       receipts: () => this.receipts,
       checkReceipts: () => this.checkReceipts(),
       findMeetings: () => this.findMeetings(),
@@ -953,25 +958,25 @@ class AppModel {
       ]);
       await this.checkLog(id, roots.all);
       const player = facts?.players.indexOf(me) ?? -1;
-      const root = roots.final ?? roots.all.at(-1) ?? null;
+      const against = receiptRoot(roots);
       const reports = this.loadRecord(id).reports;
       if (player < 0)
         this.receipts = { kind: "none", why: "You are not a player in this match on NEAR.", final: true };
-      else if (!root)
+      else if (!against)
         this.receipts = { kind: "none", why: "No log root is anchored on NEAR yet.", final: false };
       else if (reports.length === 0)
         this.receipts = {
           kind: "none",
           why: "This phone kept no reports for this match.",
-          final: roots.final !== null,
+          final: against.final,
         };
       else {
         const relay = this.relay;
         const result = await checkReceipts({
           player,
           reports,
-          root,
-          final: roots.final !== null,
+          root: against.root,
+          final: against.final,
           proofs: (leaf, size) => relay.inclusion(id, leaf, size),
         });
         this.receipts = { kind: "done", result };

@@ -1,6 +1,7 @@
 // What Results says about a receipt check (proximity/receipts.ts), in TAIL's words.
 
-import type { Settlement } from "../near/chain";
+import { type AnchoredRoot, toHex } from "@tail/protocol";
+import type { Roots, Settlement } from "../near/chain";
 import { realTimers, type Timers } from "../proximity/epoch";
 import type { RelayFault } from "../proximity/monitor";
 import type { ReceiptResult } from "../proximity/receipts";
@@ -25,16 +26,35 @@ export const receiptsFinal = (r: Receipts): boolean =>
 /** How often Results reads the match again while it waits for End. */
 export const RESULTS_POLL_MS = 5_000;
 
+/** The root receipts are checked against: End's once it is anchored, else the newest checkpoint. */
+export function receiptRoot(r: Roots): { root: AnchoredRoot; final: boolean } | null {
+  const root = r.final ?? r.all.at(-1) ?? null;
+  return root ? { root, final: r.final !== null } : null;
+}
+
+/** Names the receipt root; it changes exactly when a check could come out differently. */
+export function receiptRootKey(r: Roots): string {
+  const x = receiptRoot(r);
+  return x ? `${x.final ? "end" : "checkpoint"}:${x.root.logSize}:${toHex(x.root.root)}` : "none";
+}
+
 /**
  * Keeps Results reading until it has all it will get. The lobby poll stops once a hunt runs, and
  * Results can open long before End (a tagged player): without this, End would never be seen, so
- * no replay link, no presence proofs, and receipts checked only to the last checkpoint. Each
- * round reads the match; once it has ended, the receipts are checked again until End's root
- * covers them, and the presence proofs are looked for. Returns a function that stops it.
+ * no replay link, no presence proofs, and receipts checked only to the last checkpoint.
+ *
+ * Each round reads the match. The receipts are checked on arrival, and after the match has ended
+ * again whenever the root NEAR anchored (`rootKey`) is not the one last checked: End's root is a
+ * new root, so that is the final check. Against an unchanged root a check would ask the relay the
+ * same questions for the same answers, so it is not made; only a check that failed is tried
+ * again. A root NEAR did not give this round is no change. Once ended, the presence proofs are
+ * looked for. Returns a function that stops it.
  */
 export function watchResults(d: {
   refresh: () => Promise<void>;
   ended: () => boolean;
+  /** The receipt root NEAR anchors now, as `receiptRootKey` names it. */
+  rootKey: () => Promise<string>;
   receipts: () => Receipts;
   checkReceipts: () => Promise<void>;
   findMeetings: () => Promise<void>;
@@ -43,14 +63,24 @@ export function watchResults(d: {
   const timers = d.timers ?? realTimers;
   let stopped = false;
   let timer: unknown = null;
+  /** The root the last check ran against; undefined before the first. */
+  let checked: string | undefined;
+  let arrived = false;
   const round = async () => {
     timer = null;
     await d.refresh();
-    if (d.ended()) {
-      if (!receiptsFinal(d.receipts())) await d.checkReceipts();
-      await d.findMeetings();
+    const ended = d.ended();
+    if ((!arrived || ended) && !receiptsFinal(d.receipts())) {
+      const key = await d.rootKey().catch(() => null);
+      const changed = key === null ? checked === undefined : key !== checked;
+      if (changed || d.receipts().kind === "error") {
+        await d.checkReceipts();
+        checked = key ?? checked;
+      }
     }
-    if (stopped || (d.ended() && receiptsFinal(d.receipts()))) return;
+    arrived = true;
+    if (ended) await d.findMeetings();
+    if (stopped || (ended && receiptsFinal(d.receipts()))) return;
     timer = timers.setTimeout(() => void round(), RESULTS_POLL_MS);
   };
   void round();
