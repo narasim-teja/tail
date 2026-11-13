@@ -1,7 +1,7 @@
 // The sheet on the right (bottom on a phone) for whatever was tapped: an event, a player, a lock
 // line, or the verification summary. Not a modal: the film keeps playing behind it, Esc closes.
 
-import { EPOCH_MS, LOCK_EPOCHS, toHex, WINDOW_EPOCHS } from "@tail/protocol";
+import { DARK_FORFEIT_MS, EPOCH_MS, LOCK_EPOCHS, toHex, WINDOW_EPOCHS } from "@tail/protocol";
 import { X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
@@ -408,6 +408,11 @@ function HeardLine({ ev }: { ev: MatchEvent }) {
   );
 }
 
+const DARK_MINUTES = DARK_FORFEIT_MS / 60_000;
+
+/** The forfeit rule in words (referee-core dark_rules): cumulative over the match, not one gap. */
+const DARK_RULE = `A player is out once their dark time adds up to ${DARK_MINUTES} minutes over the match: time without a fresh report from their phone and time reporting from outside the zone both count.`;
+
 function ForfeitStory({ ev }: { ev: MatchEvent }) {
   const { match, verify } = useReplay();
   const decimals = useStore(verify, (s) => s.token.decimals);
@@ -418,8 +423,9 @@ function ForfeitStory({ ev }: { ev: MatchEvent }) {
   const credit = ev.credit ?? 0n;
   return (
     <p className="numeral mt-6 text-[0.9375rem] text-text-2">
-      {ev.leftZone ? `${who} was outside the zone` : `${who}'s phone stopped reporting`} for three minutes, so{" "}
-      {who} is out. Their head, {money((before.heads[ev.a ?? 0] ?? 0n) + credit, decimals)} USDC
+      {who}'s dark time added up to {DARK_MINUTES} minutes, so {who} is out
+      {ev.leftZone ? `; their last position is outside the zone, and time out there counts as dark` : ""}.
+      Their head, {money((before.heads[ev.a ?? 0] ?? 0n) + credit, decimals)} USDC
       {credit > 0n && <CreditNote credit={credit} who={who} decimals={decimals} />}, went to {to}, who was
       hunting them.
     </p>
@@ -504,30 +510,31 @@ function PayoutsLine({ payouts }: { payouts: boolean | null }) {
   );
 }
 
-/** The forfeiting player's last report in the log, against the forfeit's time. */
+/**
+ * What the log shows about the forfeiting player's last reports. It claims no check: the referee
+ * forfeits a player once their dark time over the whole match adds up (time without a fresh
+ * report, and time reporting from outside the zone, both count), which only re-running the
+ * referee over the bundle (tail-verify) adds up. One gap before the forfeit proves nothing either way.
+ */
 function QuietLine({ ev }: { ev: MatchEvent }) {
   const { match, decoded } = useReplay();
   const p = ev.a ?? 0;
-  let lastBatch = -1;
-  decoded.log.forEach((e, i) => {
-    if (e.entry?.kind === "Batch" && e.entry.player === p && (ev.logIndex === null || i < ev.logIndex))
-      lastBatch = i;
-  });
+  const reported = decoded.log.some(
+    (e, i) => e.entry?.kind === "Batch" && e.entry.player === p && (ev.logIndex === null || i < ev.logIndex),
+  );
   const tr = match.tracks[p];
   const lastFix = tr?.t.length ? (tr.t[tr.t.length - 1] as number) : null;
-  const gap = lastFix === null ? null : ev.t - lastFix;
+  const facts = !reported
+    ? "The log holds no report from this phone."
+    : lastFix === null
+      ? "The phones' reports weren't released, so the page can't place this phone's last one."
+      : `Its last released position is from ${clock(Math.max(0, ev.t - lastFix))} before the forfeit, ${ev.leftZone ? "outside" : "inside"} the zone.`;
   return (
     <ProofLine
-      check={gap === null ? "info" : gap >= 170_000 ? "pass" : "fail"}
-      detail={
-        gap === null
-          ? lastBatch < 0
-            ? "The log holds no report from this phone."
-            : "The trails weren't released, so the silence can't be timed here."
-          : `The last report in the log came ${clock(gap)} before the forfeit.`
-      }
+      check="info"
+      detail={`${facts} ${DARK_RULE} This page doesn't add that time up; re-running the referee over the bundle (tail-verify) does.`}
     >
-      The phone went quiet
+      What the log shows
     </ProofLine>
   );
 }
