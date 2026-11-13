@@ -1,7 +1,12 @@
 // The HUD socket (GET /hud, apps/server/src/routes/hud.ts). The relay sends a 32-byte challenge;
 // the phone answers with its NEAR key's signature over hudDigest(nonce, match_id, account_id).
 // Only then does it receive this player's messages: the sealed PlayerKeys, the latest sealed
-// HUD, every new HUD, Handler lines, rejections, refusals and "over".
+// HUD, every new HUD, sealed Handler lines, refusals and "over".
+//
+// What the referee says arrives sealed and signed (game/hud.ts opens it). The relay's own frames
+// are not trusted for anything that matters: a `rejected` frame is dropped, because the signed
+// HUD carries the referee's latest refusal; a Handler line in plain text is dropped, because only
+// a sealed, signed line can be the Handler's.
 
 import { fromB64, toB64 } from "../lib/b64";
 import { hudDigest, type Signer } from "./auth";
@@ -11,13 +16,15 @@ export type HudMessage =
   | { type: "ready"; player: number }
   | { type: "keys"; player: number; sealed: Uint8Array }
   | { type: "hud"; tick: number; sealed: Uint8Array }
-  | { type: "handler"; hintId: number; text: string }
-  | { type: "rejected"; seq: number | null; reason: string }
+  /** A SignedVoiceLine sealed to this player. */
+  | { type: "handler"; sealed: Uint8Array }
   | { type: "refused"; nonce: number | null; action: string; reason: string }
   | { type: "over" };
 
 const num = (v: unknown) => (typeof v === "number" && Number.isSafeInteger(v) ? v : null);
 const str = (v: unknown) => (typeof v === "string" ? v : "");
+/** A refusal reason: the referee's text, or a code number from a newer relay. */
+const reason = (v: unknown) => (typeof v === "number" ? `code ${v}` : str(v));
 
 /** One socket frame → a message, or null for anything malformed or unknown. */
 export function parseHudMessage(text: string): HudMessage | null {
@@ -44,15 +51,13 @@ export function parseHudMessage(text: string): HudMessage | null {
       case "hud":
         return { type: "hud", tick: num(m["tick"]) ?? 0, sealed: fromB64(str(m["sealed"])) };
       case "handler":
-        return { type: "handler", hintId: num(m["hint_id"]) ?? -1, text: str(m["text"]) };
-      case "rejected":
-        return { type: "rejected", seq: num(detail["seq"]), reason: str(detail["reason"]) };
+        return typeof m["sealed"] === "string" ? { type: "handler", sealed: fromB64(m["sealed"]) } : null;
       case "refused":
         return {
           type: "refused",
           nonce: num(detail["nonce"]),
           action: str(detail["action"]),
-          reason: str(detail["reason"]),
+          reason: reason(detail["reason"]),
         };
       case "over":
         return { type: "over" };

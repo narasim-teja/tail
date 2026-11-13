@@ -2,27 +2,32 @@
 
 Expo SDK 58 dev-client app, TypeScript strict, iOS only, new architecture. It enrols the phone,
 runs the lobby, and during the hunt broadcasts rotating beacon tokens, listens for other players,
-and sends sealed, App Attest-signed reports to the referee through the relay.
+and sends sealed, App Attest-signed reports to the referee through the relay. Everything the
+referee sends back (keys, HUDs, Handler lines) is checked against the referee key the match
+pinned on NEAR, read through the phone's own RPC, and after the match the phone checks that each
+of its reports is in the log root anchored on NEAR.
 
 **Status.** Unit and integration tests pass without a phone (below). Release builds run on two
 iPhones (17 Pro Max, 14): enrolment with App Attest, lobbies, test players, the hunt and a Tag from
 Bluetooth contact all ran indoors on 2026-11-12, against the relay on a Mac with the local test
-referee. Range, pocket and outdoor play are not tested yet.
+referee. Those runs were protocol v1. The v2 paths (signed HUDs, chain recovery, inclusion
+receipts, presence proofs, mesh carry) pass their tests here but have not run on a phone yet.
+Range, pocket and outdoor play are not tested yet.
 
 ## Layout
 
-| Path                      | What                                                                                                                                                                                                                          |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `modules/tail-radio`      | Swift: advertise one 128-bit UUID, scan with duplicates (only UUIDs whose first 4 bytes match this match's tags reach JS), location with the `CLLocationSourceInformation` flags, pocket mode, app-state and proximity events |
-| `modules/tail-attest`     | Swift: App Attest over a raw 32-byte clientDataHash (the S3 spike's chosen path)                                                                                                                                              |
-| `src/relay/`              | **Every relay call** (`client.ts`), the request and HUD signatures (`auth.ts`), the HUD socket (`hud.ts`), the referee box-key check (`referee.ts`)                                                                           |
-| `src/near/`               | NEAR transactions for the player's function-call key (`join_match`, `leave_lobby`) and views                                                                                                                                  |
-| `src/identity/`           | Keys in the Keychain and enrolment (TECHNICAL.md 4.4)                                                                                                                                                                         |
-| `src/game/`               | The hunt: epoch timer, sighting aggregation, fixes, actions, batch builder and hash chain, ordered outbox, HUD view model, and `session.ts`, which wires them                                                                 |
-| `src/carry/mesh.ts`       | Offline Protocol carry path (off until the relay has a mesh node)                                                                                                                                                             |
-| `src/state/`              | App model (`app.ts`), device adapters, file persistence                                                                                                                                                                       |
-| `src/screens/`, `src/ui/` | Screens; `ui/theme.ts` (every colour, size and font), `ui/brand.tsx` (mark, icons)                                                                                                                                            |
-| `test/`                   | Test helpers: fake clock, minimal CBOR, App Attest assertions in Apple's format                                                                                                                                               |
+| Path                      | What                                                                                                                                                                                                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `modules/tail-radio`      | Swift: advertise one 128-bit UUID, scan with duplicates (only UUIDs whose first 4 bytes match this match's tags reach JS), location with the `CLLocationSourceInformation` flags, pocket mode, app-state and proximity events                                 |
+| `modules/tail-attest`     | Swift: App Attest over a raw 32-byte clientDataHash (the S3 spike's chosen path)                                                                                                                                                                              |
+| `src/relay/`              | **Every relay call** (`client.ts`), the request and HUD signatures (`auth.ts`), the HUD socket (`hud.ts`), the referee box-key check (`referee.ts`)                                                                                                           |
+| `src/near/`               | NEAR transactions for the player's function-call key (`join_match`, `leave_lobby`, `withdraw`), views, and what the phone reads from NEAR itself (`chain.ts`: the match's referee key, players, anchored roots)                                               |
+| `src/identity/`           | Keys in the Keychain and enrolment (TECHNICAL.md 4.4)                                                                                                                                                                                                         |
+| `src/game/`               | The hunt: epoch timer, sighting aggregation, fixes, actions, batch builder and hash chain, ordered outbox, chain recovery (`chain.ts`), signed HUD and view model, inclusion receipts and presence proofs (`receipts.ts`), and `session.ts`, which wires them |
+| `src/carry/`              | Mesh carry over the Offline Protocol SDK (`mesh.ts`, both roles; `sdk.ts`, the SDK adapter). Behind a Settings switch, off by default                                                                                                                         |
+| `src/state/`              | App model (`app.ts`), device adapters, file persistence                                                                                                                                                                                                       |
+| `src/screens/`, `src/ui/` | Screens; `ui/theme.ts` (every colour, size and font), `ui/brand.tsx` (mark, icons)                                                                                                                                                                            |
+| `test/`                   | Test helpers: fake clock, minimal CBOR, App Attest assertions in Apple's format                                                                                                                                                                               |
 
 ## How `@tail/protocol` and `@tail/brand` are wired
 
@@ -59,7 +64,7 @@ game icons) from source, never copies.
 | Lobby    | Big QR first, code and Share, stake, length, players as initials (each slides in with a tick as they join), open seats as dashed pulsing rings; waiting, ready, starting (rings run round each player), failed (retry), called off; Join, Start (host), Leave; on a test relay the host can Add a test player (it forfeits after 3 min dark)                                                                                                            |
 | Briefing | The Chase with the target's initials on the ink dot; the handle rises out of a mask with a haptic tick; your head and the start countdown, ticking by feel in the last 5 s                                                                                                                                                                                                                                                                              |
 | Hunt     | Target and time left; LOCK arc with its numeral, HEAD, HEAT bar with its numeral; live map (you as the Trail mark, zone edge dotted, safehouses, leaked cell); Handler at thumb reach. Lock full floods persimmon and STRIKE replaces the map; strike sent; landed (flash, new target slides in); dark and out-of-zone banners with countdowns; vehicle freeze; Handler dispatch and pull-down log; hint sheet; tagged (ink); Bluetooth or location off |
-| Results  | Outcome emblem; survived, out or last one standing; final head and tags roll up; the Handler's sign-off; Watch the replay (Safari); How it's verified                                                                                                                                                                                                                                                                                                   |
+| Results  | Outcome emblem; survived, out or last one standing; final head and tags roll up; the Handler's sign-off; Watch the replay (Safari); How it's verified; your reports ("N of M reports are in the log anchored on NEAR", refusals with their reason, any missing report as a problem); after the end, Prove I met (name) for each player you met                                                                                                          |
 
 ## Design system
 
@@ -111,7 +116,7 @@ bun install
 
 ```sh
 cd apps/mobile
-bun test                                   # 113 tests
+bun test                                   # 193 tests
 bunx tsc -p . && bunx tsc -p tsconfig.test.json
 bunx expo export --platform ios --output-dir /tmp/tail-export
 CI=1 bunx expo prebuild --platform ios --clean
@@ -132,11 +137,28 @@ What the tests prove:
   (`crates/appattest/tests/data/s3-tail-attest.json`).
 - **Session** (`src/game/session.test.ts`): with a fake radio and clock, the token and scan filter
   rotate each epoch, a batch goes out every 5 s with that window's fixes and sightings, STRIKE goes
-  out at once, a sealed HUD drives lock/heat/STRIKE, rejections show up, being out stops the radio,
-  and 20 s without the relay switches to the carry path.
-- **Outbox** order, retry and offline rules; **sighting** aggregation and tag filter; **epoch**
-  timer; **HUD** decode and view; **NEAR** transactions byte-equal to `near-api-js`; relay request
-  and HUD signatures byte-equal to `apps/server/src/auth.ts`; the referee box-key check.
+  out at once, a signed HUD drives lock/heat/STRIKE, tags and the dark banner, a HUD or Handler
+  line not signed by the referee is shown as such and ignored, an older HUD replayed is ignored,
+  and being out stops the radio.
+- **Chain recovery** (`src/game/chain.test.ts`, session tests): a report refused for its App
+  Attest assertion, a report that never reached the referee (resent once, then rebuilt), a phone
+  whose chain parted from the referee's, and a relaunch mid-chain or with the match file lost all
+  carry on from the HUD's `next_seq` and `chain_tip`; a lost strike or hint is said plainly.
+- **Inclusion receipts and presence proofs** (`src/game/receipts.test.ts`): against a log built
+  with the protocol's own Merkle helpers, accepted and refused reports are found under the
+  anchored root, a missing one is a problem, and a tampered path, a wrong size or a made-up root
+  does not count; presence proofs from the log verify with `verifyPresence`, and a tampered log
+  yields none.
+- **Mesh carry** (`src/carry/mesh.test.ts`, session tests): envelopes are 4144 bytes of
+  ciphertext with no account, path or match id in the clear; a forwarder posts an envelope once
+  however often it hears it and sends the relay's answer back; a report counts as delivered only
+  when the relay's receipt verifies under its ack key; a report the mesh delivered is not sent
+  again over HTTP, nor counted twice.
+- **Outbox** order, retry and offline rules, and that a batch stays until the referee confirms
+  it; **sighting** aggregation and tag filter; **epoch** timer; **NEAR** transactions byte-equal
+  to `near-api-js`; signed requests accepted by the relay's own check
+  (`apps/server/src/routes/util.ts` `RequestAuth`, protocol v2: contract and account in the
+  digest); the referee box-key check.
 
 ## Build onto a phone
 
@@ -173,7 +195,8 @@ Use xcodebuild directly (the route that worked in the device spike on 2026-11-12
 
 1. Run the relay (`apps/server`). On the first screen tap **Settings** and enter the relay
    address (`http://<Mac LAN IP>:8787` works: local networking is allowed for development) and
-   check the contract. **Save**.
+   check the contract and the NEAR RPC (the phone reads the referee key and the log roots from
+   it). **Save**.
 2. Enter a handle, **Join**. The phone generates its keys, App Attest attests them over the
    relay's challenge, and the relay creates `<handle>.<relay account>` with only this phone's
    function-call key.
@@ -189,16 +212,23 @@ Use xcodebuild directly (the route that worked in the device spike on 2026-11-12
    Do not press the side button: that locks the phone and stops the game.
 6. Lock fills when you are near your target; heat when your hunter is near you. **STRIKE**
    appears at a full lock. **Handler** sells three hints with an optional question.
-7. When you are out or the match ends: your head and **Replay data** (the relay's
-   `GET /replay/:id`).
+7. When you are out or the match ends: your head, your tags, and your reports checked against
+   the log root on NEAR. After the end, **Watch the replay**, and **Prove I met** a player shares
+   a JSON presence proof (below).
 
 ## What the app uses from the server
 
 All served by `apps/server` (shapes in its README):
 
+- `GET /health`: the contract the relay serves. Every signed request names it (request auth v2:
+  `requestDigest({contractId, accountId, method, path, timeMs, body})`); the app also compares it
+  with its own contract setting and says so when they differ.
 - `GET /referee`: the referee's keys. The app checks `box_pk_sig` (ed25519 over
-  `SHA256("tail/referee-box/v1" ‖ box_pk)`) under the `referee_pk` the match pinned on chain, and
-  refuses to seal otherwise.
+  `SHA256("tail/referee-box/v1" ‖ box_pk)`) under the `referee_pk` the match pinned, read from
+  the contract's `get_match` through the phone's own NEAR RPC (not the relay's chain view), and
+  refuses to seal otherwise. The same key checks the sealed `SignedPlayerKeys`, every
+  `SignedHud` and every `SignedVoiceLine`; anything that does not verify shows "This update was
+  not signed by the referee" and is ignored.
 - `GET /matches/:id` (public): lobby, phase, the join `code` and the chain view. No zone, no keys.
 - `GET /matches/:id/zone` (signed like the POSTs, empty body; host and players only): the zone and
   safehouses, this player's own sealed keys once the match has started, and why a Start failed.
@@ -207,19 +237,62 @@ All served by `apps/server` (shapes in its README):
 - `POST /matches` answers 409 with the `match_id` when the host already has an open lobby; Create
   says so and offers to open it. 429 (limits) and 413 (too large) show as short sentences.
 - `POST /enroll/challenge`, `POST /enroll`, `POST /matches/:id/start`,
-  `POST /batch`, `GET /hud` (WebSocket), `POST /dev/topup` (testnet), `GET /replay/:id`.
+  `POST /batch`, `GET /hud` (WebSocket), `POST /dev/topup` (testnet).
+- `GET /matches/:id/inclusion?leaf=&size=`: audit paths for the receipts. The size is always one
+  the contract anchored (`get_roots`, read from NEAR directly), and each path is verified with
+  `merkleVerify` against that root; the relay's answer alone counts for nothing.
+- `POST /replay/:id/challenge`, then `GET /replay/:id` with the signed nonce: the plaintext log
+  after End, for presence proofs. Each proof is checked with `verifyPresence` against End's root
+  and the contract's player list before it is offered.
+- `GET /carry/key` (at briefing, when mesh carry is on) and `POST /carry` (as a forwarder).
+
+The HUD socket's own frames are not trusted: a `rejected` frame is ignored (the signed HUD carries
+the referee's latest refusal), and a Handler line counts only sealed and signed.
+
+## Chain recovery
+
+The referee takes a player's reports only as one hash chain. Before, one report it never took
+(refused for its App Attest assertion, or never opened) left every later one chained to it, so
+all were refused until the player forfeited for being dark. Now a report stays in the outbox until
+a signed HUD's `next_seq` and `chain_tip` show the referee took it, and after each HUD the phone
+confirms, sends the waiting report again (once, if the relay took it 30 s ago and the referee
+still has not), or rebuilds its chain from `next_seq`/`chain_tip` (the chains parted, the waiting
+report was refused for its assertion, or it stalled twice). Refusals show in plain words; the
+dark banner is the referee's `dark_ms`; tags are the referee's `tags`.
+
+## Receipts and presence proofs
+
+Each report the relay takes is kept in the match file (seq, batch hash). On Results the phone
+computes each one's log leaf (`Batch`, or `Rejected` with the refusal code), asks the relay for a
+path at the size of the newest root anchored on NEAR, and verifies it against that root. It says
+"N of M reports are in the log anchored on NEAR", "K refused by the referee (reason)", and lists
+a report that is in neither form as a problem once End's root is there.
+
+**Prove I met (name)** shares a JSON document: `proof` is the borsh `PresenceProof` (base64), a
+`Contact` entry with its path to End's root, plus the accounts, epoch, index and size. Anyone can
+check it from chain data alone: `decodePresenceProof`, then `verifyPresence(proof, roots, players)`
+from `@tail/protocol`, with `roots` from `get_roots` and `players` from `get_match` on the
+contract. The app does not link to a web page for it yet.
 
 The tagged screen names who got you from the HUD's `tagged_by` (the hunter for a tag, the
 receiver for a forfeit). A HUD without it falls back to "your hunter".
 
 ## Behind settings or not done
 
-- **Mesh carry is off.** The server has no Offline Protocol node yet, so Settings > Relay mesh
-  node is empty and the hunt screen says "No signal" without claiming delivery. With an address
-  set, after 20 s without the server the phone starts the Offline Protocol SDK (`profile` = match
-  id), sends the oldest sealed batch to that node, waits for the SDK's delivery receipt, then the
-  next. Not exercised against a real node. Carrying for others while you have signal is not
-  built: in Hunt mode the mesh runs only while you are dark (TECHNICAL.md 7).
+- **Mesh carry is off by default** (Settings > Carry reports over the mesh). With it on, every
+  phone runs the Offline Protocol mesh for the whole hunt (Bluetooth only, a fresh SDK profile
+  per match, wiped when the hunt stops). A phone with no relay contact for 20 s seals each signed
+  report request with `sealCarry` to the relay's carry key and hands it to its mesh neighbours; a
+  phone with signal posts what it hears to `POST /carry` unchanged and sends the relay's answer
+  back. A report counts as delivered only when the relay's signed receipt verifies, and a HUD that
+  rides back is opened like any other. There is no relay mesh node. Carriers see only a 4144-byte
+  ciphertext and the sender's per-match mesh address: no account, no match id. The mesh link
+  itself still tells two phones that some TAIL phone is in Bluetooth range (TECHNICAL.md 7, F14).
+  Tested only with a fake mesh; not run on phones.
+- **Bluetooth coexistence is not measured**, which is why the switch is off. An iPhone advertises
+  about 28 bytes in the foreground and the TAIL token is a 128-bit service UUID (18 of them). If
+  the SDK's own advertisement takes that room, iOS moves the token to the overflow area, where
+  other phones' scans may not see it, and contact, and with it every lock, is lost.
 - **Not yet tested outdoors.** Bluetooth range (`RSSI_MIN_DBM`), pocket mode and a full match in a
   park have not run; the indoor two-phone runs on 2026-11-12 are the only device runs so far.
 - **Relay address.** Use the Mac's LAN IP (`http://<ip>:8787`). Its `.local` name can resolve to

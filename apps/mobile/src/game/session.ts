@@ -2,11 +2,16 @@
 // - the epoch clock: rotates the beacon token and the scan filter at every boundary
 // - the radio: sightings → tag filter → per-epoch aggregates; fixes → ~1 Hz wire fixes
 // - the batch loop: every BATCH_MS a chained, attested, sealed batch into the outbox
-// - the outbox: ordered upload with retry, persisted so a restart loses nothing
-// - the match record beside it: tags won, the newest fix time, actions not yet in a batch
+// - the outbox: ordered upload with retry, persisted so a restart loses nothing; a batch leaves
+//   it only once a signed HUD shows the referee took it, and the chain is mended or rebuilt
+//   from the HUD's next_seq / chain_tip when the two part (game/chain.ts)
+// - the match record beside it: every report sent (for the inclusion receipts on Results), the
+//   newest fix time, actions not yet in a batch
 // - what hides the player: the app in the background or the phone locked (no beacon then)
-// - the HUD socket: sealed HUDs → what the hunt screen shows
-// - the mesh carry path when the relay is unreachable (behind a setting, carry/mesh.ts)
+// - the HUD socket: sealed HUDs signed by the referee → what the hunt screen shows (tags and
+//   dark time come from the referee, not from the phone's guesses)
+// - the mesh carry path, both roles, behind a setting (carry/mesh.ts): a second transport for
+//   the same outbox, deduplicated by batch hash
 // Everything device-specific comes in through ports, so tests drive it with fakes.
 
 import {
@@ -14,7 +19,9 @@ import {
   BATCH_MS,
   beaconTag,
   beaconToken,
+  equal,
   type HintKind,
+  type Hud,
   hintPrice,
   type PlayerKeys,
   toHex,
@@ -27,17 +34,35 @@ import type {
   RadioFix,
   RadioSighting,
 } from "../../modules/tail-radio";
-import type { CarryConfig, CarryStatus } from "../carry/mesh";
-import type { SignedRequest } from "../relay/client";
+import {
+  type CarryDelivery,
+  type CarryStatus,
+  carryEnvelope,
+  envelopeDigest,
+  MeshCarry,
+  type MeshLink,
+} from "../carry/mesh";
+import type { CarryKey, CarryReply, SignedRequest } from "../relay/client";
 import type { HudMessage, SocketState } from "../relay/hud";
 import { ActionQueue } from "./actions";
 import { type Assert, BatchBuilder, type ChainState, type OutboxItem } from "./batch";
+import { type Confirmed, planChain } from "./chain";
 import { currentEpoch, EpochTimer, realTimers, type Timers } from "./epoch";
 import { FIX_MAX_AGE_MS, FixCollector } from "./fixes";
 import { type Circle, inCircle } from "./geo";
-import { describeRefusal, describeRejection, formatAmount, type HudView, hudView, openHud } from "./hud";
+import {
+  describeRefusal,
+  describeRejectCode,
+  formatAmount,
+  type HudView,
+  hudView,
+  NOT_SIGNED,
+  openHud,
+  openVoice,
+} from "./hud";
 import { Outbox, Uploader, type UploadState } from "./outbox";
-import { VehicleWatch } from "./rules";
+import type { Report } from "./receipts";
+import { type DarkInfo, VehicleWatch } from "./rules";
 import { SightingAggregator } from "./sightings";
 
 /** The parts of tail-radio the session drives. */
@@ -66,8 +91,15 @@ export interface RadioPort {
 /** What the session keeps in the match file (state/persist.ts) so a relaunch carries on. */
 export interface SessionRecord {
   chain: ChainState;
+  /** Batches not yet confirmed by a HUD, sent or not. */
   outbox: OutboxItem[];
-  /** Tags this player won: strikes that took a target, not targets lost to a forfeit. */
+  /** The referee's chain position the phone last agreed with. */
+  confirmed: Confirmed;
+  /** Every batch the relay took, for the inclusion receipts after the match. */
+  reports: Report[];
+  /** The newest HUD tick taken in; an older HUD (a replay by the relay) is ignored. */
+  hudTick: number;
+  /** Tags this player made, as the referee's last HUD counted them. */
   tags: number;
   /** The newest fix time taken in; fixes at or before it are never sent again. */
   lastFixMs: number | null;
@@ -75,11 +107,19 @@ export interface SessionRecord {
   actions: Action[];
 }
 
-export interface CarryPort {
-  status: CarryStatus;
-  update(offline: boolean): Promise<void>;
-  shutdown(): Promise<void>;
-}
+/** The mesh carry path: on with the relay's carry keys, or off and why. */
+export type CarryPlan =
+  | {
+      kind: "on";
+      key: CarryKey;
+      link: MeshLink;
+      /** POST /carry, as a forwarder. */
+      forward: (envelope: Uint8Array) => Promise<CarryReply>;
+    }
+  | { kind: "off"; why: string };
+
+/** Your own reports offered to the mesh at once while offline, oldest first. */
+const CARRY_AHEAD = 3;
 
 export interface HudPort {
   open(): void;
@@ -92,24 +132,19 @@ export interface SessionDeps {
   stake: bigint;
   boxSk: Uint8Array;
   refereeBoxPk: Uint8Array;
+  /** The referee key the match pinned on NEAR, read by the phone itself; it checks every HUD. */
+  refereePk: Uint8Array;
   /** Where this match stood when the session last saved it (genesis for a new match). */
   record: SessionRecord;
   radio: RadioPort;
   assert: Assert;
   /** Signs `POST /batch` for one sealed batch. */
-  batchRequest: (sealed: Uint8Array) => SignedRequest;
+  batchRequest: (sealed: Uint8Array) => Promise<SignedRequest>;
   upload: (req: SignedRequest) => Promise<unknown>;
-  /** Persists the whole record at once: chain position, outbox, tags, fix time, actions. */
+  /** Persists the whole record at once: chain position, outbox, reports, tags, fix time, actions. */
   save: (r: SessionRecord) => void;
   hud: (onMessage: (m: HudMessage) => void, onState: (s: SocketState) => void) => HudPort;
-  carry:
-    | ((d: {
-        head: () => { item: OutboxItem; req: SignedRequest } | null;
-        delivered: (seq: number) => void;
-        onChange: () => void;
-      }) => CarryPort)
-    | null;
-  carryConfig: CarryConfig;
+  carry: CarryPlan;
   /** The match zone, checked against the chain's zone hash; null when the relay sent none. */
   zone: Circle | null;
   now?: () => number;
@@ -131,10 +166,11 @@ export interface SessionSnapshot {
   /** Your own position for the map; heading in degrees from north, null until you move. */
   lastFix: { lat: number; lon: number; acc: number; heading: number | null } | null;
   seq: number;
+  /** Reports the relay does not have yet. */
   queued: number;
   upload: UploadState;
   offline: boolean;
-  carry: CarryStatus | { kind: "off"; why: string };
+  carry: CarryStatus;
   socket: SocketState;
   hud: HudView | null;
   notes: Note[];
@@ -144,10 +180,10 @@ export interface SessionSnapshot {
   strikeSentAtMs: number | null;
   /** The last tag you made: when, and who your target is now. */
   landed: { atMs: number; target: string } | null;
-  /** Tags you made this match. */
+  /** Tags you made this match, as the referee counts them. */
   tags: number;
-  /** When the relay last heard from you, while it has not for OFFLINE_CARRY_MS; else null. */
-  darkSinceMs: number | null;
+  /** The referee's count of your dark time, from its signed HUDs; null before the first. */
+  dark: DarkInfo | null;
   /** When you left the zone; null while inside (or with no zone to judge by). */
   outSinceMs: number | null;
   /** Your lock is frozen (vehicle speed) until then; null when not frozen. */
@@ -176,6 +212,7 @@ type UiState = Pick<
   | "strikeSentAtMs"
   | "landed"
   | "tags"
+  | "dark"
   | "outSinceMs"
   | "blocked"
   | "invisible"
@@ -194,8 +231,20 @@ export class HuntSession {
   private readonly builder: BatchBuilder;
   private readonly uploader: Uploader;
   private readonly epochTimer: EpochTimer;
-  private carry: CarryPort | null = null;
+  private mesh: MeshCarry | null = null;
   private hudPort: HudPort | null = null;
+  private confirmed: Confirmed;
+  private readonly reports: Report[];
+  private hudTick: number;
+  private lastHud: Hud | null = null;
+  // The refusal the chain was last rebuilt for, so a HUD repeating it does not rebuild again.
+  private handled: { seq: number; code: number } | null = null;
+  // The refusal last shown, so a HUD repeating it does not repeat the note.
+  private shownRejection: string | null = null;
+  private chainWork: Promise<void> = Promise.resolve();
+  // Own carry envelopes by batch hash (hex), sealed once per send round, and back by digest.
+  private readonly envelopes = new Map<string, Uint8Array>();
+  private readonly byDigest = new Map<string, Uint8Array>();
   private unsub: (() => void)[] = [];
   private batchTimer: unknown = null;
   private listeners = new Set<() => void>();
@@ -210,6 +259,7 @@ export class HuntSession {
     strikeSentAtMs: null,
     landed: null,
     tags: 0,
+    dark: null,
     outSinceMs: null,
     blocked: null,
     invisible: null,
@@ -221,9 +271,6 @@ export class HuntSession {
     central: "unknown",
   };
   private location: { status: string; fullAccuracy: boolean } = { status: "unknown", fullAccuracy: true };
-  // Nonces of strikes sent and not refused. Only a strike can make a Tag verdict for this
-  // player, so a new target with none outstanding came from a forfeit, which is not a tag.
-  private readonly strikes = new Set<number>();
   // When the app left the foreground or the phone locked: iOS stops the beacon then (F17).
   private hiddenSinceMs: number | null = null;
   private reporting = false;
@@ -242,8 +289,10 @@ export class HuntSession {
     this.fixes = new FixCollector(this.now, r.lastFixMs === null ? null : BigInt(r.lastFixMs));
     this.sightings = new SightingAggregator(d.keys.kTag);
     this.actions = new ActionQueue(undefined, r.actions);
-    for (const a of r.actions) if (a.kind === "Strike") this.strikes.add(a.nonce);
     this.ui.tags = r.tags;
+    this.confirmed = r.confirmed;
+    this.reports = [...r.reports];
+    this.hudTick = r.hudTick;
     this.outbox = new Outbox(r.outbox);
     this.builder = new BatchBuilder({
       matchId: d.keys.matchId,
@@ -262,12 +311,25 @@ export class HuntSession {
     });
     this.uploader = new Uploader({
       outbox: this.outbox,
-      send: (item) => d.upload(d.batchRequest(item.sealed)).then(() => undefined),
-      onAck: () => d.save(this.record()),
+      send: async (item) => {
+        await d.upload(await d.batchRequest(item.sealed));
+      },
+      onSent: (item) => this.onSent(item),
       onChange: () => this.refresh(),
       now: this.now,
       timers: this.timers,
     });
+    if (d.carry.kind === "on") {
+      const c = d.carry;
+      this.mesh = new MeshCarry({
+        link: c.link,
+        key: c.key,
+        online: () => !this.uploader.offline(),
+        forward: c.forward,
+        delivered: (x) => this.onCarried(x),
+        onChange: () => this.refresh(),
+      });
+    }
     this.epochTimer = new EpochTimer(this.startMs, (e) => this.onEpoch(e), this.now, this.timers);
     this.snap = this.compute();
   }
@@ -321,16 +383,7 @@ export class HuntSession {
       (s) => this.update({ socket: s }),
     );
     this.hudPort.open();
-    if (this.d.carry && this.d.carryConfig.nodeAddress.trim()) {
-      this.carry = this.d.carry({
-        head: () => {
-          const item = this.outbox.head();
-          return item ? { item, req: this.d.batchRequest(item.sealed) } : null;
-        },
-        delivered: (seq) => this.uploader.delivered(seq),
-        onChange: () => this.refresh(),
-      });
-    }
+    void this.mesh?.start();
     this.uploader.kick();
     this.scheduleBatch();
     this.refresh();
@@ -352,7 +405,7 @@ export class HuntSession {
     r.stopLocation();
     r.setPocketMode(false);
     this.hudPort?.close();
-    void this.carry?.shutdown();
+    void this.mesh?.stop();
     this.uploader.stop("Hunt stopped.");
     this.refresh();
   }
@@ -375,7 +428,7 @@ export class HuntSession {
   }
 
   strike(): void {
-    this.strikes.add(this.actions.strike().nonce);
+    this.actions.strike();
     this.d.save(this.record());
     this.update({ strikeSentAtMs: this.now() });
     // Sent with the very next batch instead of waiting up to BATCH_MS: the lock may not last.
@@ -388,7 +441,10 @@ export class HuntSession {
     const t = this.fixes.lastT;
     return {
       chain,
-      outbox: [...this.outbox.all()],
+      outbox: this.outbox.all().map((it) => ({ ...it })),
+      confirmed: this.confirmed,
+      reports: [...this.reports],
+      hudTick: this.hudTick,
       tags: this.ui.tags,
       lastFixMs: t === null ? null : Number(t),
       actions: this.builder.unsentActions(),
@@ -448,49 +504,72 @@ export class HuntSession {
       this.note("info", `Report not built: ${(e as Error).message}`);
     }
     this.uploader.kick();
-    await this.carry?.update(this.uploader.offline());
+    if (this.uploader.offline()) await this.offerToMesh();
     if (this.now() >= this.endMs) this.update({ over: true });
     this.refresh();
   }
 
+  /** Offline: hand the oldest reports the relay lacks to the mesh, sealed for the relay. */
+  private async offerToMesh(): Promise<void> {
+    const mesh = this.mesh;
+    if (mesh?.status.kind !== "on" || this.d.carry.kind !== "on") return;
+    const key = this.d.carry.key;
+    for (const item of this.outbox.unsent().slice(0, CARRY_AHEAD)) {
+      const id = toHex(item.hash);
+      let env = this.envelopes.get(id);
+      if (!env) {
+        try {
+          env = carryEnvelope(key.boxPk, await this.d.batchRequest(item.sealed));
+        } catch {
+          // Signing needs the relay's contract id, read once while online; without it, wait.
+          return;
+        }
+        this.envelopes.set(id, env);
+        this.byDigest.set(toHex(envelopeDigest(env)), item.hash);
+      }
+      mesh.send(env);
+    }
+  }
+
+  /** The relay took a batch, by HTTP or carried: record it as a report, once. */
+  private onSent(item: OutboxItem): void {
+    if (!this.reports.some((r) => equal(r.hash, item.hash)))
+      this.reports.push({ seq: item.seq, hash: item.hash });
+    this.dropEnvelope(item.hash);
+    this.d.save(this.record());
+  }
+
+  private dropEnvelope(hash: Uint8Array): void {
+    const id = toHex(hash);
+    const env = this.envelopes.get(id);
+    if (!env) return;
+    this.envelopes.delete(id);
+    this.byDigest.delete(toHex(envelopeDigest(env)));
+    this.mesh?.forget(env);
+  }
+
+  /** A receipt for one of our envelopes, already verified under the relay's ack key. */
+  private onCarried(x: CarryDelivery): void {
+    const hash = this.byDigest.get(toHex(x.digest));
+    if (hash && x.ack.status >= 200 && x.ack.status < 300) this.uploader.delivered(hash);
+    else if (hash && x.ack.status === 409) this.uploader.stop("The match is not running any more.");
+    if (x.hud) this.onSealedHud(x.hud);
+  }
+
   private onHud(m: HudMessage): void {
     switch (m.type) {
-      case "hud": {
+      case "hud":
+        this.onSealedHud(m.sealed);
+        return;
+      case "handler": {
         try {
-          const view = hudView(openHud(this.d.boxSk, m.sealed));
-          const prev = this.ui.hud;
-          // A new target while still hunting: you inherited your old target's. That is a tag
-          // when one of your strikes is outstanding, and their forfeit otherwise (they went dark
-          // or left the zone, and their head came to you). The relay sends a tick's HUD before
-          // its refusals, so a strike refused in the very tick your target forfeited still
-          // counts; the referee's verdicts in the replay are the record.
-          const newTarget =
-            !!prev && prev.status === "hunting" && view.status === "hunting" && view.target !== prev.target;
-          const tagged = newTarget && this.strikes.size > 0;
-          if (newTarget) this.strikes.clear();
-          this.update({
-            hud: view,
-            strikeSentAtMs: null,
-            landed: tagged ? { atMs: this.now(), target: view.target } : this.ui.landed,
-            tags: tagged ? this.ui.tags + 1 : this.ui.tags,
-          });
-          if (tagged) this.d.save(this.record());
-          if (newTarget && !tagged)
-            this.note("info", "Your target forfeited. Their head is yours; you have a new target.");
-          if (view.status !== "hunting") this.stopReporting();
+          this.note("handler", openVoice(this.d.boxSk, m.sealed, this.d.refereePk, this.seat()).text);
         } catch {
-          this.note("info", "A HUD update did not open.");
+          this.note("info", `${NOT_SIGNED}.`);
         }
         return;
       }
-      case "handler":
-        this.note("handler", m.text);
-        return;
-      case "rejected":
-        this.note("rejected", describeRejection(m.reason));
-        return;
       case "refused":
-        if (m.nonce !== null) this.strikes.delete(m.nonce);
         this.note("refused", describeRefusal(m.action, m.reason));
         return;
       case "over":
@@ -500,6 +579,118 @@ export class HuntSession {
       default:
         return;
     }
+  }
+
+  private seat() {
+    return { matchId: this.d.keys.matchId, player: this.d.keys.player };
+  }
+
+  /** A sealed SignedHud, from the socket or carried back over the mesh. */
+  private onSealedHud(sealed: Uint8Array): void {
+    let hud: Hud;
+    try {
+      hud = openHud(this.d.boxSk, sealed, this.d.refereePk, this.seat());
+    } catch {
+      this.note("info", `${NOT_SIGNED}.`);
+      return;
+    }
+    // The relay could replay an older signed HUD to roll the chain back; only newer ones count.
+    if (hud.tick < this.hudTick || (hud.tick === this.hudTick && this.lastHud)) return;
+    this.hudTick = hud.tick;
+    const before = this.lastHud;
+    this.lastHud = hud;
+    const view = hudView(hud);
+    const prev = this.ui.hud;
+    // A new target while still hunting: you inherited your old target's, by your tag or by
+    // their forfeit. The referee's tag count says which.
+    const newTarget =
+      !!prev && prev.status === "hunting" && view.status === "hunting" && view.target !== prev.target;
+    const tagged = hud.tags > this.ui.tags;
+    this.update({
+      hud: view,
+      strikeSentAtMs: null,
+      landed: tagged ? { atMs: this.now(), target: view.target } : this.ui.landed,
+      tags: hud.tags,
+      dark: this.darkFrom(hud, before),
+    });
+    if (newTarget && !tagged)
+      this.note("info", "Your target forfeited. Their head is yours; you have a new target.");
+    this.showRejection(hud);
+    this.d.save(this.record());
+    this.chainWork = this.chainWork.then(() => this.mendChain(hud)).catch(() => undefined);
+    if (view.status !== "hunting") this.stopReporting();
+  }
+
+  /**
+   * The referee's dark count: `dark_ms` is cumulative, so it growing between two HUDs means it
+   * counts you dark now, and by how much. The banner runs on from the last HUD (rules.ts).
+   */
+  private darkFrom(hud: Hud, before: Hud | null): DarkInfo {
+    const grew = before ? Math.max(0, hud.darkMs - before.darkMs) : 0;
+    const was = this.ui.dark;
+    return {
+      totalMs: hud.darkMs,
+      runMs: grew > 0 ? (was?.counting ? was.runMs : 0) + grew : 0,
+      counting: grew > 0,
+      atMs: this.now(),
+    };
+  }
+
+  private showRejection(hud: Hud): void {
+    const r = hud.rejected;
+    if (!r) return;
+    const report = [...this.reports].reverse().find((x) => x.seq === r.seq);
+    if (report && report.code === undefined) report.code = r.code;
+    const key = `${r.seq}:${r.code}`;
+    if (key === this.shownRejection) return;
+    this.shownRejection = key;
+    const text = describeRejectCode(r.code);
+    if (text) this.note("rejected", text);
+  }
+
+  /** Applies what the HUD says about this player's chain (game/chain.ts). */
+  private async mendChain(hud: Hud): Promise<void> {
+    if (!this.reporting) return;
+    const plan = planChain({
+      items: this.outbox.all(),
+      confirmed: this.confirmed,
+      builderSeq: this.builder.chain.seq,
+      hud,
+      handled: this.handled,
+      nowMs: this.now(),
+    });
+    if (plan.kind !== "rebuild") {
+      this.outbox.confirm(plan.nextSeq);
+      this.confirmed = { nextSeq: plan.nextSeq, tip: plan.tip };
+      if (plan.kind === "resend") {
+        for (const it of this.outbox.all()) if (it.seq >= plan.from) this.dropEnvelope(it.hash);
+        this.outbox.resendFrom(plan.from);
+        this.uploader.restart();
+      }
+      this.d.save(this.record());
+      this.refresh();
+      return;
+    }
+    if (plan.why === "refused" && hud.rejected) this.handled = hud.rejected;
+    // Below next_seq the referee took what this phone sent, unless the chains parted there.
+    if (plan.why !== "parted") this.outbox.confirm(plan.chain.seq);
+    const dropped = this.outbox.clear();
+    for (const it of dropped) this.dropEnvelope(it.hash);
+    this.confirmed = { nextSeq: plan.chain.seq, tip: plan.chain.prev };
+    await this.builder.rebase(plan.chain);
+    this.d.save(this.record());
+    this.uploader.restart();
+    const lost = new Set(dropped.flatMap((it) => it.actions));
+    if (dropped.length > 0)
+      this.note(
+        "info",
+        `${dropped.length === 1 ? "A report" : `${dropped.length} reports`} didn't reach the referee. Carrying on from report ${plan.chain.seq}.`,
+      );
+    if (lost.has("Strike"))
+      this.note("info", "Your strike didn't reach the referee. Strike again if your lock is full.");
+    if (lost.has("Hint"))
+      this.note("info", "A hint didn't reach the referee. Nothing was charged; ask again.");
+    this.refresh();
   }
 
   /** Out or over: nothing more to report, but keep the HUD for the result. */
@@ -561,17 +752,11 @@ export class HuntSession {
       fixes: this.fixCount,
       lastFix: f ? { lat: f.latE7 / 1e7, lon: f.lonE7 / 1e7, acc: f.accM, heading: this.heading } : null,
       seq: this.builder.chain.seq,
-      queued: this.outbox.length,
+      queued: this.outbox.unsent().length,
       upload: this.uploader.state,
       offline: this.uploader.offline(),
-      carry: this.carry?.status ?? {
-        kind: "off",
-        why: this.d.carryConfig.nodeAddress.trim()
-          ? "Mesh carry is not available."
-          : "Relay has no mesh node yet.",
-      },
+      carry: this.mesh?.status ?? { kind: "off", why: this.d.carry.kind === "off" ? this.d.carry.why : "" },
       pendingActions: this.builder.unsentActions().length,
-      darkSinceMs: this.uploader.offline() ? this.uploader.lastContactMs : null,
       frozenUntilMs: this.vehicle.frozenFor(this.now()) === null ? null : this.vehicle.frozenUntilMs,
     };
   }

@@ -1,10 +1,12 @@
-// Results: survived or out, final head, your tags, the 3D replay (opens in Safari), and how
-// it is verified, one tap away for anyone who asks.
+// Results: survived or out, final head, your tags, the 3D replay (opens in Safari), how it is
+// verified (one tap away for anyone who asks), your reports checked against the log anchored on
+// NEAR, and after the end a presence proof for each player you met.
 import { useEffect, useState } from "react";
 import { Animated, Linking, Pressable, StyleSheet, View } from "react-native";
-import { howVerified, money, type Outcome, resultOutcome } from "../game/huntModel";
+import { handleOf, howVerified, money, type Outcome, resultOutcome } from "../game/huntModel";
+import { receiptLines } from "../game/receipts";
 import type { RefereeKind } from "../relay/client";
-import { useApp } from "../state/app";
+import { type Receipts, useApp } from "../state/app";
 import { Icon, Mark } from "../ui/brand";
 import { RollingMoney } from "../ui/game";
 import {
@@ -35,6 +37,26 @@ export interface ResultsModel {
   seed: number;
   /** Which referee the relay says ran the match; null when it did not say. */
   referee: RefereeKind | null;
+  /** Your reports checked against the log root on NEAR. */
+  receipts: Receipts;
+  /** Players you can prove you met (account ids), once the match has ended. */
+  met: string[];
+}
+
+/** The receipt check as lines for the screen, and problems apart. */
+export function receiptsText(r: Receipts): { lines: string[]; problems: string[] } {
+  switch (r.kind) {
+    case "idle":
+      return { lines: [], problems: [] };
+    case "checking":
+      return { lines: ["Checking your reports against NEAR."], problems: [] };
+    case "none":
+      return { lines: [r.why], problems: [] };
+    case "error":
+      return { lines: [], problems: [`Couldn't check your reports: ${r.message}`] };
+    case "done":
+      return receiptLines(r.result);
+  }
 }
 
 const HEADLINE = {
@@ -82,11 +104,14 @@ export function ResultsView({
   m,
   onReplay,
   onDone,
+  onProve,
 }: {
   m: ResultsModel;
   onReplay: () => void;
   onDone: () => void;
+  onProve: (account: string) => void;
 }) {
+  const receipts = receiptsText(m.receipts);
   const [why, setWhy] = useState(false);
   const reduceMotion = useReduceMotion();
   const dark = m.outcome === "out" || m.outcome === "running";
@@ -163,6 +188,34 @@ export function ResultsView({
           <Body muted>{howVerified(m.referee)}</Body>
         </View>
       ) : null}
+      {receipts.lines.length + receipts.problems.length > 0 ? (
+        <View style={styles.receipts} accessible>
+          <Eyebrow muted>Your reports</Eyebrow>
+          {receipts.lines.map((l) => (
+            <Body key={l}>{l}</Body>
+          ))}
+          {receipts.problems.map((p) => (
+            <Strong key={p}>{p}</Strong>
+          ))}
+        </View>
+      ) : null}
+      {m.met.length > 0 ? (
+        <View style={styles.receipts}>
+          <Eyebrow muted>Proof you met</Eyebrow>
+          <Caption muted>
+            Each is a log entry and its path to the root on NEAR. Anyone can check it from the chain alone.
+          </Caption>
+          {m.met.map((account) => (
+            <Button
+              key={account}
+              kind="quiet"
+              symbol="square.and.arrow.up"
+              title={`Prove I met ${handleOf(account)}`}
+              onPress={() => onProve(account)}
+            />
+          ))}
+        </View>
+      ) : null}
       {m.replayUrl ? null : <Caption muted>The replay link appears here once the match has ended.</Caption>}
     </Screen>
   );
@@ -186,6 +239,11 @@ export function Results() {
   const snap = app.session?.snapshot();
   const mine = app.match?.chain?.players.find((p) => p.accountId === app.me);
   const ended = app.match?.phase === "ended" || app.match?.chain?.phase === "ended";
+  // Checked once on arrival and again at the end, when End's root covers every report.
+  useEffect(() => {
+    void app.checkReceipts();
+    if (ended) void app.findMeetings();
+  }, [app, ended]);
   const outcome = resultOutcome({
     hudStatus: snap?.hud?.status ?? null,
     out: !!mine?.out,
@@ -205,9 +263,12 @@ export function Results() {
         replayUrl: replay,
         seed: Number.parseInt(app.matchId?.slice(0, 6) ?? "0", 16) || 0,
         referee: app.refereeKind,
+        receipts: app.receipts,
+        met: app.meetings?.map((x) => x.other) ?? [],
       }}
       onReplay={() => replay && void Linking.openURL(replay)}
       onDone={() => app.finishMatch()}
+      onProve={(account) => void app.shareMeeting(account)}
     />
   );
 }
@@ -222,4 +283,5 @@ const styles = StyleSheet.create({
   why: { minHeight: HIT, flexDirection: "row", alignItems: "center", gap: space.m },
   whyBody: { paddingLeft: 40 },
   badge: { width: 28, alignItems: "center" },
+  receipts: { gap: space.xs },
 });

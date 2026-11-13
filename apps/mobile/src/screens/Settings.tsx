@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { type Settings as S, useApp } from "../state/app";
-import { Body, Button, Field, Gap, Screen, Title } from "../ui/kit";
+import { Body, Button, Field, Gap, Screen, Title, ToggleRow } from "../ui/kit";
 
 /** Where the app connects. A plain screen, not a modal. */
 export function Settings() {
   const app = useApp();
   const [v, setV] = useState<S>(app.settings);
-  const set = (k: keyof S) => (t: string) => setV({ ...v, [k]: t });
+  const set = (k: "relayUrl" | "rpcUrl" | "contractId" | "replayUrl") => (t: string) =>
+    setV({ ...v, [k]: t });
   return (
     <Screen
       footer={
@@ -41,21 +42,17 @@ export function Settings() {
       <Gap />
       <Title>Mesh carry</Title>
       <Body muted>
-        Carries your sealed reports over Bluetooth when you lose signal. Off until the relay runs a mesh node;
-        set its address to turn it on.
+        When you lose signal, nearby players with signal pass your sealed reports on to the relay, and you do
+        the same for them. They see only ciphertext, not who sent it.
       </Body>
-      <Field
-        label="Relay mesh node"
-        value={v.nodeAddress}
-        onChangeText={set("nodeAddress")}
-        placeholder="off1…"
-      />
-      <Field
-        label="Mesh server (optional)"
-        value={v.serverUrl}
-        onChangeText={set("serverUrl")}
-        placeholder="wss://…"
-        keyboardType="url"
+      <Body muted>
+        Off by default: the mesh and TAIL's beacon share this phone's Bluetooth, and it isn't measured yet
+        whether the mesh leaves room in the beacon for your code. If it doesn't, nobody can hear you.
+      </Body>
+      <ToggleRow
+        label="Carry reports over the mesh"
+        value={v.meshCarry}
+        onChange={(on) => setV({ ...v, meshCarry: on })}
       />
     </Screen>
   );

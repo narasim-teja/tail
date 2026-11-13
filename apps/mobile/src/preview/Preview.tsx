@@ -21,11 +21,25 @@ import { PrimerView } from "../screens/Primer";
 import { ProfileView } from "../screens/Profile";
 import { ResultsView } from "../screens/Results";
 import { ScanView } from "../screens/Scan";
+import type { Receipts } from "../state/app";
 import { color, space, text } from "../ui/theme";
 
 const NOW = 1_800_000_000_000;
 const noop = () => {};
 const ID = "7f3a9c21e4b85d60a1c2e3f405162738";
+/** A finished receipt check: most reports logged, one refused for the clock. */
+const RECEIPTS: Receipts = {
+  kind: "done",
+  result: {
+    size: 2_140,
+    final: true,
+    total: 180,
+    included: Array.from({ length: 179 }, (_, i) => i),
+    refused: [{ seq: 179, code: 7 }],
+    missing: [],
+    badProof: [],
+  },
+};
 const ZONE = {
   zone: { latE7: 423_550_800, lonE7: -710_655_000, radiusM: 420 },
   safehouses: [{ latE7: 423_566_000, lonE7: -710_628_000, radiusM: 25 }],
@@ -342,9 +356,12 @@ export const STATES: Record<string, () => ReactNode> = {
         replayUrl: "https://replay.example/?match=x",
         seed: 0,
         referee: "local",
+        receipts: RECEIPTS,
+        met: ["maya.tail-dev.testnet"],
       }}
       onReplay={noop}
       onDone={noop}
+      onProve={noop}
     />
   ),
   "results-out": () => (
@@ -356,16 +373,29 @@ export const STATES: Record<string, () => ReactNode> = {
         replayUrl: "https://replay.example/?match=x",
         seed: 0,
         referee: "local",
+        receipts: RECEIPTS,
+        met: ["maya.tail-dev.testnet"],
       }}
       onReplay={noop}
       onDone={noop}
+      onProve={noop}
     />
   ),
   "results-running": () => (
     <ResultsView
-      m={{ outcome: "running", head: 0n, tags: 0, replayUrl: null, seed: 0, referee: null }}
+      m={{
+        outcome: "running",
+        head: 0n,
+        tags: 0,
+        replayUrl: null,
+        seed: 0,
+        referee: null,
+        receipts: { kind: "checking" },
+        met: [],
+      }}
       onReplay={noop}
       onDone={noop}
+      onProve={noop}
     />
   ),
 };

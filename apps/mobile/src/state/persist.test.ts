@@ -1,15 +1,31 @@
 import { describe, expect, test } from "bun:test";
+import { RejectCode } from "@tail/protocol";
 import { decodeMatchRecord, emptyRecord, encodeMatchRecord, type MatchRecord } from "./persist";
 
+const h = (n: number) => new Uint8Array(32).fill(n);
+
 describe("match record", () => {
-  test("the chain, outbox, tags, last fix time and unsent actions survive a write and read unchanged", () => {
+  test("chain, outbox, confirmation, reports, tags, fix time and unsent actions survive a write and read", () => {
     const r: MatchRecord = {
       matchId: "ab".repeat(16),
-      chain: { seq: 3, prev: new Uint8Array(32).fill(7) },
+      chain: { seq: 3, prev: h(7) },
       outbox: [
-        { seq: 1, sealed: Uint8Array.of(1, 2) },
-        { seq: 2, sealed: Uint8Array.of(3) },
+        {
+          seq: 1,
+          sealed: Uint8Array.of(1, 2),
+          hash: h(1),
+          actions: ["Strike"],
+          sentMs: 1_800_000_000_000,
+          resent: true,
+        },
+        { seq: 2, sealed: Uint8Array.of(3), hash: h(2), actions: [], sentMs: null, resent: false },
       ],
+      confirmed: { nextSeq: 1, tip: h(9) },
+      reports: [
+        { seq: 0, hash: h(9) },
+        { seq: 1, hash: h(1), code: RejectCode.ClockSkew },
+      ],
+      hudTick: 12,
       tags: 2,
       lastFixMs: 1_800_000_123_456,
       actions: [
@@ -21,9 +37,19 @@ describe("match record", () => {
     expect(decodeMatchRecord(encodeMatchRecord(r))).toEqual(r);
   });
 
-  test("a file from before tags, fix times and actions were kept reads with empty ones", () => {
-    const old = JSON.stringify({ matchId: "cd".repeat(16), seq: 0, prev: "00".repeat(32), outbox: [] });
-    expect(decodeMatchRecord(old)).toEqual(emptyRecord("cd".repeat(16)));
+  test("a file from before protocol v2 keeps its counts but drops batches no HUD can confirm", () => {
+    const old = JSON.stringify({
+      matchId: "cd".repeat(16),
+      seq: 4,
+      prev: "11".repeat(32),
+      outbox: [{ seq: 3, sealed: "AQ==" }],
+      tags: 1,
+    });
+    expect(decodeMatchRecord(old)).toEqual({
+      ...emptyRecord("cd".repeat(16)),
+      chain: { seq: 4, prev: h(0x11) },
+      tags: 1,
+    });
   });
 
   test("a malformed saved action is dropped, not sent", () => {

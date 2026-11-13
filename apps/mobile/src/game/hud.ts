@@ -1,39 +1,60 @@
-// Opening and reading the referee's sealed messages to this phone: PlayerKeys once at start
-// ("tail/keys") and a Hud every tick ("tail/hud"), both sealed to the player's box key. The
-// view model turns a Hud into what the hunt screen shows; it never holds anyone else's position.
+// Opening and reading the referee's sealed messages to this phone: PlayerKeys once at start, a
+// Hud every tick and the Handler's lines, each sealed to the player's box key and signed by the
+// referee (packages/protocol signed.ts). Sealing alone proves nothing: anyone holding the box
+// public key, the relay included, can seal to it. So each is opened with the referee key the
+// contract pinned for the match, read from NEAR by the phone itself, and anything that does not
+// verify is dropped. The view model turns a Hud into what the hunt screen shows; it never holds
+// anyone else's position.
 
 import {
-  decodeHud,
-  decodePlayerKeys,
   equal,
-  FixFlag,
   type GridCell,
   type HintFact,
   HintKind,
   type Hud,
   LOCK_EPOCHS,
-  open,
+  openSignedHud,
+  openSignedPlayerKeys,
+  openSignedVoiceLine,
   type PlayerKeys,
+  RejectCode,
   TargetStatus,
+  type VoiceLine,
 } from "@tail/protocol";
 
-export const SEAL_CONTEXT_HUD = "tail/hud";
-export const SEAL_CONTEXT_KEYS = "tail/keys";
+/** What the phone shows for anything sealed to it that the referee did not sign. */
+export const NOT_SIGNED = "This update was not signed by the referee";
 
-export const openHud = (boxSk: Uint8Array, sealed: Uint8Array): Hud =>
-  decodeHud(open(boxSk, sealed, SEAL_CONTEXT_HUD));
+export interface Seat {
+  matchId: Uint8Array;
+  player: number;
+}
 
-/** Opens this player's keys and checks they are for this match and this seat. */
-export function openPlayerKeys(
+function forSeat<T extends Seat>(v: T, seat: Seat, what: string): T {
+  if (!equal(v.matchId, seat.matchId)) throw new Error(`${what} is for another match`);
+  if (v.player !== seat.player) throw new Error(`${what} is for another player`);
+  return v;
+}
+
+/** Opens a sealed SignedHud for this seat; throws if it does not open, verify or fit. */
+export const openHud = (boxSk: Uint8Array, sealed: Uint8Array, refereePk: Uint8Array, seat: Seat): Hud =>
+  forSeat(openSignedHud(boxSk, sealed, refereePk), seat, "HUD");
+
+/** Opens this player's keys and checks they are signed by the referee, for this match and seat. */
+export const openPlayerKeys = (
   boxSk: Uint8Array,
   sealed: Uint8Array,
-  expect: { matchId: Uint8Array; player: number },
-): PlayerKeys {
-  const k = decodePlayerKeys(open(boxSk, sealed, SEAL_CONTEXT_KEYS));
-  if (!equal(k.matchId, expect.matchId)) throw new Error("keys are for another match");
-  if (k.player !== expect.player) throw new Error("keys are for another player");
-  return k;
-}
+  refereePk: Uint8Array,
+  seat: Seat,
+): PlayerKeys => forSeat(openSignedPlayerKeys(boxSk, sealed, refereePk), seat, "keys");
+
+/** Opens one Handler line, signed by the referee and sealed to this player. */
+export const openVoice = (
+  boxSk: Uint8Array,
+  sealed: Uint8Array,
+  refereePk: Uint8Array,
+  seat: Seat,
+): VoiceLine => forSeat(openSignedVoiceLine(boxSk, sealed, refereePk), seat, "Handler line");
 
 const BEARINGS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
 
@@ -129,23 +150,64 @@ export function describeRefusal(action: string, reason: string): string {
 }
 
 /**
- * The referee's reason for rejecting a batch (Rust Debug text, e.g. `FixFlags { flags: 1 }`)
- * as a short line a player understands.
+ * Why the referee refused one of your reports (a RejectCode from the signed HUD), as a short line
+ * a player understands. Null for a refusal the phone recovers from by itself (game/chain.ts), so
+ * there is nothing for the player to do about it.
  */
-export function describeRejection(reason: string): string {
-  if (reason.startsWith("FixFlags")) {
-    // FixFlags { flags: n }: bit 0 is software simulation, bit 1 an external accessory (4.3).
-    // An accessory is a real receiver, so it is named as one, not as a fake.
-    const flags = Number(/flags:\s*(\d+)/.exec(reason)?.[1] ?? Number.NaN);
-    if (flags === FixFlag.ProducedByAccessory)
-      return "Location came from an accessory, not this iPhone. Disconnect it. Report rejected.";
-    return "Location looks simulated. Report rejected.";
+export function describeRejectCode(code: number): string | null {
+  switch (code) {
+    case RejectCode.Seq:
+    case RejectCode.Prev:
+      return null;
+    case RejectCode.Assertion:
+      return "Device check failed on a report. Carrying on with a new one.";
+    case RejectCode.ClockSkew:
+      return "Phone clock is off. Set it to automatic.";
+    case RejectCode.FixFlags:
+      return "Location looks simulated or came from an accessory. Report not counted.";
+    case RejectCode.FixOrder:
+      return "Location fixes out of order. Report not counted.";
+    case RejectCode.Teleport:
+      return "Moved impossibly fast. Report not counted.";
+    case RejectCode.TimeOrder:
+      return "A report was dated before the last one. Report not counted.";
+    case RejectCode.PlayerOut:
+      return "You are out.";
+    case RejectCode.WrongMatch:
+    case RejectCode.UnknownPlayer:
+      return "The referee doesn't know this phone in this match.";
+    default:
+      return `Report not counted (reason ${code}).`;
   }
-  if (reason.startsWith("Teleport")) return "Moved impossibly fast. Report rejected.";
-  if (reason.startsWith("ClockSkew")) return "Phone clock is off. Set it to automatic.";
-  if (reason.startsWith("Assertion")) return "Device check failed. Report rejected.";
-  if (reason.startsWith("Seq") || reason.startsWith("Prev")) return "Report out of order.";
-  if (reason.startsWith("PlayerOut")) return "You are out.";
-  if (reason.startsWith("FixOrder")) return "Location fixes out of order.";
-  return `Report rejected: ${reason}`;
 }
+
+/** The same reasons for the results screen: "refused by the referee (clock off)". */
+export function rejectReason(code: number): string {
+  switch (code) {
+    case RejectCode.Seq:
+    case RejectCode.Prev:
+      return "out of order";
+    case RejectCode.Assertion:
+      return "device check failed";
+    case RejectCode.ClockSkew:
+      return "clock off";
+    case RejectCode.FixFlags:
+      return "location not from this iPhone";
+    case RejectCode.FixOrder:
+      return "fixes out of order";
+    case RejectCode.Teleport:
+      return "moved impossibly fast";
+    case RejectCode.TimeOrder:
+      return "dated before the last one";
+    case RejectCode.PlayerOut:
+      return "already out";
+    case RejectCode.WrongMatch:
+    case RejectCode.UnknownPlayer:
+      return "not known in this match";
+    default:
+      return `reason ${code}`;
+  }
+}
+
+/** Every RejectCode value, for looking a refused report up in the log. */
+export const REJECT_CODES: readonly number[] = Object.values(RejectCode);

@@ -1,26 +1,59 @@
 import { describe, expect, test } from "bun:test";
-import { ed25519 } from "@noble/curves/ed25519.js";
-import { utf8 } from "@tail/protocol";
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";
+import {
+  encodeCarryAck,
+  encodeLogEntry,
+  merkleProof,
+  openCarry,
+  signCarryAck,
+  toHex,
+  utf8,
+} from "@tail/protocol";
 import * as relayAuth from "../../../server/src/auth.ts";
 import * as relayCodes from "../../../server/src/codes.ts";
 import type { Store } from "../../../server/src/db.ts";
 import { HttpError } from "../../../server/src/errors.ts";
-import { signedBody } from "../../../server/src/routes/util.ts";
+import { RequestAuth } from "../../../server/src/routes/util.ts";
 import { fromB64, toB64 } from "../lib/b64";
-import { hudDigest, requestDigest, type Signer } from "./auth";
+import { hudDigest, type Signer } from "./auth";
 import { joinLink, OpenLobbyError, parseLobbyCode, RelayClient, RelayError, readJoin } from "./client";
 import { hudAuthFrame, parseHudMessage } from "./hud";
 
 const sk = ed25519.utils.randomSecretKey();
 const signer: Signer = { accountId: "alice.tail.testnet", sign: (d) => ed25519.sign(d, sk) };
+const CONTRACT = "tail.tail-dev.testnet";
+const digestFor = (method: string, path: string, timeMs: number, body: Uint8Array, contractId = CONTRACT) =>
+  relayAuth.requestDigest({ contractId, accountId: signer.accountId, method, path, timeMs, body });
 
 describe("relay authentication", () => {
-  // apps/server/src/auth.ts is the relay's side; these must agree byte for byte.
-  test("request digests match the relay's", () => {
-    const body = utf8('{"match_id":"00"}');
-    expect(requestDigest("post", "/batch", 1_700_000_000_123, body)).toEqual(
-      relayAuth.requestDigest("POST", "/batch", 1_700_000_000_123, body),
-    );
+  test("signing reads the relay's contract from /health once and names it in every request", async () => {
+    const asked: string[] = [];
+    const c = new RelayClient("http://relay.test", {
+      now: () => 5,
+      fetch: (async (url: string) => {
+        asked.push(url);
+        return new Response(JSON.stringify({ ok: true, contract: CONTRACT }), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    const a = await c.sign(signer, "POST", "/batch", "{}");
+    await c.sign(signer, "POST", "/batch", "{}");
+    expect(asked).toEqual(["http://relay.test/health"]);
+    const ok = (contractId: string) =>
+      relayAuth.verifyEd25519(
+        ed25519.getPublicKey(sk),
+        digestFor("POST", "/batch", 5, utf8("{}"), contractId),
+        a.sig,
+      );
+    expect(ok(CONTRACT)).toBe(true);
+    expect(ok("tail.other.testnet")).toBe(false);
+  });
+
+  test("a relay that names no contract gets no signature", async () => {
+    const c = new RelayClient("http://relay.test", {
+      fetch: (async () =>
+        new Response(JSON.stringify({ ok: true }), { status: 200 })) as unknown as typeof fetch,
+    });
+    await expect(c.sign(signer, "POST", "/batch", "{}")).rejects.toThrow("which contract");
   });
 
   test("HUD challenge digests match the relay's", () => {
@@ -37,19 +70,17 @@ describe("relay authentication", () => {
       seen = { url, init };
       return new Response(JSON.stringify({ queued: true, player: 1 }), { status: 200 });
     }) as unknown as typeof fetch;
-    const c = new RelayClient("http://relay.test:8787/", { fetch: fetchFn, now: () => 1_700_000_000_000 });
-    const r = await c.uploadBatch(c.batchRequest(signer, "ab".repeat(16), Uint8Array.of(1, 2, 3)));
-    expect(r).toEqual({ queued: true, player: 1 });
+    const c = new RelayClient("http://relay.test:8787/", {
+      fetch: fetchFn,
+      now: () => 1_700_000_000_000,
+      contractId: CONTRACT,
+    });
+    await c.uploadBatch(await c.batchRequest(signer, "ab".repeat(16), Uint8Array.of(1, 2, 3)));
     const h = seen?.init.headers as Record<string, string>;
     expect(seen?.url).toBe("http://relay.test:8787/batch");
     expect(h["x-tail-account"]).toBe("alice.tail.testnet");
     expect(h["x-tail-time"]).toBe("1700000000000");
-    const digest = relayAuth.requestDigest(
-      "POST",
-      "/batch",
-      1_700_000_000_000,
-      utf8(String(seen?.init.body)),
-    );
+    const digest = digestFor("POST", "/batch", 1_700_000_000_000, utf8(String(seen?.init.body)));
     expect(relayAuth.verifyEd25519(ed25519.getPublicKey(sk), digest, fromB64(h["x-tail-sig"] ?? ""))).toBe(
       true,
     );
@@ -120,20 +151,18 @@ describe("HUD socket messages", () => {
       tick: 4,
       sealed: Uint8Array.of(7),
     });
+    // The relay's own rejection frames and plain-text Handler lines are not the referee's word.
     expect(
-      parseHudMessage(
-        JSON.stringify({
-          type: "rejected",
-          match_id: "x",
-          detail: { player: 1, seq: 3, reason: "FixFlags { flags: 1 }" },
-        }),
-      ),
-    ).toEqual({ type: "rejected", seq: 3, reason: "FixFlags { flags: 1 }" });
-    expect(parseHudMessage(JSON.stringify({ type: "handler", hint_id: 2, text: "Warmer." }))).toEqual({
+      parseHudMessage(JSON.stringify({ type: "rejected", detail: { player: 1, seq: 3, reason: 6 } })),
+    ).toBeNull();
+    expect(parseHudMessage(JSON.stringify({ type: "handler", hint_id: 2, text: "Warmer." }))).toBeNull();
+    expect(parseHudMessage(JSON.stringify({ type: "handler", sealed: toB64(Uint8Array.of(9)) }))).toEqual({
       type: "handler",
-      hintId: 2,
-      text: "Warmer.",
+      sealed: Uint8Array.of(9),
     });
+    expect(
+      parseHudMessage(JSON.stringify({ type: "refused", detail: { nonce: 4, action: "strike", reason: 3 } })),
+    ).toEqual({ type: "refused", nonce: 4, action: "strike", reason: "code 3" });
     expect(parseHudMessage("not json")).toBeNull();
     expect(parseHudMessage(JSON.stringify({ type: "something-new" }))).toBeNull();
     expect(parseHudMessage(JSON.stringify({ type: "keys", sealed: "%%%" }))).toBeNull();
@@ -146,6 +175,7 @@ describe("lobby codes", () => {
   function relay(answer: unknown, status = 200) {
     const asked: string[] = [];
     const client = new RelayClient("http://relay.test", {
+      contractId: CONTRACT,
       fetch: (async (url: string) => {
         asked.push(url);
         return new Response(JSON.stringify(answer), { status });
@@ -236,9 +266,9 @@ describe("signed match view and refusals", () => {
   const NOW = 1_700_000_000_000;
 
   /**
-   * The relay's own signature check (apps/server src/routes/util.ts signedBody) over the request
+   * The relay's own signature check (apps/server src/routes/util.ts RequestAuth) over the request
    * the phone sends, so a signed GET is accepted or refused by the very code the relay runs. The
-   * context is the part of Hono's that signedBody reads (hono itself is the relay's dependency).
+   * context is the part of Hono's that RequestAuth reads (hono itself is the relay's dependency).
    */
   function realRelay(answer: (account: string) => unknown) {
     const seen: { method: string; url: string; hasBody: boolean }[] = [];
@@ -246,16 +276,18 @@ describe("signed match view and refusals", () => {
       device: (a: string) => (a === signer.accountId ? { near_pk: ed25519.getPublicKey(sk) } : undefined),
       firstSight: () => true,
     } as unknown as Store;
+    const auth = new RequestAuth(store, CONTRACT, () => NOW);
     const client = new RelayClient("http://relay.test", {
       now: () => NOW,
+      contractId: CONTRACT,
       fetch: (async (url: string, init: RequestInit) => {
         seen.push({ method: String(init.method), url, hasBody: init.body !== undefined });
         const r = new Request(url, init);
         const c = {
           req: { header: (n: string) => r.headers.get(n) ?? undefined, raw: r, url: r.url, method: r.method },
-        } as unknown as Parameters<typeof signedBody>[0];
+        } as unknown as Parameters<RequestAuth["signed"]>[0];
         try {
-          const { account } = await signedBody(c, store, NOW);
+          const { account } = await auth.signed(c);
           return new Response(JSON.stringify(answer(account)), { status: 200 });
         } catch (e) {
           if (!(e instanceof HttpError)) throw e;
@@ -285,21 +317,26 @@ describe("signed match view and refusals", () => {
 
   test("a signature over the wrong method or path is refused by the relay", async () => {
     const { client } = realRelay(() => ({}));
-    const forged = { ...client.sign(signer, "POST", `/matches/${ID}/zone`, ""), method: "GET" as const };
+    const forged = {
+      ...(await client.sign(signer, "POST", `/matches/${ID}/zone`, "")),
+      method: "GET" as const,
+    };
     const send = (client as unknown as { send(r: typeof forged): Promise<unknown> }).send.bind(client);
     await expect(send(forged)).rejects.toMatchObject({ status: 401, message: "bad request signature" });
   });
 
-  test("the query is part of what is signed, as the relay reads it", () => {
-    const c = new RelayClient("http://relay.test/base/", { now: () => NOW });
-    const req = c.sign(signer, "GET", "/replay/x?after=3", "");
-    const digest = relayAuth.requestDigest("GET", "/base/replay/x?after=3", NOW, new Uint8Array(0));
+  test("the query is part of what is signed, as the relay reads it", async () => {
+    const c = new RelayClient("http://relay.test/base/", { now: () => NOW, contractId: CONTRACT });
+    const req = await c.sign(signer, "GET", "/replay/x?after=3", "");
+    expect(req.signedPath).toBe("/base/replay/x?after=3");
+    const digest = digestFor("GET", "/base/replay/x?after=3", NOW, new Uint8Array(0));
     expect(relayAuth.verifyEd25519(ed25519.getPublicKey(sk), digest, req.sig)).toBe(true);
-    expect(() => c.sign(signer, "GET", "/x", "{}")).toThrow("a GET has no body");
+    await expect(c.sign(signer, "GET", "/x", "{}")).rejects.toThrow("a GET has no body");
   });
 
   test("before Start the zone view has no keys, and a stranger is told they are not in the match", async () => {
     const empty = new RelayClient("http://r", {
+      contractId: CONTRACT,
       fetch: (async () =>
         new Response(
           JSON.stringify({ match_id: ID, zone: null, keys: [], error: "need 3 players, have 2" }),
@@ -315,6 +352,7 @@ describe("signed match view and refusals", () => {
       error: "need 3 players, have 2",
     });
     const stranger = new RelayClient("http://r", {
+      contractId: CONTRACT,
       fetch: (async () =>
         new Response(JSON.stringify({ error: "not in this match" }), {
           status: 403,
@@ -335,6 +373,7 @@ describe("signed match view and refusals", () => {
   };
   const answering = (status: number, body: unknown) =>
     new RelayClient("http://r", {
+      contractId: CONTRACT,
       fetch: (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch,
     });
 
@@ -371,3 +410,96 @@ describe("signed match view and refusals", () => {
     );
   });
 });
+
+describe("carry, receipts and the replay log", () => {
+  const ID = "7f3a9c21e4b85d60a1c2e3f405162738";
+  const answer = (body: unknown, status = 200, seen?: (url: string, init: RequestInit) => void) =>
+    new RelayClient("http://relay.test", {
+      contractId: CONTRACT,
+      fetch: (async (url: string, init: RequestInit) => {
+        seen?.(url, init);
+        return new Response(JSON.stringify(body), { status });
+      }) as unknown as typeof fetch,
+    });
+
+  test("a carried request is the signed request exactly, and the relay opens it to the same signature", async () => {
+    const boxSk = x25519.utils.randomSecretKey();
+    const c = new RelayClient("http://relay.test", { now: () => 77, contractId: CONTRACT });
+    const req = await c.batchRequest(signer, ID, Uint8Array.of(1, 2));
+    const { carryEnvelope } = await import("../carry/mesh");
+    const inner = openCarry(boxSk, carryEnvelope(x25519.getPublicKey(boxSk), req));
+    expect(inner.account).toBe(signer.accountId);
+    const digest = digestFor(inner.method, inner.path, Number(inner.timeMs), inner.body);
+    expect(relayAuth.verifyEd25519(ed25519.getPublicKey(sk), digest, inner.sig)).toBe(true);
+  });
+
+  test("forwarding posts the envelope as raw bytes and reads back the receipt and HUD", async () => {
+    const ackSk = ed25519.utils.randomSecretKey();
+    const env = new Uint8Array(4144).fill(3);
+    const ack = encodeCarryAck(signCarryAck(ackSk, env, 200, 9n));
+    let body: unknown;
+    const c = answer({ ack: toB64(ack), hud: toB64(Uint8Array.of(5)) }, 200, (_u, init) => {
+      body = init.body;
+    });
+    const r = await c.forwardCarry(env);
+    expect(new Uint8Array(body as ArrayBuffer)).toEqual(env);
+    expect(r.ack).toMatchObject({ status: 200, receivedMs: 9n });
+    expect(r.ackBytes).toEqual(ack);
+    expect(r.hud).toEqual(Uint8Array.of(5));
+    expect(
+      await answer({ box_pk: toB64(new Uint8Array(32)), ack_pk: toB64(new Uint8Array(32)) }).carryKey(),
+    ).toEqual({ boxPk: new Uint8Array(32), ackPk: new Uint8Array(32) });
+  });
+
+  test("an inclusion path is read as hashes, and a leaf the relay does not have reads as none", async () => {
+    const leaves = [1, 2, 3].map((n) => new Uint8Array(32).fill(n));
+    const path = merkleProof(leaves, 1).map(toHex);
+    let url = "";
+    const p = await answer({ index: 1, size: 3, path }, 200, (u) => {
+      url = u;
+    }).inclusion(ID, leaves[1] as Uint8Array, 3);
+    expect(url).toBe(
+      `http://relay.test/matches/${ID}/inclusion?leaf=${toHex(leaves[1] as Uint8Array)}&size=3`,
+    );
+    expect(p).toEqual({ index: 1, size: 3, path: merkleProof(leaves, 1) });
+    expect(
+      await answer({ error: "that leaf is not in the first 3 leaves" }, 404).inclusion(
+        ID,
+        leaves[0] as Uint8Array,
+        3,
+      ),
+    ).toBeNull();
+    await expect(
+      answer({ index: 0, size: 3, path: ["zz"] }).inclusion(ID, leaves[0] as Uint8Array, 3),
+    ).rejects.toThrow("path");
+  });
+
+  test("the replay log is asked for as a player: challenge, then the signed nonce", async () => {
+    const nonce = new Uint8Array(32).fill(8);
+    const entry = { kind: "Contact", a: 0, b: 1, epoch: 4 } as const;
+    const asked: string[] = [];
+    const c = new RelayClient("http://relay.test", {
+      contractId: CONTRACT,
+      fetch: (async (url: string) => {
+        asked.push(url);
+        const body = url.endsWith("/challenge")
+          ? { nonce: toB64(nonce) }
+          : { version: 2, log: [toB64(encodeLogEntry(entry))] };
+        return new Response(JSON.stringify(body), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    expect(await c.replayLog(signer, ID)).toEqual([entry]);
+    const q = new URL(asked[1] as string).searchParams;
+    const sig = fromB64(q.get("sig") ?? "");
+    expect(q.get("account_id")).toBe(signer.accountId);
+    expect(
+      relayAuth.verifyEd25519(
+        ed25519.getPublicKey(sk),
+        relayAuth.replayDigest(nonce, fromHexId(ID), signer.accountId),
+        sig,
+      ),
+    ).toBe(true);
+  });
+});
+
+const fromHexId = (id: string) => Uint8Array.from(Buffer.from(id, "hex"));

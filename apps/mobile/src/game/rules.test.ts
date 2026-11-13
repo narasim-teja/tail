@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DARK_FORFEIT_MS, DARK_LEAK_MS, VEHICLE_FREEZE_MS, VEHICLE_HOLD_MS } from "@tail/protocol";
 import { bearingDeg, compass8, distanceM, inCircle } from "./geo";
-import { clock, darkState, VehicleWatch, zoneState } from "./rules";
+import { clock, darkState, HUD_STALE_MS, VehicleWatch, zoneState } from "./rules";
 
 const common = { lat: 42.355, lon: -71.0656 };
 
@@ -21,10 +21,22 @@ describe("geometry", () => {
 });
 
 describe("the phone's view of the rules", () => {
-  test("dark counts up from the last relay contact to the leak", () => {
-    expect(darkState(10_000, null)).toBeNull();
-    expect(darkState(30_000, 10_000)).toEqual({ seconds: 20, leakIn: DARK_LEAK_MS / 1000 - 20 });
-    expect(darkState(10_000 + DARK_LEAK_MS + 5_000, 10_000)?.leakIn).toBe(0);
+  test("dark is what the referee counts, running on between its HUDs", () => {
+    const counting = { totalMs: 50_000, runMs: 20_000, counting: true, atMs: 10_000 };
+    expect(darkState(10_000, null, false)).toBeNull();
+    expect(darkState(15_000, counting, false)).toEqual({
+      seconds: 25,
+      leakIn: DARK_LEAK_MS / 1000 - 25,
+      forfeitIn: (DARK_FORFEIT_MS - 55_000) / 1000,
+    });
+    expect(darkState(10_000 + DARK_LEAK_MS, counting, false)?.leakIn).toBe(0);
+  });
+
+  test("a referee not counting you dark shows no dark, until HUDs stop and the relay is gone too", () => {
+    const fine = { totalMs: 0, runMs: 0, counting: false, atMs: 10_000 };
+    expect(darkState(10_000 + 5 * HUD_STALE_MS, fine, false)).toBeNull();
+    expect(darkState(10_000 + HUD_STALE_MS - 1, fine, true)).toBeNull();
+    expect(darkState(10_000 + HUD_STALE_MS, fine, true)?.seconds).toBe(HUD_STALE_MS / 1000);
   });
 
   test("out of zone names the way back, the distance to the edge and both countdowns", () => {

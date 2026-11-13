@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { DARK_LEAK_MS, HintKind, LOCK_EPOCHS, type PlayerKeys, TargetStatus } from "@tail/protocol";
+import {
+  DARK_FORFEIT_MS,
+  DARK_LEAK_MS,
+  HintKind,
+  LOCK_EPOCHS,
+  type PlayerKeys,
+  TargetStatus,
+} from "@tail/protocol";
+import { hudOf } from "../../test/referee";
 import { hudView } from "./hud";
 import {
   handleOf,
@@ -34,22 +42,24 @@ const snap = (o: Partial<SessionSnapshot> = {}): SessionSnapshot => ({
   offline: false,
   carry: { kind: "off", why: "" },
   socket: "live",
-  hud: hudView({
-    tick: 1,
-    epoch: 4,
-    lock: 2,
-    heat: 1,
-    head: 5_400_000n,
-    status: TargetStatus.Hunting,
-    target: "maya.tail.testnet",
-  }),
+  hud: hudView(
+    hudOf({
+      tick: 1,
+      epoch: 4,
+      lock: 2,
+      heat: 1,
+      head: 5_400_000n,
+      status: TargetStatus.Hunting,
+      target: "maya.tail.testnet",
+    }),
+  ),
   notes: [],
   over: false,
   pendingActions: 0,
   strikeSentAtMs: null,
   landed: null,
   tags: 0,
-  darkSinceMs: null,
+  dark: null,
   outSinceMs: null,
   frozenUntilMs: null,
   blocked: null,
@@ -57,6 +67,8 @@ const snap = (o: Partial<SessionSnapshot> = {}): SessionSnapshot => ({
   noPocketSensor: false,
   ...o,
 });
+/** The referee counting a dark run of `ms`, as of now. */
+const darkRun = (ms: number) => ({ totalMs: ms, runMs: ms, counting: true, atMs: NOW });
 const zone = { zone: { latE7: 423_550_000, lonE7: -710_656_000, radiusM: 100 }, safehouses: [] };
 const ctx = { keys, stake: 5_000_000n, zone };
 
@@ -77,21 +89,26 @@ describe("hunt model", () => {
     expect([m.head, m.waiting, m.target]).toEqual(["$5.00", true, "maya.tail.testnet"]);
   });
 
-  test("going dark counts to the leak and then says your area was shown", () => {
-    expect(huntModel(snap({ darkSinceMs: NOW - 25_000 }), ctx, NOW).banner).toEqual({
+  test("going dark by the referee's count runs to the leak, then to the forfeit", () => {
+    expect(huntModel(snap({ dark: darkRun(25_000) }), ctx, NOW).banner).toEqual({
       kind: "dark",
       title: "Dark 25 s",
       detail: `Your area shows in ${DARK_LEAK_MS / 1000 - 25} s`,
     });
-    expect(huntModel(snap({ darkSinceMs: NOW - 60_000 }), ctx, NOW).banner?.detail).toBe(
-      "Your area was shown to your hunter",
+    expect(huntModel(snap({ dark: darkRun(60_000) }), ctx, NOW).banner?.detail).toBe(
+      `Your area was shown. Head forfeits in ${(DARK_FORFEIT_MS - 60_000) / 1000} s`,
     );
+  });
+
+  test("no relay contact alone is not dark while the referee still hears you (the mesh may carry you)", () => {
+    const heard = { totalMs: 0, runMs: 0, counting: false, atMs: NOW - 1_000 };
+    expect(huntModel(snap({ dark: heard, offline: true }), ctx, NOW).banner).toBeNull();
   });
 
   test("out of zone wins over dark and names the way back", () => {
     const m = huntModel(
       snap({
-        darkSinceMs: NOW - 25_000,
+        dark: darkRun(25_000),
         outSinceMs: NOW - 15_000,
         lastFix: { lat: 42.357, lon: -71.0656, acc: 5, heading: 0 },
       }),
@@ -123,7 +140,7 @@ describe("hunt model", () => {
     expect(huntModel(back, ctx, NOW).banner?.title).toBe("You were invisible 42 s");
     expect(huntModel(back, ctx, NOW - 2_000 + INVISIBLE_SHOW_MS).banner).toBeNull();
     // Being dark right now matters more than having been invisible.
-    const dark = snap({ invisible: { seconds: 42, atMs: NOW }, darkSinceMs: NOW - 25_000 });
+    const dark = snap({ invisible: { seconds: 42, atMs: NOW }, dark: darkRun(25_000) });
     expect(huntModel(dark, ctx, NOW).banner?.title).toBe("Dark 25 s");
   });
 
@@ -137,29 +154,23 @@ describe("hunt model", () => {
   });
 
   test("being out is the tagged state", () => {
-    const hud = hudView({
-      tick: 2,
-      epoch: 5,
-      lock: 0,
-      heat: 4,
-      head: 0n,
-      status: TargetStatus.Out,
-      target: "x",
-    });
+    const hud = hudView(
+      hudOf({ tick: 2, epoch: 5, heat: 4, head: 0n, status: TargetStatus.Out, target: "x" }),
+    );
     expect(huntModel(snap({ hud }), ctx, NOW).tagged).toBe(true);
   });
 
   test("a tagged HUD that names the hunter carries the name to the tagged screen", () => {
-    const hud = hudView({
-      tick: 2,
-      epoch: 5,
-      lock: 0,
-      heat: 0,
-      head: 0n,
-      status: TargetStatus.Out,
-      target: "",
-      taggedBy: "maya.tail.testnet",
-    });
+    const hud = hudView(
+      hudOf({
+        tick: 2,
+        epoch: 5,
+        head: 0n,
+        status: TargetStatus.Out,
+        target: "",
+        taggedBy: "maya.tail.testnet",
+      }),
+    );
     expect(huntModel(snap({ hud }), ctx, NOW).taggedBy).toBe("maya.tail.testnet");
     expect(taggedLines("maya.tail.testnet", "$5.40")).toEqual({
       title: "maya got you",

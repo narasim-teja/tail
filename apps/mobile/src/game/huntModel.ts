@@ -135,7 +135,7 @@ function status(s: SessionSnapshot): string {
   const parts: string[] = [];
   if (s.queued > 1) parts.push(`${s.queued - 1} waiting`);
   if (s.socket !== "live") parts.push("Reconnecting");
-  if (s.carry.kind === "carrying") parts.push("Mesh on");
+  if (s.carry.kind === "on") parts.push("Mesh on");
   return parts.join(" · ");
 }
 
@@ -145,7 +145,7 @@ export function huntModel(
   nowMs: number,
 ): HuntModel {
   const hud = s.hud;
-  const dark = darkState(nowMs, s.darkSinceMs);
+  const dark = darkState(nowMs, s.dark, s.offline);
   const zone = zoneState(nowMs, s.lastFix, ctx.zone?.zone ?? null, s.outSinceMs);
   let banner: Banner | null = null;
   if (zone) {
@@ -165,7 +165,11 @@ export function huntModel(
     banner =
       dark.leakIn > 0
         ? { kind: "dark", title: `Dark ${dark.seconds} s`, detail: `Your area shows in ${dark.leakIn} s` }
-        : { kind: "dark", title: `Dark ${dark.seconds} s`, detail: "Your area was shown to your hunter" };
+        : {
+            kind: "dark",
+            title: `Dark ${dark.seconds} s`,
+            detail: `Your area was shown. Head forfeits in ${dark.forfeitIn} s`,
+          };
   } else if (s.invisible && nowMs - s.invisible.atMs < INVISIBLE_SHOW_MS) {
     banner = {
       kind: "dark",

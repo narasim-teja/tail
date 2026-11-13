@@ -4,18 +4,23 @@
 import type { PlayerKeys } from "@tail/protocol";
 import Constants from "expo-constants";
 import { useSyncExternalStore } from "react";
+import { Share } from "react-native";
 import TailRadio from "../../modules/tail-radio";
-import { type CarryConfig, MeshCarry } from "../carry/mesh";
+import { meshProfile } from "../carry/mesh";
+import { offlineProtocolLink } from "../carry/sdk";
 import { openPlayerKeys } from "../game/hud";
-import { HuntSession } from "../game/session";
+import { checkReceipts, type Meeting, meetings, presenceJson, type ReceiptResult } from "../game/receipts";
+import { type CarryPlan, HuntSession } from "../game/session";
 import { checkedZone, type Zone } from "../game/zone";
 import { enrol } from "../identity/enrol";
 import { forgetAccount, type Identity, loadIdentity, nearSigner } from "../identity/identity";
 import { keychain } from "../identity/keychain";
+import { anchoredRoots, matchFacts } from "../near/chain";
 import { NearRpc } from "../near/rpc";
 import { PLAYER_GAS } from "../near/tx";
 import { payoutProblem, withdrawCall, withdrawGas } from "../near/withdraw";
 import {
+  type CarryKey,
   isMatchId,
   type MatchView,
   type MatchZone,
@@ -37,12 +42,17 @@ import { type Page, type Route, routeFor } from "./route";
 /** The busy label while a typed lobby code is looked up; Home shows it on its button. */
 export const FINDING_LOBBY = "Finding the lobby";
 
-export interface Settings extends CarryConfig {
+export interface Settings {
   relayUrl: string;
   /** The web replay (apps/web); the results screen opens `<replayUrl>/?match=<id>`. */
   replayUrl: string;
   rpcUrl: string;
   contractId: string;
+  /**
+   * Run the Offline Protocol mesh during a hunt (carry/mesh.ts). Off by default: whether the
+   * mesh's Bluetooth advertising leaves room for TAIL's beacon token is not measured yet.
+   */
+  meshCarry: boolean;
 }
 
 export interface RecentMatch {
@@ -60,10 +70,23 @@ const DEFAULTS: Settings = {
   relayUrl: "",
   rpcUrl: "https://test.rpc.fastnear.com",
   contractId: extra.contractId ?? "",
-  nodeAddress: "",
-  serverUrl: "",
   replayUrl: "",
+  meshCarry: false,
 };
+
+/** Settings from the file; anything it does not hold (or holds from an older build) is the default. */
+function readSettings(text: string): Settings {
+  const o = JSON.parse(text) as Partial<Record<keyof Settings, unknown>>;
+  const str = (k: "relayUrl" | "replayUrl" | "rpcUrl" | "contractId") =>
+    typeof o[k] === "string" ? (o[k] as string) : DEFAULTS[k];
+  return {
+    relayUrl: str("relayUrl"),
+    replayUrl: str("replayUrl"),
+    rpcUrl: str("rpcUrl"),
+    contractId: str("contractId"),
+    meshCarry: o.meshCarry === true,
+  };
+}
 
 const SETTINGS_FILE = "settings.json";
 const CURRENT_FILE = "current.json";
@@ -77,7 +100,19 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export interface Briefing {
   keys: PlayerKeys;
   refereeBoxPk: Uint8Array;
+  /** The referee key the match pinned, as NEAR has it (read through the phone's own RPC). */
+  refereePk: Uint8Array;
+  /** The relay's keys for carried reports; null when the relay has none (carry stays off). */
+  carryKey: CarryKey | null;
 }
+
+/** Results' check that every report is in the log anchored on NEAR (game/receipts.ts). */
+export type Receipts =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "none"; why: string }
+  | { kind: "done"; result: ReceiptResult }
+  | { kind: "error"; message: string };
 
 class AppModel {
   settings: Settings = DEFAULTS;
@@ -108,6 +143,10 @@ class AppModel {
   resultsNow = false;
   /** Tags won in the open match as its file had them when opened (a relaunch has no session). */
   private savedTags = 0;
+  receipts: Receipts = { kind: "idle" };
+  /** Presence proofs this player can share once the match has ended; null until looked up. */
+  meetings: Meeting[] | null = null;
+  private relayClient: RelayClient | null = null;
   busy: string | null = null;
   error: string | null = null;
   ready = false;
@@ -131,8 +170,11 @@ class AppModel {
     for (const l of this.listeners) l();
   }
 
+  /** One client per relay address, so the contract id it reads from /health is asked once. */
   get relay(): RelayClient {
-    return new RelayClient(this.settings.relayUrl);
+    if (this.relayClient?.baseUrl !== this.settings.relayUrl.replace(/\/+$/, ""))
+      this.relayClient = new RelayClient(this.settings.relayUrl);
+    return this.relayClient;
   }
   private get rpc(): NearRpc {
     return new NearRpc(this.settings.rpcUrl);
@@ -177,7 +219,7 @@ class AppModel {
   async init(): Promise<void> {
     try {
       const s = files.read(SETTINGS_FILE);
-      if (s) this.settings = { ...DEFAULTS, ...(JSON.parse(s) as Partial<Settings>) };
+      if (s) this.settings = readSettings(s);
       this.identity = await loadIdentity(keychain);
       const flags = files.read(FLAGS_FILE);
       this.primerSeen = flags ? (JSON.parse(flags) as { primerSeen?: boolean }).primerSeen === true : false;
@@ -497,6 +539,8 @@ class AppModel {
     this.matchZone = null;
     this.openLobby = null;
     this.briefing = null;
+    this.receipts = { kind: "idle" };
+    this.meetings = null;
     try {
       this.savedTags = this.loadRecord(id).tags;
     } catch {
@@ -581,24 +625,47 @@ class AppModel {
 
   // ── Briefing and hunt ───────────────────────────────────────────────────────────────────
 
-  /** Opens this player's sealed keys and checks the referee's box key against the chain. */
+  /**
+   * Opens this player's sealed keys and checks them, and the referee's box key, against the
+   * referee key the match pinned on NEAR, read here through the phone's own RPC: the relay
+   * relays both and could swap either. Also fetches the relay's carry keys while online.
+   */
   brief() {
     return this.act("Reading your orders", async () => {
       const id = this.need();
       const m = this.match;
-      const chain = m?.chain;
-      if (!m || !chain) throw new Error("The match is not on chain yet.");
+      if (!m?.chain) throw new Error("The match is not on chain yet.");
+      const facts = await matchFacts(this.rpc, this.settings.contractId, m.matchId);
+      if (!facts) throw new Error("The match is not on chain yet.");
       // The poll may not have read the keys yet (they arrive with Start); ask for them now.
       if (!this.matchZone?.keys.length) this.matchZone = await this.loadZone(m.matchId);
       const seat = this.matchZone?.keys.find((k) => k.accountId === id.accountId);
       if (!seat) throw new Error("You are not in this match.");
-      const keys = openPlayerKeys(id.boxSk, seat.sealed, {
-        matchId: matchIdBytes(m.matchId),
-        player: seat.player,
-      });
-      const refereeBoxPk = checkedRefereeBox(await this.relay.refereeKeys(), chain.refereePk);
-      this.briefing = { keys, refereeBoxPk };
+      let keys: PlayerKeys;
+      try {
+        keys = openPlayerKeys(id.boxSk, seat.sealed, facts.refereePk, {
+          matchId: matchIdBytes(m.matchId),
+          player: seat.player,
+        });
+      } catch {
+        throw new Error("Your orders were not signed by the referee. Try again, or ask the host.");
+      }
+      const refereeBoxPk = checkedRefereeBox(await this.relay.refereeKeys(), facts.refereePk);
+      const carryKey = this.settings.meshCarry ? await this.relay.carryKey().catch(() => null) : null;
+      this.briefing = { keys, refereeBoxPk, refereePk: facts.refereePk, carryKey };
     });
+  }
+
+  private carryPlan(b: Briefing, matchId: string): CarryPlan {
+    if (!this.settings.meshCarry) return { kind: "off", why: "Mesh carry is off in Settings." };
+    if (!b.carryKey) return { kind: "off", why: "The relay doesn't take carried reports." };
+    const relay = this.relay;
+    return {
+      kind: "on",
+      key: b.carryKey,
+      link: offlineProtocolLink(meshProfile(matchIdBytes(matchId))),
+      forward: (envelope) => relay.forwardCarry(envelope),
+    };
   }
 
   beginHunt(): void {
@@ -610,13 +677,13 @@ class AppModel {
     const record = this.loadRecord(matchId);
     const signer = nearSigner(id);
     const relay = this.relay;
-    const settings = this.settings;
     this.session = new HuntSession({
       matchIdHex: matchId,
       keys: b.keys,
       stake: m.chain.stake,
       boxSk: id.boxSk,
       refereeBoxPk: b.refereeBoxPk,
+      refereePk: b.refereePk,
       record,
       radio: radioPort,
       assert: assertWith(id.attestKeyId),
@@ -631,8 +698,7 @@ class AppModel {
           onMessage,
           onState,
         }),
-      carry: (d) => new MeshCarry({ config: settings, matchId, ...d }),
-      carryConfig: settings,
+      carry: this.carryPlan(b, matchId),
       zone: this.zone?.zone ?? null,
     });
     this.session.subscribe(() => this.emit());
@@ -641,7 +707,7 @@ class AppModel {
     this.emit();
   }
 
-  private loadRecord(matchId: string): MatchRecord {
+  loadRecord(matchId: string): MatchRecord {
     const text = files.read(matchFile(matchId));
     return text ? decodeMatchRecord(text) : emptyRecord(matchId);
   }
@@ -653,6 +719,89 @@ class AppModel {
 
   finishMatch(): void {
     this.closeMatch();
+  }
+
+  // ── Results: receipts and presence proofs ───────────────────────────────────────────────
+
+  /**
+   * Checks every report this phone sent against the newest root NEAR anchored for the match:
+   * End's once there is one, else the latest checkpoint. Roots and players come from NEAR
+   * through the phone's RPC; the relay only supplies audit paths, which are verified here.
+   */
+  async checkReceipts(): Promise<void> {
+    const id = this.matchId;
+    const me = this.me;
+    if (!id || !me || this.receipts.kind === "checking") return;
+    this.receipts = { kind: "checking" };
+    this.emit();
+    try {
+      const contract = this.settings.contractId;
+      const [facts, roots] = await Promise.all([
+        matchFacts(this.rpc, contract, id),
+        anchoredRoots(this.rpc, contract, id),
+      ]);
+      const player = facts?.players.indexOf(me) ?? -1;
+      const root = roots.final ?? roots.all.at(-1) ?? null;
+      const reports = this.loadRecord(id).reports;
+      if (player < 0) this.receipts = { kind: "none", why: "You are not a player in this match on NEAR." };
+      else if (!root) this.receipts = { kind: "none", why: "No log root is anchored on NEAR yet." };
+      else if (reports.length === 0)
+        this.receipts = { kind: "none", why: "This phone kept no reports for this match." };
+      else {
+        const relay = this.relay;
+        const result = await checkReceipts({
+          player,
+          reports,
+          root,
+          final: roots.final !== null,
+          proofs: (leaf, size) => relay.inclusion(id, leaf, size),
+        });
+        this.receipts = { kind: "done", result };
+      }
+    } catch (e) {
+      this.receipts = { kind: "error", message: message(e) };
+    }
+    if (this.matchId === id) this.emit();
+  }
+
+  /**
+   * After End: the plaintext log from the replay bundle, turned into one presence proof per
+   * player this phone met, each verified against End's root on NEAR before it is offered.
+   */
+  async findMeetings(): Promise<void> {
+    const id = this.matchId;
+    const me = this.me;
+    if (!id || !me || this.meetings !== null) return;
+    try {
+      const contract = this.settings.contractId;
+      const [facts, roots] = await Promise.all([
+        matchFacts(this.rpc, contract, id),
+        anchoredRoots(this.rpc, contract, id),
+      ]);
+      const player = facts?.players.indexOf(me) ?? -1;
+      if (!facts || player < 0 || !roots.final) return;
+      const log = await this.relay.replayLog(nearSigner(this.need()), id);
+      const found = meetings({
+        matchId: matchIdBytes(id),
+        contract,
+        log,
+        me: player,
+        players: facts.players,
+        root: roots.final,
+      });
+      if (this.matchId === id) this.meetings = found;
+    } catch {
+      // The replay is not open yet, or its trails were purged: no proofs to offer, nothing broken.
+      return;
+    }
+    this.emit();
+  }
+
+  /** Shares the proof of having met `account` as a JSON document. */
+  async shareMeeting(account: string): Promise<void> {
+    const m = this.meetings?.find((x) => x.other === account);
+    if (!m) return;
+    await Share.share({ title: "TAIL presence proof", message: presenceJson(m) });
   }
 
   private need(): Identity {

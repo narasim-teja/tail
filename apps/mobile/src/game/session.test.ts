@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { x25519 } from "@noble/curves/ed25519.js";
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import {
   BATCH_MS,
   batchHash,
@@ -9,12 +9,20 @@ import {
   derivePlayerKey,
   deriveTagKey,
   EPOCH_MS,
+  encodeCarryAck,
   encodeHud,
+  type Hud,
   LOCK_EPOCHS,
   open,
+  openCarry,
   type PlayerKeys,
+  RejectCode,
+  SealContext,
   seal,
+  sealSignedVoiceLine,
   sha256,
+  signCarryAck,
+  signVoiceLine,
   TargetStatus,
   toHex,
   tokenToUuid,
@@ -27,10 +35,15 @@ import type {
   RadioSighting,
 } from "../../modules/tail-radio";
 import { fakeTime } from "../../test/fake-time";
-import { RelayError, type SignedRequest } from "../relay/client";
+import { hudOf, refereePk, refereeSk, sealedHud } from "../../test/referee";
+import { decodeMeshMessage, encodeMeshMessage, type MeshLink } from "../carry/mesh";
+import { type CarryReply, RelayError, type SignedRequest } from "../relay/client";
 import type { HudMessage } from "../relay/hud";
 import { type Assert, genesis, type OutboxItem } from "./batch";
-import { HuntSession, type RadioPort, type SessionRecord } from "./session";
+import { STALL_MS, unconfirmed } from "./chain";
+import { NOT_SIGNED } from "./hud";
+import { OFFLINE_CARRY_MS } from "./outbox";
+import { type CarryPlan, HuntSession, type RadioPort, type SessionRecord } from "./session";
 
 const START = 1_800_000_000_000;
 const km = sha256(new TextEncoder().encode("session K_m"));
@@ -110,75 +123,125 @@ const flush = async () => {
   for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 };
 
+const fresh = (): SessionRecord => ({
+  chain: genesis(),
+  outbox: [],
+  confirmed: unconfirmed(),
+  reports: [],
+  hudTick: 0,
+  tags: 0,
+  lastFixMs: null,
+  actions: [],
+});
+
+/** The relay's carry keys and a stand-in for `POST /carry`: opens the envelope, signs the receipt. */
+const relayBoxSk = x25519.utils.randomSecretKey();
+const relayAckSk = ed25519.utils.randomSecretKey();
+const carryKey = { boxPk: x25519.getPublicKey(relayBoxSk), ackPk: ed25519.getPublicKey(relayAckSk) };
+
+/** A mesh with one neighbour, `peer`, whose messages the test answers by hand. */
+function fakeMesh() {
+  const sent: { peer: string; content: string }[] = [];
+  let on: Parameters<MeshLink["start"]>[0] | undefined;
+  const link: MeshLink = {
+    start: async (o) => {
+      on = o;
+    },
+    send: async (peer, content) => {
+      sent.push({ peer, content });
+    },
+    stop: async () => {},
+  };
+  return {
+    link,
+    sent,
+    neighbour: (peer: string) => on?.neighbour(peer),
+    receive: (sender: string, content: string) => on?.message(sender, content),
+  };
+}
+
 function rig(
   o: {
     upload?: (r: SignedRequest) => Promise<unknown>;
     record?: SessionRecord;
     assert?: Assert;
     startMs?: number;
+    carry?: (mesh: ReturnType<typeof fakeMesh>) => CarryPlan;
+    boxSk?: Uint8Array;
+    refereeBoxSk?: Uint8Array;
   } = {},
 ) {
   const t = fakeTime(o.startMs ?? START);
   const radio = fakeRadio();
-  const refereeSk = x25519.utils.randomSecretKey();
-  const boxSk = x25519.utils.randomSecretKey();
-  const uploaded: OutboxItem[] = [];
+  const refereeBoxSk = o.refereeBoxSk ?? x25519.utils.randomSecretKey();
+  const boxSk = o.boxSk ?? x25519.utils.randomSecretKey();
+  const boxPk = x25519.getPublicKey(boxSk);
+  const uploaded: Uint8Array[] = [];
   const saved: SessionRecord[] = [];
+  const mesh = fakeMesh();
   let hud: ((m: HudMessage) => void) | undefined;
-  const carryOffline: boolean[] = [];
   const s = new HuntSession({
     matchIdHex: toHex(keys.matchId),
     keys,
     stake: 5_000_000n,
     boxSk,
-    refereeBoxPk: x25519.getPublicKey(refereeSk),
-    record: o.record ?? { chain: genesis(), outbox: [], tags: 0, lastFixMs: null, actions: [] },
+    refereeBoxPk: x25519.getPublicKey(refereeBoxSk),
+    refereePk,
+    record: o.record ?? fresh(),
     radio: radio.radio,
     assert: o.assert ?? (async (cdh) => Uint8Array.from([...cdh.slice(0, 4)])),
-    batchRequest: (sealed) => ({
+    batchRequest: async (sealed) => ({
       method: "POST",
       path: "/batch",
+      signedPath: "/batch",
       body: toHex(sealed),
-      account: "alice",
+      account: "alice.tail.testnet",
       timeMs: t.now(),
       sig: new Uint8Array(64),
     }),
     upload:
       o.upload ??
       (async (r) => {
-        uploaded.push({ seq: uploaded.length, sealed: Uint8Array.from(Buffer.from(r.body, "hex")) });
+        uploaded.push(Uint8Array.from(Buffer.from(r.body, "hex")));
       }),
-    save: (rec) => saved.push(rec),
+    save: (rec) => saved.push(structuredClone(rec)),
     hud: (onMessage) => {
       hud = onMessage;
       return { open: () => {}, close: () => {} };
     },
-    carry: () => ({
-      status: { kind: "standby" },
-      update: async (offline) => {
-        carryOffline.push(offline);
-      },
-      shutdown: async () => {},
-    }),
-    carryConfig: { nodeAddress: "off1node", serverUrl: "" },
+    carry: o.carry?.(mesh) ?? { kind: "off", why: "Mesh carry is off in Settings." },
     zone: { latE7: 423_550_000, lonE7: -710_660_000, radiusM: 300 },
     now: t.now,
     timers: t.timers,
   });
-  const batches = () =>
-    uploaded.map((u) => decodeBatchEnvelope(open(refereeSk, u.sealed, "tail/batch")).batch);
-  const sendHud = (h: Parameters<typeof encodeHud>[0]) =>
-    hud?.({ type: "hud", tick: h.tick, sealed: seal(x25519.getPublicKey(boxSk), encodeHud(h), "tail/hud") });
+  const openBatch = (sealed: Uint8Array) =>
+    decodeBatchEnvelope(open(refereeBoxSk, sealed, SealContext.batch)).batch;
+  const batches = () => uploaded.map(openBatch);
+  let tick = 0;
+  const sendHud = (h: Partial<Hud> = {}) => {
+    tick = h.tick ?? tick + 1;
+    hud?.({ type: "hud", tick, sealed: sealedHud(boxPk, hudOf({ tick, ...h })) });
+  };
   return {
     t,
     radio,
     s,
+    mesh,
+    boxPk,
+    uploaded,
+    openBatch,
     batches,
     saved,
     last: () => saved.at(-1) as SessionRecord,
     sendHud,
-    carryOffline,
     hud: (m: HudMessage) => hud?.(m),
+    /** Runs `n` batch rounds. */
+    rounds: async (n: number) => {
+      for (let i = 0; i < n; i++) {
+        t.advance(BATCH_MS);
+        await flush();
+      }
+    },
   };
 }
 
@@ -243,18 +306,10 @@ describe("hunt session", () => {
     expect(r.batches().map((b) => b.actions.map((a) => a.kind))).toEqual([["Strike"]]);
   });
 
-  test("a sealed HUD drives lock, heat and the STRIKE button", () => {
+  test("a signed HUD drives lock, heat and the STRIKE button", () => {
     const r = rig();
     r.s.start();
-    r.sendHud({
-      tick: 3,
-      epoch: 2,
-      lock: LOCK_EPOCHS,
-      heat: 1,
-      head: 5_000_000n,
-      status: TargetStatus.Hunting,
-      target: "bob.tail.testnet",
-    });
+    r.sendHud({ tick: 3, epoch: 2, lock: LOCK_EPOCHS, heat: 1 });
     expect(r.s.snapshot().hud).toMatchObject({
       lock: LOCK_EPOCHS,
       heat: 1,
@@ -263,52 +318,67 @@ describe("hunt session", () => {
     });
   });
 
-  test("a rejected batch and a Handler line show up as notes", () => {
+  test("a refusal in the signed HUD and a signed Handler line show up as notes, once each", () => {
     const r = rig();
     r.s.start();
-    r.hud({ type: "rejected", seq: 2, reason: "FixFlags { flags: 1 }" });
-    r.hud({ type: "handler", hintId: 1, text: "Getting warmer." });
+    r.sendHud({ rejected: { seq: 2, code: RejectCode.ClockSkew } });
+    r.sendHud({ rejected: { seq: 2, code: RejectCode.ClockSkew } });
+    const line = { matchId: keys.matchId, player: 0, hintId: 1, text: "Getting warmer." };
+    r.hud({ type: "handler", sealed: sealSignedVoiceLine(r.boxPk, signVoiceLine(line, refereeSk)) });
     expect(r.s.snapshot().notes.map((n) => n.text)).toEqual([
       "Getting warmer.",
-      "Location looks simulated. Report rejected.",
+      "Phone clock is off. Set it to automatic.",
     ]);
+  });
+
+  test("a HUD or Handler line the referee did not sign is named as such and changes nothing", () => {
+    const r = rig();
+    r.s.start();
+    r.sendHud({ lock: 1 });
+    const forged = hudOf({ tick: 9, lock: LOCK_EPOCHS, tags: 3 });
+    r.hud({ type: "hud", tick: 9, sealed: seal(r.boxPk, encodeHud(forged), SealContext.hud) });
+    r.hud({ type: "hud", tick: 9, sealed: sealedHud(r.boxPk, forged, ed25519.utils.randomSecretKey()) });
+    const line = { matchId: keys.matchId, player: 0, hintId: 1, text: "Go north." };
+    r.hud({
+      type: "handler",
+      sealed: sealSignedVoiceLine(r.boxPk, signVoiceLine(line, ed25519.utils.randomSecretKey())),
+    });
+    expect(r.s.snapshot().hud?.lock).toBe(1);
+    expect(r.s.snapshot().tags).toBe(0);
+    expect(r.s.snapshot().notes.map((n) => n.text)).toEqual([
+      `${NOT_SIGNED}.`,
+      `${NOT_SIGNED}.`,
+      `${NOT_SIGNED}.`,
+    ]);
+  });
+
+  test("an older signed HUD replayed by the relay is ignored", () => {
+    const r = rig();
+    r.s.start();
+    r.sendHud({ tick: 5, lock: 3 });
+    r.sendHud({ tick: 4, lock: 1 });
+    expect(r.s.snapshot().hud?.lock).toBe(3);
   });
 
   test("being out stops the radio and the reports", () => {
     const r = rig();
     r.s.start();
-    r.sendHud({ tick: 3, epoch: 2, lock: 0, heat: 4, head: 0n, status: TargetStatus.Out, target: "bob" });
+    r.sendHud({ tick: 3, heat: 4, head: 0n, status: TargetStatus.Out, target: "bob" });
     expect(r.radio.calls.slice(-4)).toEqual(["stopScan", "stopBeacon", "stopLocation", "pocket:false"]);
   });
 
-  test("after twenty seconds without the relay the mesh carry path is told the phone is offline", async () => {
-    const r = rig({
-      upload: async () => {
-        throw new RelayError(null, "Can't reach the relay.");
-      },
-    });
-    r.s.start();
-    for (let i = 0; i < 6; i++) {
-      r.t.advance(BATCH_MS);
-      await flush();
-    }
-    expect(r.carryOffline.slice(0, 2)).toEqual([false, false]);
-    expect(r.carryOffline.at(-1)).toBe(true);
-    expect(r.s.snapshot().queued).toBeGreaterThan(1);
-  });
-
-  test("a new target on a later HUD counts as a landed strike and clears the sent state", () => {
+  test("a tag the referee counts lands the strike and clears the sent state", () => {
     const r = rig();
     r.s.start();
-    const base = { epoch: 2, lock: LOCK_EPOCHS, heat: 0, head: 5_000_000n, status: TargetStatus.Hunting };
-    r.sendHud({ ...base, tick: 3, target: "bob.tail.testnet" });
+    r.sendHud({ lock: LOCK_EPOCHS, target: "bob.tail.testnet" });
     r.s.strike();
     expect(r.s.snapshot().strikeSentAtMs).not.toBeNull();
-    r.sendHud({ ...base, tick: 4, lock: 0, head: 10_000_000n, target: "carol.tail.testnet" });
+    r.sendHud({ head: 10_000_000n, target: "carol.tail.testnet", tags: 1 });
     const snap = r.s.snapshot();
     expect(snap.strikeSentAtMs).toBeNull();
     expect(snap.landed?.target).toBe("carol.tail.testnet");
     expect(snap.tags).toBe(1);
+    expect(r.last().tags).toBe(1);
   });
 
   test("leaving the zone starts the out-of-zone clock and coming back stops it", () => {
@@ -333,36 +403,29 @@ describe("hunt session", () => {
     expect(r.s.snapshot().blocked).toBe("bluetooth");
   });
 
-  const hunting = { epoch: 2, lock: 0, heat: 0, head: 5_000_000n, status: TargetStatus.Hunting };
-
-  test("a target lost to a forfeit is not a tag; a strike that takes the target is, and is saved", () => {
+  test("a target lost to a forfeit is not a tag: the referee's count does not move", () => {
     const r = rig();
     r.s.start();
-    r.sendHud({ ...hunting, tick: 3, target: "bob.tail.testnet" });
-    // Bob went dark too long: his head and his target come to you without a strike.
-    r.sendHud({ ...hunting, tick: 4, head: 10_000_000n, target: "carol.tail.testnet" });
+    r.sendHud({ target: "bob.tail.testnet" });
+    r.sendHud({ head: 10_000_000n, target: "carol.tail.testnet" });
     expect(r.s.snapshot().tags).toBe(0);
     expect(r.s.snapshot().landed).toBeNull();
     expect(r.s.snapshot().notes[0]?.text).toContain("forfeited");
-    r.s.strike();
-    r.sendHud({ ...hunting, tick: 5, head: 15_000_000n, target: "dave.tail.testnet" });
-    expect(r.s.snapshot().tags).toBe(1);
-    expect(r.last().tags).toBe(1);
   });
 
-  test("a refused strike does not make the next target change a tag", () => {
+  test("the dark banner follows the referee's dark_ms, not the phone's relay contact", () => {
     const r = rig();
     r.s.start();
-    r.sendHud({ ...hunting, tick: 3, target: "bob.tail.testnet" });
-    r.s.strike();
-    const nonce = r.last().actions[0]?.nonce ?? null;
-    r.hud({ type: "refused", nonce, action: "strike", reason: "Lock { lock: 2 }" });
-    r.sendHud({ ...hunting, tick: 5, target: "carol.tail.testnet" });
-    expect(r.s.snapshot().tags).toBe(0);
+    r.sendHud({ darkMs: 0 });
+    r.sendHud({ darkMs: 10_000 });
+    r.sendHud({ darkMs: 20_000 });
+    expect(r.s.snapshot().dark).toMatchObject({ totalMs: 20_000, runMs: 20_000, counting: true });
+    r.sendHud({ darkMs: 20_000 });
+    expect(r.s.snapshot().dark).toMatchObject({ runMs: 0, counting: false });
   });
 
   test("tags won before a relaunch are still counted after it", () => {
-    const r = rig({ record: { chain: genesis(), outbox: [], tags: 2, lastFixMs: null, actions: [] } });
+    const r = rig({ record: { ...fresh(), tags: 2 } });
     expect(r.s.snapshot().tags).toBe(2);
   });
 
@@ -417,7 +480,7 @@ describe("hunt session", () => {
     const T = START + 60_000;
     const r = rig({
       startMs: T,
-      record: { chain: genesis(), outbox: [], tags: 0, lastFixMs: T - 2_000, actions: [] },
+      record: { ...fresh(), lastFixMs: T - 2_000 },
     });
     r.s.start();
     r.radio.fix(at(T - 120_000)); // the cached fix iOS hands over first
@@ -454,5 +517,202 @@ describe("hunt session", () => {
     await flush();
     expect(again.batches()[0]?.actions).toEqual(saved.actions);
     expect(again.last().actions).toEqual([]);
+  });
+});
+
+const notes = (r: ReturnType<typeof rig>) => r.s.snapshot().notes.map((n) => n.text);
+const seqs = (items: readonly OutboxItem[]) => items.map((i) => i.seq);
+
+describe("chain recovery", () => {
+  test("a report refused for its device check: the chain carries on from the referee's next_seq and tip", async () => {
+    const r = rig();
+    r.s.start();
+    await r.rounds(1);
+    r.s.strike();
+    await flush();
+    await r.rounds(1);
+    const [b0, b1, b2] = r.batches();
+    expect([b0?.seq, b1?.seq, b2?.seq]).toEqual([0, 1, 2]);
+    expect(b1?.actions.map((a) => a.kind)).toEqual(["Strike"]);
+    const tip = batchHash(b0 as NonNullable<typeof b0>);
+    // The referee took 0 and refused 1 for its assertion, so 2 (chained to 1) can never land.
+    r.sendHud({ nextSeq: 1, chainTip: tip, rejected: { seq: 1, code: RejectCode.Assertion } });
+    await flush();
+    expect(seqs(r.last().outbox)).toEqual([]);
+    expect(r.last().chain).toEqual({ seq: 1, prev: tip });
+    expect(notes(r)).toContain("Your strike didn't reach the referee. Strike again if your lock is full.");
+    expect(notes(r)).toContain("2 reports didn't reach the referee. Carrying on from report 1.");
+    await r.rounds(1);
+    const again = r.batches().at(-1);
+    expect(again?.seq).toBe(1);
+    expect(again?.prev).toEqual(tip);
+    // The next HUD still names that refusal while the new 1 is on its way: no second rebuild.
+    r.sendHud({ nextSeq: 1, chainTip: tip, rejected: { seq: 1, code: RejectCode.Assertion } });
+    await flush();
+    await r.rounds(1);
+    expect(
+      r
+        .batches()
+        .slice(-2)
+        .map((b) => b.seq),
+    ).toEqual([1, 2]);
+    r.sendHud({ nextSeq: 2, chainTip: batchHash(again as NonNullable<typeof again>) });
+    await flush();
+    expect(seqs(r.last().outbox)).toEqual([2]);
+  });
+
+  test("restart mid-chain: unconfirmed reports survive the relaunch and the chain goes on from the referee", async () => {
+    const boxSk = x25519.utils.randomSecretKey();
+    const refereeBoxSk = x25519.utils.randomSecretKey();
+    const a = rig({ boxSk, refereeBoxSk });
+    a.s.start();
+    await a.rounds(4);
+    const bs = a.batches();
+    a.sendHud({ nextSeq: 2, chainTip: batchHash(bs[1] as NonNullable<(typeof bs)[1]>) });
+    await flush();
+    expect(seqs(a.last().outbox)).toEqual([2, 3]);
+    a.s.stop();
+    const saved = a.last();
+    const b = rig({ boxSk, refereeBoxSk, record: saved, startMs: a.t.now() });
+    b.s.start();
+    // Sent before the relaunch, so not sent again: they wait for the referee.
+    expect(b.s.snapshot().queued).toBe(0);
+    const tip = batchHash(bs[3] as NonNullable<(typeof bs)[3]>);
+    b.sendHud({ tick: 10, nextSeq: 4, chainTip: tip });
+    await flush();
+    expect(seqs(b.last().outbox)).toEqual([]);
+    await b.rounds(1);
+    expect(b.batches()[0]).toMatchObject({ seq: 4, prev: tip });
+    expect(b.last().reports.map((x) => x.seq)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  test("a phone that lost its match file rebuilds from the referee's next_seq and tip", async () => {
+    const r = rig();
+    r.s.start();
+    await r.rounds(2);
+    const tip = new Uint8Array(32).fill(9);
+    r.sendHud({ nextSeq: 5, chainTip: tip });
+    await flush();
+    await r.rounds(1);
+    expect(r.batches().at(-1)).toMatchObject({ seq: 5, prev: tip });
+  });
+
+  test("a report the referee never got is sent again once, then the chain is rebuilt", async () => {
+    const r = rig();
+    r.s.start();
+    await r.rounds(1);
+    const first = r.uploaded[0] as Uint8Array;
+    r.t.advance(STALL_MS);
+    await flush();
+    const before = r.uploaded.length;
+    r.sendHud({ nextSeq: 0, chainTip: new Uint8Array(32) });
+    await flush();
+    expect(r.uploaded.slice(before).some((u) => toHex(u) === toHex(first))).toBe(true);
+    r.t.advance(STALL_MS);
+    await flush();
+    r.sendHud({ nextSeq: 0, chainTip: new Uint8Array(32) });
+    await flush();
+    await r.rounds(1);
+    const rebuilt = r.batches().at(-1);
+    expect(rebuilt?.seq).toBe(0);
+    expect(toHex(r.uploaded.at(-1) as Uint8Array)).not.toBe(toHex(first));
+  });
+});
+
+describe("mesh carry", () => {
+  const carryOn =
+    (forward: (e: Uint8Array) => Promise<CarryReply> = async () => Promise.reject(new Error("offline"))) =>
+    (mesh: ReturnType<typeof fakeMesh>): CarryPlan => ({
+      kind: "on",
+      key: carryKey,
+      link: mesh.link,
+      forward,
+    });
+
+  /** A session whose relay is out of reach until `online.value` is set. */
+  function offlineRig() {
+    const online = { value: false };
+    const r = rig({
+      upload: async (req) => {
+        if (!online.value) throw new RelayError(null, "Can't reach the relay.");
+        r.uploaded.push(Uint8Array.from(Buffer.from(req.body, "hex")));
+      },
+      carry: carryOn(),
+    });
+    return { r, online };
+  }
+
+  const envelopes = (r: ReturnType<typeof rig>) =>
+    r.mesh.sent.flatMap((m) => {
+      const msg = decodeMeshMessage(m.content);
+      return msg?.kind === "request" ? [msg.envelope] : [];
+    });
+
+  test("offline, reports go to mesh neighbours sealed for the relay, with no account or match id in the clear", async () => {
+    const { r } = offlineRig();
+    r.s.start();
+    await flush();
+    r.mesh.neighbour("off1peer");
+    await r.rounds(1 + Math.ceil(OFFLINE_CARRY_MS / BATCH_MS));
+    const sent = envelopes(r);
+    expect(sent.length).toBeGreaterThan(0);
+    for (const m of r.mesh.sent) {
+      expect(m.content).not.toContain("alice");
+      expect(m.content).not.toContain(toHex(keys.matchId));
+    }
+    for (const env of sent) expect(env.length).toBe(32 + 4096 + 16);
+    const inner = openCarry(relayBoxSk, sent[0] as Uint8Array);
+    expect([inner.account, inner.method, inner.path]).toEqual(["alice.tail.testnet", "POST", "/batch"]);
+    expect(r.openBatch(Uint8Array.from(Buffer.from(new TextDecoder().decode(inner.body), "hex"))).seq).toBe(
+      0,
+    );
+  });
+
+  test("a carried report counts only when the relay's signed receipt verifies, and its HUD is opened", async () => {
+    const { r } = offlineRig();
+    r.s.start();
+    await flush();
+    r.mesh.neighbour("off1peer");
+    await r.rounds(1 + Math.ceil(OFFLINE_CARRY_MS / BATCH_MS));
+    const env = envelopes(r)[0] as Uint8Array;
+    const reply = (sk: Uint8Array, hud: Uint8Array | null) =>
+      encodeMeshMessage({
+        kind: "reply",
+        digest: sha256(env),
+        ack: encodeCarryAck(signCarryAck(sk, env, 200, 1n)),
+        hud,
+      });
+    r.mesh.receive("off1peer", reply(ed25519.utils.randomSecretKey(), null));
+    expect(r.last().reports).toHaveLength(0);
+    r.mesh.receive("off1peer", reply(relayAckSk, sealedHud(r.boxPk, hudOf({ tick: 7, lock: 2 }))));
+    expect(r.last().reports.map((x) => x.seq)).toEqual([0]);
+    expect(r.s.snapshot().hud?.lock).toBe(2);
+    expect(r.s.snapshot().carry).toMatchObject({ kind: "on", carried: 1 });
+  });
+
+  test("a report the mesh delivered is not sent over HTTP when the relay comes back, nor counted twice", async () => {
+    const { r, online } = offlineRig();
+    r.s.start();
+    await flush();
+    r.mesh.neighbour("off1peer");
+    await r.rounds(1 + Math.ceil(OFFLINE_CARRY_MS / BATCH_MS));
+    const env = envelopes(r)[0] as Uint8Array;
+    const inner = openCarry(relayBoxSk, env);
+    const carriedSealed = new TextDecoder().decode(inner.body);
+    r.mesh.receive(
+      "off1peer",
+      encodeMeshMessage({
+        kind: "reply",
+        digest: sha256(env),
+        ack: encodeCarryAck(signCarryAck(relayAckSk, env, 200, 1n)),
+        hud: null,
+      }),
+    );
+    online.value = true;
+    await r.rounds(3);
+    expect(r.uploaded.some((u) => toHex(u) === carriedSealed)).toBe(false);
+    const reported = r.last().reports.map((x) => x.seq);
+    expect(reported.filter((x) => x === 0)).toHaveLength(1);
+    expect(new Set(reported).size).toBe(reported.length);
   });
 });

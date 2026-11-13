@@ -3,9 +3,18 @@
 // 32 lowercase hex characters, amounts are decimal strings. Answers are checked field by field:
 // a shape change fails here with the field's name, not somewhere in the hunt loop.
 
-import { fromHex, toHex, utf8 } from "@tail/protocol";
+import {
+  type CarryAck,
+  type CarryRequest,
+  decodeCarryAck,
+  decodeLogEntry,
+  fromHex,
+  type LogEntry,
+  toHex,
+  utf8,
+} from "@tail/protocol";
 import { fromB64, toB64 } from "../lib/b64";
-import { requestDigest, type Signer } from "./auth";
+import { replayDigest, requestDigest, type Signer } from "./auth";
 
 /** A refusal or failure from the relay. `status` is null when the relay could not be reached. */
 export class RelayError extends Error {
@@ -195,6 +204,8 @@ export interface SignedRequest {
   method: "GET" | "POST";
   /** Path and query, as given to the client (the base URL's own path is not included). */
   path: string;
+  /** Path and query as the relay sees them, base path included: what the signature covers. */
+  signedPath: string;
   /** Empty for a GET, which sends no body; the signature covers SHA256 of the empty string. */
   body: string;
   account: string;
@@ -286,6 +297,31 @@ export interface RelayOptions {
   fetch?: Fetch;
   now?: () => number;
   timeoutMs?: number;
+  /** The contract the relay serves, when already known; otherwise read once from GET /health. */
+  contractId?: string;
+}
+
+/** The relay's keys for mesh-carried requests (`GET /carry/key`). */
+export interface CarryKey {
+  /** X25519: carried requests are sealed to it (`sealCarry`). */
+  boxPk: Uint8Array;
+  /** ed25519: signs the receipt for each carried envelope (`verifyCarryAck`). */
+  ackPk: Uint8Array;
+}
+
+/** The relay's answer to a carried envelope: its signed receipt and, if it has one, your latest sealed HUD. */
+export interface CarryReply {
+  ack: CarryAck;
+  /** The bytes of `ack` as the relay sent them, so a carrier can pass them on unchanged. */
+  ackBytes: Uint8Array;
+  hud: Uint8Array | null;
+}
+
+/** An RFC 9162 audit path from `GET /matches/:id/inclusion`. Unverified: check it against NEAR. */
+export interface InclusionProof {
+  index: number;
+  size: number;
+  path: Uint8Array[];
 }
 
 export class RelayClient {
@@ -293,12 +329,31 @@ export class RelayClient {
   private readonly fetchFn: Fetch;
   private readonly now: () => number;
   private readonly timeoutMs: number;
+  private contract: Promise<string> | null;
 
   constructor(baseUrl: string, o: RelayOptions = {}) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.fetchFn = o.fetch ?? ((url, init) => fetch(url, init));
     this.now = o.now ?? Date.now;
     this.timeoutMs = o.timeoutMs ?? 15_000;
+    this.contract = o.contractId ? Promise.resolve(o.contractId) : null;
+  }
+
+  /**
+   * The contract this relay serves, from GET /health, asked once. Every signed request names
+   * it, so the relay refuses a signature made for another deployment. The app still compares it
+   * with its own setting (app.ts `contractMismatch`) and never adopts it silently.
+   */
+  contractId(): Promise<string> {
+    this.contract ??= this.info().then((i) => {
+      if (!i.contract) throw new RelayError(0, "The relay doesn't say which contract it serves.");
+      return i.contract;
+    });
+    // A failed read is asked again next time, not remembered.
+    this.contract.catch(() => {
+      this.contract = null;
+    });
+    return this.contract;
   }
 
   // ── Enrolment (TECHNICAL.md 4.4) ─────────────────────────────────────────────────────────
@@ -349,7 +404,7 @@ export class RelayClient {
       start_by_ms: m.startByMs,
     });
     try {
-      const r = await this.send(this.sign(signer, "POST", "/matches", body));
+      const r = await this.send(await this.sign(signer, "POST", "/matches", body));
       return { matchId: read.matchId(r, "match_id"), code: read.code(r, "code") };
     } catch (e) {
       const open = e instanceof RelayError && e.status === 409 ? e.detail["match_id"] : undefined;
@@ -390,7 +445,7 @@ export class RelayClient {
    * host, an invitee and the players (403 to anyone else), so the request is signed.
    */
   async matchZone(signer: Signer, matchId: string): Promise<MatchZone> {
-    const r = await this.send(this.sign(signer, "GET", `/matches/${matchId}/zone`, ""));
+    const r = await this.send(await this.sign(signer, "GET", `/matches/${matchId}/zone`, ""));
     return {
       matchId: read.matchId(r, "match_id"),
       zone: parseZone(r["zone"]),
@@ -408,20 +463,115 @@ export class RelayClient {
 
   /** Host only: locks the lobby and starts the referee. */
   async startMatch(signer: Signer, matchId: string): Promise<void> {
-    await this.send(this.sign(signer, "POST", `/matches/${matchId}/start`, "{}"), SLOW_CALL_MS);
+    await this.send(await this.sign(signer, "POST", `/matches/${matchId}/start`, "{}"), SLOW_CALL_MS);
   }
 
   // ── Hunt ─────────────────────────────────────────────────────────────────────────────────
 
-  /** The signed `POST /batch` for one sealed batch. The same bytes go over HTTP or the mesh. */
-  batchRequest(signer: Signer, matchId: string, sealed: Uint8Array): SignedRequest {
+  /** The signed `POST /batch` for one sealed batch. The same request goes over HTTP or the mesh. */
+  batchRequest(signer: Signer, matchId: string, sealed: Uint8Array): Promise<SignedRequest> {
     return this.sign(signer, "POST", "/batch", JSON.stringify({ match_id: matchId, sealed: toB64(sealed) }));
   }
 
-  /** `queued: false` means the relay already had this exact upload (a retry); that is success. */
-  async uploadBatch(req: SignedRequest): Promise<{ queued: boolean; player: number }> {
-    const r = await this.send(req);
-    return { queued: read.bool(r, "queued"), player: read.int(r, "player") };
+  /**
+   * Any 2xx is the relay having the batch: queued now, or already held from an earlier send
+   * (`queued: false`), or by the mesh (`duplicate: true`). Whether the referee accepted it is for
+   * the signed HUD to say, not the relay.
+   */
+  async uploadBatch(req: SignedRequest): Promise<void> {
+    await this.send(req);
+  }
+
+  // ── Mesh carry (TECHNICAL.md 7) ──────────────────────────────────────────────────────────
+
+  /** Fetched at briefing, while the phone is online: the keys a carried request needs. */
+  async carryKey(): Promise<CarryKey> {
+    const r = await this.json("GET", "/carry/key");
+    const boxPk = read.b64(r, "box_pk");
+    const ackPk = read.b64(r, "ack_pk");
+    if (boxPk.length !== 32 || ackPk.length !== 32) throw new RelayError(0, "relay answer: carry keys");
+    return { boxPk, ackPk };
+  }
+
+  /**
+   * Forwards someone's sealed envelope unchanged, as a carrier. Unsigned: the request inside is
+   * signed by its sender, and this phone learns nothing about it.
+   */
+  async forwardCarry(envelope: Uint8Array): Promise<CarryReply> {
+    // A copy, so the body is exactly the envelope even if it is a view into a larger buffer.
+    const r = await this.json("POST", "/carry", envelope.slice().buffer);
+    const ackBytes = read.b64(r, "ack");
+    let ack: CarryAck;
+    try {
+      ack = decodeCarryAck(ackBytes);
+    } catch {
+      throw new RelayError(0, "relay answer: ack is not a carry receipt");
+    }
+    const hud = r["hud"] === null || r["hud"] === undefined ? null : read.b64(r, "hud");
+    return { ack, ackBytes, hud };
+  }
+
+  /** The request inside a carry envelope: exactly what an HTTP send would carry in its headers. */
+  static carryRequest(req: SignedRequest): CarryRequest {
+    return {
+      account: req.account,
+      timeMs: BigInt(req.timeMs),
+      method: req.method,
+      path: req.signedPath,
+      body: utf8(req.body),
+      sig: req.sig,
+    };
+  }
+
+  // ── Receipts ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Where `leaf` sits in the first `size` leaves of the match log, or null when the relay says it
+   * is not there. Public: leaf hashes reveal nothing. The caller verifies the path against a
+   * root it read from NEAR itself.
+   */
+  async inclusion(matchId: string, leaf: Uint8Array, size: number): Promise<InclusionProof | null> {
+    let r: Obj;
+    try {
+      r = await this.json("GET", `/matches/${matchId}/inclusion?leaf=${toHex(leaf)}&size=${size}`);
+    } catch (e) {
+      if (e instanceof RelayError && e.status === 404) return null;
+      throw e;
+    }
+    return {
+      index: read.int(r, "index"),
+      size: read.int(r, "size"),
+      path: read.list(r, "path").map((h) => {
+        if (typeof h !== "string" || !/^[0-9a-f]{64}$/.test(h))
+          throw new RelayError(0, "relay answer: path is not 32-byte hashes");
+        return fromHex(h);
+      }),
+    };
+  }
+
+  /**
+   * The match log in plaintext, from the replay bundle (after End only). Asked as a player
+   * (challenge, then the signed nonce), which a private match needs and a public one ignores.
+   * Untrusted: every entry used from it is checked against a root anchored on NEAR.
+   */
+  async replayLog(signer: Signer, matchId: string): Promise<LogEntry[]> {
+    const c = await this.json(
+      "POST",
+      `/replay/${matchId}/challenge`,
+      JSON.stringify({ account_id: signer.accountId }),
+    );
+    const nonce = read.b64(c, "nonce");
+    const sig = signer.sign(replayDigest(nonce, matchIdBytes(matchId), signer.accountId));
+    const q = new URLSearchParams({ account_id: signer.accountId, nonce: toB64(nonce), sig: toB64(sig) });
+    const bundle = await this.json("GET", `/replay/${matchId}?${q.toString()}`);
+    return read.list(bundle, "log").map((e) => {
+      if (typeof e !== "string") throw new RelayError(0, "relay answer: log entry is not base64");
+      try {
+        return decodeLogEntry(fromB64(e));
+      } catch {
+        throw new RelayError(0, "relay answer: log entry does not decode");
+      }
+    });
   }
 
   async refereeKeys(): Promise<RefereeKeys> {
@@ -451,7 +601,7 @@ export class RelayClient {
   /** Test relays only: the host fills one seat with a stand-in that never moves. */
   async addTestPlayer(signer: Signer, matchId: string): Promise<string> {
     const r = await this.send(
-      this.sign(signer, "POST", "/dev/ghosts/fill", JSON.stringify({ match_id: matchId })),
+      await this.sign(signer, "POST", "/dev/ghosts/fill", JSON.stringify({ match_id: matchId })),
       SLOW_CALL_MS,
     );
     return read.str(r, "account_id");
@@ -459,7 +609,7 @@ export class RelayClient {
 
   async topUp(signer: Signer, accountId: string, amount: bigint): Promise<void> {
     await this.send(
-      this.sign(
+      await this.sign(
         signer,
         "POST",
         "/dev/topup",
@@ -484,12 +634,28 @@ export class RelayClient {
    * apps/server src/routes/util.ts), so the base URL must not be rewritten by a proxy. A GET has
    * an empty body.
    */
-  sign(signer: Signer, method: SignedRequest["method"], path: string, body: string): SignedRequest {
+  async sign(
+    signer: Signer,
+    method: SignedRequest["method"],
+    path: string,
+    body: string,
+  ): Promise<SignedRequest> {
     if (method === "GET" && body !== "") throw new Error("a GET has no body");
+    const contractId = await this.contractId();
     const timeMs = this.now();
     const url = new URL(this.baseUrl + path);
-    const sig = signer.sign(requestDigest(method, url.pathname + url.search, timeMs, utf8(body)));
-    return { method, path, body, account: signer.accountId, timeMs, sig };
+    const signedPath = url.pathname + url.search;
+    const sig = signer.sign(
+      requestDigest({
+        contractId,
+        accountId: signer.accountId,
+        method,
+        path: signedPath,
+        timeMs,
+        body: utf8(body),
+      }),
+    );
+    return { method, path, signedPath, body, account: signer.accountId, timeMs, sig };
   }
 
   private send(req: SignedRequest, timeoutMs?: number): Promise<Obj> {
@@ -506,20 +672,25 @@ export class RelayClient {
     );
   }
 
+  /** A string body is JSON; bytes (a carry envelope) go as they are. */
   private async json(
     method: string,
     path: string,
-    body?: string,
+    body?: string | ArrayBuffer,
     headers: Record<string, string> = {},
     timeoutMs: number = this.timeoutMs,
   ): Promise<Obj> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const type =
+      body === undefined
+        ? {}
+        : { "content-type": typeof body === "string" ? "application/json" : "application/octet-stream" };
     let res: Response;
     try {
       res = await this.fetchFn(this.baseUrl + path, {
         method,
-        headers: { ...(body !== undefined ? { "content-type": "application/json" } : {}), ...headers },
+        headers: { ...type, ...headers },
         ...(body !== undefined ? { body } : {}),
         signal: ctrl.signal,
       });
