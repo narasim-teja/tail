@@ -18,7 +18,7 @@ mod log;
 mod state;
 mod types;
 
-pub use engine::{finish, init, tick};
+pub use engine::{finish, init, init_released, replay_tick, tick};
 pub use state::{Phase, PlayerView, State};
 pub use types::*;
 

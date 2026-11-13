@@ -1,0 +1,31 @@
+[package]
+name = "referee-verify"
+version = "0.1.0"
+description = "Re-executes a finished TAIL match from its replay bundle with referee-core and checks every verdict, log entry and root the referee produced."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tail-verify"
+path = "src/main.rs"
+
+[dependencies]
+appattest = { path = "../appattest" }
+base64 = "=0.23.1"
+borsh = "=1.8.1"
+# The VRF reveal is a plain ed25519 signature over the alpha string (TECHNICAL.md 4.8).
+ed25519-dalek = "=2.2.0"
+hex = "=0.4.3"
+referee-core = { path = "../referee-core" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+tail-protocol = { path = "../tail-protocol", features = ["beacon", "verify"] }
+
+[dev-dependencies]
+appattest = { path = "../appattest", features = ["signer"] }
+referee-sim = { path = "../referee-sim" }
+
+[lints]
+workspace = true

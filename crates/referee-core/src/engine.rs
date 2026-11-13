@@ -11,7 +11,8 @@ use crate::log::Log;
 use crate::state::{Contact, DeferredStrike, EpochData, Heard, Phase, Player, Secrets, State, StoredFix};
 use crate::types::{
     ActionKind, ConsistencyProof, Device, FinishError, Finished, HintIssued, HintReceipt, InitError,
-    MatchConfig, Refusal, Refuse, Reject, Rejection, Started, TickError, TickInput, TickOutput,
+    MatchConfig, Refusal, Refuse, Reject, Rejection, ReleasedDevice, ReleasedKey, ReplayBatch,
+    ReplayTickInput, Started, TickError, TickInput, TickOutput,
 };
 use crate::{
     COIN_DOMAIN, DARK_GRACE_MS, KEEP_EPOCHS, MAX_DURATION_MS, MAX_PLAYERS, MIN_PLAYERS, PRESENCE_ACC_M,
@@ -50,6 +51,25 @@ impl Out {
     }
 }
 
+/// How `authenticate` treats a batch's App Attest assertion: verify these bytes, or (replay
+/// without assertions) take the logged outcome.
+enum Assertion {
+    Verify(Vec<u8>),
+    Trusted(bool),
+}
+
+/// A batch that passed authentication. `Withheld` is a replayed one whose content was not
+/// released: its logged validity refusal stands for the checks.
+enum Authentic {
+    Batch(Batch),
+    Withheld {
+        player: u16,
+        seq: u32,
+        hash: Hash,
+        code: u8,
+    },
+}
+
 /// An action from a valid batch, waiting for the tick's ordering.
 struct Pending {
     t_ms: u64,
@@ -65,7 +85,52 @@ struct Pending {
 /// order of `players_hash`), whatever order `devices` arrives in.
 pub fn init(
     cfg: MatchConfig,
-    mut devices: Vec<Device>,
+    devices: Vec<Device>,
+    k_m: &[u8; 32],
+    vrf_signature: &[u8; 64],
+    start_ms: u64,
+    call_id: CallId,
+) -> Result<Started, InitError> {
+    let devices = devices.into_iter().map(|d| (d, None)).collect();
+    start_match(cfg, devices, k_m, vrf_signature, start_ms, call_id)
+}
+
+/// `init` for a replay of a finished match from its released inputs. A device given only by
+/// its `key_hash` gets an all-zero key in the state, which no assertion verifies against; the
+/// replay feeds that player's batches as [`ReplayBatch::Unasserted`]. With every key given it
+/// is `init`.
+pub fn init_released(
+    cfg: MatchConfig,
+    devices: Vec<ReleasedDevice>,
+    k_m: &[u8; 32],
+    vrf_signature: &[u8; 64],
+    start_ms: u64,
+    call_id: CallId,
+) -> Result<Started, InitError> {
+    let devices = devices
+        .into_iter()
+        .map(|d| {
+            let (key, key_hash) = match d.key {
+                ReleasedKey::Key(k) => (k, None),
+                ReleasedKey::Hash(h) => ([0; 65], Some(h)),
+            };
+            let device = Device {
+                account_id: d.account_id,
+                key,
+                counter: d.counter,
+                attested: d.attested,
+            };
+            (device, key_hash)
+        })
+        .collect();
+    start_match(cfg, devices, k_m, vrf_signature, start_ms, call_id)
+}
+
+/// `init` proper. A device paired with a key hash has no key to check; its `Enrolled` entry
+/// carries the hash instead of SHA256(key).
+fn start_match(
+    cfg: MatchConfig,
+    mut devices: Vec<(Device, Option<Hash>)>,
     k_m: &[u8; 32],
     vrf_signature: &[u8; 64],
     start_ms: u64,
@@ -73,13 +138,18 @@ pub fn init(
 ) -> Result<Started, InitError> {
     let n = devices.len();
     let end_ms = check_config(&cfg, n, start_ms)?;
-    devices.sort_by(|a, b| a.account_id.cmp(&b.account_id));
-    if let Some(w) = devices.windows(2).find(|w| w[0].account_id == w[1].account_id) {
-        return Err(InitError::DuplicateAccount(w[0].account_id.clone()));
+    devices.sort_by(|a, b| a.0.account_id.cmp(&b.0.account_id));
+    if let Some(w) = devices
+        .windows(2)
+        .find(|w| w[0].0.account_id == w[1].0.account_id)
+    {
+        return Err(InitError::DuplicateAccount(w[0].0.account_id.clone()));
     }
-    for d in &devices {
+    for (d, _) in devices.iter().filter(|(_, h)| h.is_none()) {
         appattest::public_key(&d.key).map_err(|_| InitError::BadDeviceKey(d.account_id.clone()))?;
     }
+    let enrolled = enrolled(&devices);
+    let devices: Vec<Device> = devices.into_iter().map(|(d, _)| d).collect();
     let accounts: Vec<String> = devices.iter().map(|d| d.account_id.clone()).collect();
     let index =
         |acc: &String| -> u16 { accounts.binary_search(acc).expect("ring holds the same ids") as u16 };
@@ -91,7 +161,6 @@ pub fn init(
 
     let k_tag = derive_tag_key(k_m);
     let k_players: Vec<[u8; 32]> = (0..n).map(|i| derive_player_key(k_m, i as u16)).collect();
-    let enrolled = enrolled(&devices);
     let players = devices
         .into_iter()
         .zip(&targets)
@@ -164,7 +233,35 @@ pub fn init(
 
 // ── tick ───────────────────────────────────────────────────────────────────────────
 
-pub fn tick(mut st: State, input: TickInput) -> Result<TickOutput, TickError> {
+pub fn tick(st: State, input: TickInput) -> Result<TickOutput, TickError> {
+    let TickInput {
+        tick_no,
+        now_ms,
+        call_id,
+        batches,
+        receipts,
+    } = input;
+    let batches = batches.into_iter().map(ReplayBatch::Asserted).collect();
+    run_tick(
+        st,
+        ReplayTickInput {
+            tick_no,
+            now_ms,
+            call_id,
+            batches,
+            receipts,
+        },
+    )
+}
+
+/// `tick` for a replay of a finished match that has the log and the released batches but not
+/// necessarily every assertion or every refused batch ([`ReplayBatch`]). With every batch
+/// `Asserted` it is `tick`.
+pub fn replay_tick(st: State, input: ReplayTickInput) -> Result<TickOutput, TickError> {
+    run_tick(st, input)
+}
+
+fn run_tick(mut st: State, input: ReplayTickInput) -> Result<TickOutput, TickError> {
     if st.phase != Phase::Running {
         return Err(TickError::NotRunning);
     }
@@ -189,7 +286,7 @@ pub fn tick(mut st: State, input: TickInput) -> Result<TickOutput, TickError> {
         }
     }
     let total_before = st.total_heads();
-    let TickInput {
+    let ReplayTickInput {
         tick_no,
         now_ms: now,
         call_id,
@@ -223,7 +320,21 @@ pub fn tick(mut st: State, input: TickInput) -> Result<TickOutput, TickError> {
     let mut pending = Vec::new();
     // Authentic batches come sorted by player and seq, so each check sees the time of the
     // player's previous accepted batch, including one accepted earlier in this tick.
-    for b in authentic {
+    for a in authentic {
+        let b = match a {
+            Authentic::Batch(b) => b,
+            Authentic::Withheld {
+                player,
+                seq,
+                hash,
+                code,
+            } => {
+                st.players[player as usize].last_rejected = Some((seq, code));
+                let reason = Reject::Withheld { code };
+                st.reject_entry(player, seq, hash, reason, &mut out, &mut rejected);
+                continue;
+            }
+        };
         match st.check(&b, now, cur) {
             Ok(()) => st.ingest(&b, now, cur, &table, &mut out, &mut pending),
             Err(reason) => {
@@ -372,14 +483,14 @@ fn check_config(cfg: &MatchConfig, n: usize, start_ms: u64) -> Result<u64, InitE
 /// Who plays as which index, with which device key: the replay maps every later entry to an
 /// account through these, and sees which keys Apple attested. `key_hash` is SHA-256 of the
 /// 65-byte uncompressed key, which is also App Attest's key id (the attestation's credentialId).
-fn enrolled(devices: &[Device]) -> Vec<LogEntry> {
+fn enrolled(devices: &[(Device, Option<Hash>)]) -> Vec<LogEntry> {
     devices
         .iter()
         .enumerate()
-        .map(|(i, d)| LogEntry::Enrolled {
+        .map(|(i, (d, key_hash))| LogEntry::Enrolled {
             player: i as u16,
             account: d.account_id.clone(),
-            key_hash: sha256(&[&d.key]),
+            key_hash: key_hash.unwrap_or_else(|| sha256(&[&d.key])),
             attested: d.attested,
         })
         .collect()
@@ -482,16 +593,47 @@ impl State {
 
     fn authenticate_all(
         &mut self,
-        mut envs: Vec<BatchEnvelope>,
+        mut items: Vec<ReplayBatch>,
         out: &mut Out,
         rejected: &mut Vec<Rejection>,
-    ) -> Vec<Batch> {
-        envs.sort_by_key(|e| (e.batch.player, e.batch.seq));
+    ) -> Vec<Authentic> {
+        items.sort_by_key(|i| match i {
+            ReplayBatch::Asserted(BatchEnvelope { batch, .. }) | ReplayBatch::Unasserted { batch, .. } => {
+                (batch.player, batch.seq)
+            }
+            ReplayBatch::Withheld { player, seq, .. } => (*player, *seq),
+        });
         let mut ok = Vec::new();
-        for env in envs {
-            match self.authenticate(&env) {
-                Ok(()) => ok.push(env.batch),
-                Err(reason) => self.reject(&env.batch, reason, out, rejected),
+        for item in items {
+            let (batch, assertion) = match item {
+                ReplayBatch::Asserted(env) => (env.batch, Assertion::Verify(env.assertion)),
+                ReplayBatch::Unasserted { batch, assertion_ok } => (batch, Assertion::Trusted(assertion_ok)),
+                ReplayBatch::Withheld {
+                    player,
+                    seq,
+                    hash,
+                    code,
+                } => {
+                    let result = if Reject::is_authenticity_code(code) {
+                        Err(Reject::Withheld { code })
+                    } else {
+                        self.authenticate_withheld(player, seq, hash)
+                    };
+                    match result {
+                        Ok(()) => ok.push(Authentic::Withheld {
+                            player,
+                            seq,
+                            hash,
+                            code,
+                        }),
+                        Err(reason) => self.reject_entry(player, seq, hash, reason, out, rejected),
+                    }
+                    continue;
+                }
+            };
+            match self.authenticate(&batch, &assertion) {
+                Ok(()) => ok.push(Authentic::Batch(batch)),
+                Err(reason) => self.reject(&batch, reason, out, rejected),
             }
         }
         ok
@@ -500,26 +642,54 @@ impl State {
     /// Every batch the referee opened and refused is logged with its hash, so the replay can
     /// match it to the sealed batch the relay kept and see why it did not count.
     fn reject(&mut self, b: &Batch, reason: Reject, out: &mut Out, rejected: &mut Vec<Rejection>) {
+        self.reject_entry(b.player, b.seq, batch_hash(b), reason, out, rejected);
+    }
+
+    fn reject_entry(
+        &mut self,
+        player: u16,
+        seq: u32,
+        hash: Hash,
+        reason: Reject,
+        out: &mut Out,
+        rejected: &mut Vec<Rejection>,
+    ) {
         self.append(
             out,
             LogEntry::Rejected {
-                player: b.player,
-                seq: b.seq,
-                hash: batch_hash(b),
+                player,
+                seq,
+                hash,
                 code: reason.code(),
             },
         );
-        rejected.push(Rejection {
-            player: b.player,
-            seq: b.seq,
-            reason,
-        });
+        rejected.push(Rejection { player, seq, reason });
+    }
+
+    /// The chain checks a withheld batch's logged fields allow (its match and `prev` are not
+    /// known); passing them moves the chain past it, as the batch did.
+    fn authenticate_withheld(&mut self, player: u16, seq: u32, hash: Hash) -> Result<(), Reject> {
+        let p = self
+            .players
+            .get_mut(player as usize)
+            .ok_or(Reject::UnknownPlayer)?;
+        if !p.alive() {
+            return Err(Reject::PlayerOut);
+        }
+        if seq != p.next_seq {
+            return Err(Reject::Seq {
+                expected: p.next_seq,
+                got: seq,
+            });
+        }
+        p.next_seq = seq.saturating_add(1);
+        p.prev = hash;
+        Ok(())
     }
 
     /// The cheap chain checks run first and nothing changes unless all pass, so a batch rejected
     /// for a seq gap can be resubmitted in order without burning its assertion counter.
-    fn authenticate(&mut self, env: &BatchEnvelope) -> Result<(), Reject> {
-        let b = &env.batch;
+    fn authenticate(&mut self, b: &Batch, assertion: &Assertion) -> Result<(), Reject> {
         if b.match_id != self.cfg.match_id {
             return Err(Reject::WrongMatch);
         }
@@ -540,16 +710,18 @@ impl State {
         if b.prev != p.prev {
             return Err(Reject::Prev);
         }
-        let key = appattest::public_key(&p.key).map_err(|e| Reject::Assertion(e.step))?;
-        let counter = appattest::verify_assertion(
-            &key,
-            &env.assertion,
-            &batch_client_data_hash(b),
-            app_id,
-            p.counter,
-        )
-        .map_err(|e| Reject::Assertion(e.step))?;
-        p.counter = counter;
+        match assertion {
+            Assertion::Verify(bytes) => {
+                let key = appattest::public_key(&p.key).map_err(|e| Reject::Assertion(e.step))?;
+                let counter =
+                    appattest::verify_assertion(&key, bytes, &batch_client_data_hash(b), app_id, p.counter)
+                        .map_err(|e| Reject::Assertion(e.step))?;
+                p.counter = counter;
+            }
+            Assertion::Trusted(true) => {}
+            // The log says only that the check failed, not at which step.
+            Assertion::Trusted(false) => return Err(Reject::Assertion(appattest::Step::Signature)),
+        }
         p.next_seq = b.seq.saturating_add(1);
         p.prev = batch_hash(b);
         Ok(())

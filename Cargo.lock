@@ -777,6 +777,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "referee-verify"
+version = "0.1.0"
+dependencies = [
+ "appattest",
+ "base64",
+ "borsh",
+ "ed25519-dalek",
+ "hex",
+ "referee-core",
+ "referee-sim",
+ "serde",
+ "serde_json",
+ "tail-protocol",
+]
+
+[[package]]
 name = "rfc6979"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

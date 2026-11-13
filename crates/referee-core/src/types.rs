@@ -3,8 +3,8 @@
 use crate::state::State;
 use borsh::{BorshDeserialize, BorshSerialize};
 use tail_protocol::{
-    refuse_code, reject_code, BatchEnvelope, CallId, Hash, HintFact, Hud, LogEntry, MatchId, PlayerKeys,
-    VerdictPayload,
+    refuse_code, reject_code, Batch, BatchEnvelope, CallId, Hash, HintFact, Hud, LogEntry, MatchId,
+    PlayerKeys, VerdictPayload,
 };
 
 /// A circle on the map: the play zone or a safehouse.
@@ -66,6 +66,56 @@ pub struct TickInput {
     pub receipts: Vec<HintReceipt>,
 }
 
+/// A player's App Attest key as a replay knows it: the key, or only the `key_hash` of its
+/// `Enrolled` log entry when the key itself was not released. Without the key no assertion can
+/// be checked, so the replay must use [`ReplayBatch::Unasserted`] for that player.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReleasedKey {
+    Key([u8; 65]),
+    Hash(Hash),
+}
+
+/// [`Device`] for [`crate::init_released`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleasedDevice {
+    pub account_id: String,
+    pub key: ReleasedKey,
+    pub counter: u32,
+    pub attested: bool,
+}
+
+/// One batch of a replayed tick, as far as the released match data shows it
+/// ([`crate::replay_tick`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplayBatch {
+    /// The batch and its App Attest assertion: checked exactly as [`crate::tick`] checks one.
+    Asserted(BatchEnvelope),
+    /// The batch without its assertion. Every other check runs; the App Attest outcome is the
+    /// log's (`assertion_ok` false for a batch logged as refused with `ASSERTION`) and the
+    /// assertion counter is not tracked.
+    Unasserted { batch: Batch, assertion_ok: bool },
+    /// A refused batch that was not released, with its logged `Rejected` fields. An
+    /// authenticity refusal is logged as given. A validity refusal still has to pass the checks
+    /// the fields allow (player, still in, next seq) and then moves the chain to `hash`, as the
+    /// batch did; its content and the reason are taken as given.
+    Withheld {
+        player: u16,
+        seq: u32,
+        hash: Hash,
+        code: u8,
+    },
+}
+
+/// [`TickInput`] for [`crate::replay_tick`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayTickInput {
+    pub tick_no: u32,
+    pub now_ms: u64,
+    pub call_id: CallId,
+    pub batches: Vec<ReplayBatch>,
+    pub receipts: Vec<HintReceipt>,
+}
+
 /// Why a batch was not accepted. From [`Reject::ClockSkew`] on, the batch is authentic, just
 /// not usable, and it still advances the player's hash chain.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,9 +152,30 @@ pub enum Reject {
     Teleport {
         cmps: u64,
     },
+    /// Replay only ([`ReplayBatch::Withheld`]): a refused batch that was not released, so its
+    /// logged `reject_code` is all there is.
+    Withheld {
+        code: u8,
+    },
 }
 
 impl Reject {
+    /// Whether a `reject_code` comes from the authenticity checks (match, player, seq, prev, App
+    /// Attest). Those run for every batch of a tick first, are logged before any accepted batch,
+    /// and leave the player's chain where it was; the other codes are validity refusals of a batch
+    /// that did advance it.
+    pub fn is_authenticity_code(code: u8) -> bool {
+        matches!(
+            code,
+            reject_code::UNKNOWN_PLAYER
+                | reject_code::WRONG_MATCH
+                | reject_code::PLAYER_OUT
+                | reject_code::SEQ
+                | reject_code::PREV
+                | reject_code::ASSERTION
+        )
+    }
+
     /// The protocol's `reject_code` for this reason: what `LogEntry::Rejected` and the HUD carry.
     pub fn code(&self) -> u8 {
         match self {
@@ -120,6 +191,7 @@ impl Reject {
             Reject::FixFlags { .. } => reject_code::FIX_FLAGS,
             Reject::FixOrder => reject_code::FIX_ORDER,
             Reject::Teleport { .. } => reject_code::TELEPORT,
+            Reject::Withheld { code } => *code,
         }
     }
 }

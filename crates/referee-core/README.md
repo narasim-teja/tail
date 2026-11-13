@@ -17,7 +17,25 @@ tick(state: State, input: TickInput) -> Result<TickOutput, TickError>
 finish(state: State, alpha: String, vrf_signature: &[u8; 64], call_id: CallId,
        receipts: Vec<HintReceipt>) -> Result<Finished, FinishError>
   // Finished { state, verdicts: [End], proofs, log }
+
+// Replay of a finished match from its released inputs (crates/referee-verify):
+init_released(cfg, devices: Vec<ReleasedDevice>, k_m, vrf_signature, start_ms, call_id)
+  // ReleasedDevice { account_id, key: Key([u8; 65]) | Hash(key_hash), counter, attested }
+replay_tick(state: State, input: ReplayTickInput) -> Result<TickOutput, TickError>
+  // ReplayTickInput { tick_no, now_ms, call_id, batches: Vec<ReplayBatch>, receipts }
+  // ReplayBatch: Asserted(BatchEnvelope) | Unasserted { batch, assertion_ok }
+  //            | Withheld { player, seq, hash, code }
 ```
+
+`init_released` with every key given is `init`, and `replay_tick` with every batch `Asserted`
+is `tick`: both run the same code. The other cases cover what a replay bundle may lack.
+`Hash` puts the logged `key_hash` in the `Enrolled` entry and leaves the state an all-zero key
+that no assertion verifies against. `Unasserted` runs every check but App Attest, whose outcome
+is `assertion_ok`, and does not track the counter. `Withheld` is a refused batch that was not
+released: an authenticity refusal is logged as given; a validity refusal must still be that
+player's next seq while they are in, and then moves the chain to `hash` as the batch did.
+`Reject::Withheld { code }` is its reason, and `Reject::is_authenticity_code` says which codes
+come from the authenticity checks.
 
 - Verdicts come out as unsigned protocol v2 `VerdictPayload`s with `seq`, `prev` and `call_id`
   already set; the wrapper signs `verdict_digest(payload)` and submits them in order. `prev` is
