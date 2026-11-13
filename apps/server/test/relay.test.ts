@@ -287,6 +287,18 @@ describe("the match view", () => {
   });
 });
 
+describe("creating a match", () => {
+  test("a match with no stake is refused before anyone can join; the referee would never start it", async () => {
+    const env = setup();
+    const a = player(env, "ana");
+    const at = { ...MATCH, start_by_ms: Date.now() + 600_000 };
+    const free = await req(env, "POST", "/matches", { ...at, stake: "0" }, a);
+    expect(free.status).toBe(400);
+    expect(free.json["error"]).toBe("stake must be more than 0");
+    expect((await req(env, "POST", "/matches", at, a)).status).toBe(200);
+  });
+});
+
 describe("lobby codes", () => {
   const CODE = /^[23456789ABCDEFGHJKMNPQRSTVWXYZ]{3}-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{3}$/;
 

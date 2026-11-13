@@ -111,6 +111,8 @@ export class Matches {
     host: string,
     i: CreateMatchInput,
   ): Promise<{ matchId: string; zoneHash: string; code: string }> {
+    // The referee refuses to start a match with no stake (ZeroStake); say so before anyone joins.
+    if (i.stake <= 0n) throw new HttpError(400, "stake must be more than 0");
     const zone: Zone = { zone: i.zone, safehouses: i.safehouses };
     const zh = hexId(zoneHash(zone));
     const matchId = await this.d.chain.createMatch({
