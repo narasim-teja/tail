@@ -6,7 +6,7 @@
 
 use super::{log_out, seal_to, sign_all, APP_ID};
 use crate::codec::{b64, fixed_b64, parse, to_borsh, uuid_string};
-use crate::records::{device_record_key, domain, match_record_key, Device, MatchRecord};
+use crate::records::{device_record_key, domain, match_record_key, Device, DeviceRecord, MatchRecord};
 use crate::state::{self, MatchState};
 use crate::{account, host};
 use serde::Deserialize;
@@ -52,7 +52,9 @@ struct Input {
 fn load_device(account_id: &str) -> Result<Device, String> {
     let bytes =
         host::storage_get(&device_record_key(account_id))?.ok_or(format!("{account_id} is not enrolled"))?;
-    borsh::from_slice(&bytes).map_err(|e| format!("device record of {account_id}: {e}"))
+    DeviceRecord::decode(&bytes)
+        .map(|r| r.device)
+        .map_err(|e| format!("device record of {account_id}: {e}"))
 }
 
 /// Each player's keys, signed as well as sealed to their box key: the relay can seal to the

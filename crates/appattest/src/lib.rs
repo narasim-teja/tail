@@ -316,17 +316,29 @@ fn check_attested_auth_data(
     Ok(())
 }
 
+/// What a verified attestation proves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attested {
+    /// The attested P-256 key.
+    pub key: VerifyingKey,
+    /// The credential certificate's notBefore, Unix seconds. Apple issues that certificate when
+    /// the phone attests, so of two attestations the later one has the later notBefore: a
+    /// verifier can tell an attestation kept and replayed from a newer one.
+    pub not_before_unix_s: u64,
+}
+
 /// Verifies an `apple-appattest` attestation object made over `client_data_hash` for `app_id`
 /// in `environment`, with certificate validity checked at `now_unix_s`, and returns the attested
-/// P-256 key. Everything the key is later trusted for rests on this: only a key that Apple
-/// attested on a real device, for this app, over this exact clientDataHash, passes.
+/// P-256 key and when Apple certified it. Everything the key is later trusted for rests on this:
+/// only a key that Apple attested on a real device, for this app, over this exact
+/// clientDataHash, passes.
 pub fn verify_attestation(
     attestation: &[u8],
     client_data_hash: &[u8; 32],
     app_id: &str,
     environment: Environment,
     now_unix_s: u64,
-) -> Result<VerifyingKey, Error> {
+) -> Result<Attested, Error> {
     let m = cbor_map(attestation, "attestation")?;
     if !matches!(field(&m, "fmt"), Some(Value::Text(t)) if t == "apple-appattest") {
         return Err(err(Step::Decode, "fmt is not apple-appattest"));
@@ -381,7 +393,10 @@ pub fn verify_attestation(
     }
     let key = public_key(point)?;
     check_attested_auth_data(auth, app_id, environment, point)?;
-    Ok(key)
+    Ok(Attested {
+        key,
+        not_before_unix_s: unix_s(leaf.tbs_certificate().validity().not_before),
+    })
 }
 
 /// Verifies one assertion over `client_data_hash` and returns its counter. `prev_counter` is the

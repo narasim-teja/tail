@@ -9,8 +9,10 @@
 //!
 //! The referee charges `hint_price(stake, kind, recent_hints(earlier, t_ms))` and puts `t_ms` in
 //! the `Hint` verdict. The contract recomputes the same number from the match's earlier hints
-//! and refuses any other amount, so a referee cannot overcharge. No dependencies and no floating
-//! point: the contract builds it for wasm32-unknown-unknown.
+//! and refuses any other amount, so a referee cannot charge more than this rule allows for the
+//! times it states, and never more than 4x the base price. The contract cannot see whether those
+//! times are true: tail-verify re-executes the match and checks them against the logged ticks.
+//! No dependencies and no floating point: the contract builds it for wasm32-unknown-unknown.
 
 use crate::constants::hint_kind;
 

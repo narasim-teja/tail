@@ -57,7 +57,12 @@ unchanged (a retry is safe; an attestation of a ghost's same keys upgrades it), 
 need `rebind_sig`, the stored device's `near_pk` signing (ed25519, base64)
 `rebind_digest(account_id, app_attest_pk, player_box_pk, near_pk)` of the new keys
 (`packages/protocol/README.md`); with nothing stored it is ignored. Without it the call is refused, so a relay holding a genuine
-iPhone of its own cannot attest it for someone else's account. → `{account_id, app_attest_pk
+iPhone of its own cannot attest it for someone else's account. `rebind_sig` carries no time, so
+the record keeps the notBefore of the credential certificate that attested the stored key, and a
+move must bring an attestation certified later (in a later second): a relay that kept an earlier
+move's attestation and signature cannot put an older key back while that certificate is valid,
+nor move an attested device to a ghost. A ghost's record, and one stored before the time was
+kept, has time 0 and orders nothing. → `{account_id, app_attest_pk
 (65 B), attested, call_id, receipt, sig, referee_pk}`. `receipt` = borsh `Device {account_id,
 app_attest_pk: [u8;65], attested: bool, player_box_pk: [u8;32], near_pk: [u8;32], call_id:
 [u8;16]}`; `sig` = ed25519 under `referee_pk` (base64) over SHA256(`"tail/enroll-receipt/v1"` ‖
@@ -214,7 +219,9 @@ verdict sets with the same seqs, and the contract accepts only one of them.
 Storage holds:
 
 - `referee:box_sk`, generated in the enclave on first use
-- `device:{account}`, one per enrolled device
+- `device:{account}`, one per enrolled device: borsh `Device` (the receipt body) ‖ `0x02` ‖
+  u64le notBefore of its credential certificate (0 for a ghost). A record of the receipt body
+  alone (version 1) reads as notBefore 0.
 - `match:{id}`, written once at `start` (`set_if_absent`) and once at `end` (compare-and-swap),
   so a match never gets two Start or two End verdicts. It holds K_m, the VRF alpha and
   signature, the ring and the devices.

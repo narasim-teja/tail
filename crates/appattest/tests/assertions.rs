@@ -54,7 +54,8 @@ fn real() -> Real {
         Environment::Development,
         v.captured_at_unix_s,
     )
-    .unwrap();
+    .unwrap()
+    .key;
     let assertions = v
         .assertions
         .iter()

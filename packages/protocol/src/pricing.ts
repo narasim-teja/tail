@@ -9,7 +9,9 @@
 //
 // The referee charges hintPrice(stake, kind, recentHints(earlier, tMs)) and puts tMs in the Hint
 // verdict. The contract recomputes the same number from the match's earlier hints and refuses any
-// other amount, so a referee cannot overcharge.
+// other amount, so a referee cannot charge more than this rule allows for the times it states,
+// and never more than 4x the base price. The contract cannot see whether those times are true:
+// tail-verify re-executes the match and checks them against the logged ticks.
 
 import { HintKind } from "./constants.ts";
 

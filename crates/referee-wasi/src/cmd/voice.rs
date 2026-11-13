@@ -132,6 +132,16 @@ fn fetch_signature(key: &str, model: &str, c: &Completion) -> Result<ChatSignatu
     ))
 }
 
+/// The line the player gets: the model's, or the template when the model gave none or one too
+/// long to seal at the one size every message to a phone has. A long line is not an error: the
+/// hint is paid for either way, so the player still hears its fact.
+fn spoken(fact: Fact, completion: Option<Completion>) -> (String, Option<Completion>) {
+    match completion.filter(|c| c.text.len() <= VOICE_TEXT_MAX) {
+        Some(c) => (c.text.clone(), Some(c)),
+        None => (fact.template(), None),
+    }
+}
+
 pub fn run(input: Value) -> Result<Value, String> {
     let i: Input = parse(input)?;
     let Opened {
@@ -155,20 +165,13 @@ pub fn run(input: Value) -> Result<Value, String> {
     voice::check_model(&model)?;
 
     let request = voice::request_body(&model, fact, hint.recent, question.as_deref(), &nonce);
-    // A line too long to seal at the one size every message to a phone has is not used.
-    let completion = key
-        .as_deref()
-        .and_then(|key| complete(key, &request).ok().map(|c| (key, c)))
-        .filter(|(_, c)| c.text.len() <= VOICE_TEXT_MAX);
     // Whether the model answered, and why not, stays here: the relay learns only what
     // `signed_text` tells it, and the logged receipt (empty chat id or signature) tells the rest
     // after End.
-    let (text, chat, signature) = match completion {
-        Some((key, c)) => {
-            let sig = fetch_signature(key, &model, &c).ok();
-            (c.text.clone(), Some(c), sig)
-        }
-        None => (fact.template(), None, None),
+    let (text, chat) = spoken(fact, key.as_deref().and_then(|key| complete(key, &request).ok()));
+    let signature = match (key.as_deref(), &chat) {
+        (Some(key), Some(c)) => fetch_signature(key, &model, c).ok(),
+        _ => None,
     };
     let text_hash = sha256(&[text.as_bytes()]);
 
@@ -213,4 +216,37 @@ pub fn run(input: Value) -> Result<Value, String> {
         "signed_text": signature.as_ref().map(|s| s.text.clone()),
         "receipt": b64(&receipt),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{spoken, Completion, Fact};
+    use tail_protocol::VOICE_TEXT_MAX;
+
+    fn completion(text: String) -> Completion {
+        Completion {
+            chat_id: "chatcmpl-1".into(),
+            text,
+            request_sha: "aa".into(),
+            response_sha: "bb".into(),
+        }
+    }
+
+    #[test]
+    fn an_over_long_model_line_falls_back_to_the_template() {
+        let fact = Fact::Near(true);
+        let fits = "a".repeat(VOICE_TEXT_MAX);
+        let (text, chat) = spoken(fact, Some(completion(fits.clone())));
+        assert_eq!(text, fits);
+        assert_eq!(chat.map(|c| c.chat_id).as_deref(), Some("chatcmpl-1"));
+        // One byte over (a multi-byte character counts by its bytes, as sealing does).
+        for long in ["a".repeat(VOICE_TEXT_MAX + 1), "é".repeat(VOICE_TEXT_MAX / 2 + 1)] {
+            let (text, chat) = spoken(fact, Some(completion(long)));
+            assert_eq!(text, fact.template());
+            assert!(chat.is_none(), "no receipt names a line the player did not get");
+        }
+        let (text, chat) = spoken(fact, None);
+        assert_eq!(text, fact.template());
+        assert!(chat.is_none());
+    }
 }

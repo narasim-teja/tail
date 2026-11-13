@@ -100,9 +100,15 @@ fn cert_bytes(v: &mut Value) -> &mut Vec<u8> {
 #[test]
 fn the_real_iphone_attestation_verifies_and_yields_the_key_id_key() {
     let r = real();
-    let key = verify_attestation(&r.object, &r.hash, &r.app_id, Environment::Development, r.now).unwrap();
+    let attested =
+        verify_attestation(&r.object, &r.hash, &r.app_id, Environment::Development, r.now).unwrap();
     // Apple's keyId is SHA256 of the uncompressed key: the phone and the certificate agree.
-    assert_eq!(Sha256::digest(public_key_bytes(&key)).as_slice(), r.key_id);
+    assert_eq!(
+        Sha256::digest(public_key_bytes(&attested.key)).as_slice(),
+        r.key_id
+    );
+    // The credential certificate's notBefore, 2026-11-11T20:07:49Z (`openssl x509 -dates`).
+    assert_eq!(attested.not_before_unix_s, 1_794_427_669);
 }
 
 #[test]

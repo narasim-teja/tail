@@ -55,6 +55,51 @@ pub struct Device {
     pub call_id: CallId,
 }
 
+/// What `enroll` stores under `device_record_key`: the device and when Apple certified its App
+/// Attest key.
+///
+/// Stored as `borsh(Device) ‖ DEVICE_RECORD_V2 ‖ u64le(credential_not_before)`. A version 1
+/// record is `borsh(Device)` alone (a referee from before the time was kept) and reads as
+/// `credential_not_before: 0`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceRecord {
+    pub device: Device,
+    /// The notBefore of the credential certificate in the attestation that enrolled
+    /// `device.app_attest_pk`, Unix seconds. A rebind signature carries no time of its own, so
+    /// this is what orders the account's attestations: a move must bring a later one, and an
+    /// attestation the relay kept from an earlier move cannot put an older key back. 0 for a
+    /// ghost and for a version 1 record: nothing to order against.
+    pub credential_not_before: u64,
+}
+
+pub const DEVICE_RECORD_V2: u8 = 2;
+
+impl DeviceRecord {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = crate::codec::to_borsh(&self.device);
+        out.push(DEVICE_RECORD_V2);
+        out.extend_from_slice(&self.credential_not_before.to_le_bytes());
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<DeviceRecord, String> {
+        let mut rest = bytes;
+        let device = Device::deserialize(&mut rest).map_err(|e| e.to_string())?;
+        let credential_not_before =
+            match rest {
+                [] => 0,
+                [DEVICE_RECORD_V2, t @ ..] => u64::from_le_bytes(t.try_into().map_err(|_| {
+                    format!("version {DEVICE_RECORD_V2} record has {} trailing bytes", t.len())
+                })?),
+                [v, ..] => return Err(format!("device record version {v}")),
+            };
+        Ok(DeviceRecord {
+            device,
+            credential_not_before,
+        })
+    }
+}
+
 pub fn device_record_key(account_id: &str) -> String {
     format!("device:{account_id}")
 }
@@ -122,6 +167,41 @@ mod tests {
                 assert_ne!(d, theirs);
             }
         }
+    }
+
+    fn alice() -> Device {
+        Device {
+            account_id: "alice.testnet".into(),
+            app_attest_pk: [4; 65],
+            attested: true,
+            player_box_pk: [1; 32],
+            near_pk: [2; 32],
+            call_id: [3; 16],
+        }
+    }
+
+    #[test]
+    fn device_records_round_trip_and_read_version_1() {
+        let r = DeviceRecord {
+            device: alice(),
+            credential_not_before: 1_794_427_669,
+        };
+        assert_eq!(DeviceRecord::decode(&r.encode()), Ok(r.clone()));
+        // Version 1: the receipt body alone.
+        let v1 = crate::codec::to_borsh(&alice());
+        assert_eq!(
+            DeviceRecord::decode(&v1),
+            Ok(DeviceRecord {
+                device: alice(),
+                credential_not_before: 0
+            })
+        );
+        let mut bad = r.encode();
+        bad.pop();
+        assert!(DeviceRecord::decode(&bad).is_err());
+        let mut bad = v1.clone();
+        bad.extend_from_slice(&[3; 9]);
+        assert!(DeviceRecord::decode(&bad).is_err());
     }
 
     #[test]
