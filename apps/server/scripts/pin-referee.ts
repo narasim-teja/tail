@@ -1,6 +1,6 @@
 // Pins the referee's keys in the contract (testnet only): its `verdicts` signing key as
 // referee_pk and its VRF key as vrf_pk, both read from the referee's `pubkeys`. With
-// REFEREE_MODE=local that is the local test referee and LOCAL_TAIL_CONTRACT.
+// REFEREE_MODE=local those are the local test referee's keys; with the default, the enclave's.
 // Signed by NEAR_RELAY_ACCOUNT, the contract owner, with 1 yocto each. Matches created afterwards
 // pin these keys; running ones keep theirs. Does nothing when the keys already match.
 //
@@ -32,6 +32,6 @@ await chain.pinKeys({
 });
 const after = await chain.config();
 const ok = after.referee_pk === want.referee_pk && after.vrf_pk === want.vrf_pk;
-console.log(ok ? "pinned: the contract now pins the deployed referee's keys" : "FAILED: keys still differ");
+console.log(ok ? "pinned: the contract now pins this referee's keys" : "FAILED: keys still differ");
 console.log(`OutLayer spend: $${referee.spendUsd().toFixed(4)}`);
 process.exit(ok ? 0 : 1);

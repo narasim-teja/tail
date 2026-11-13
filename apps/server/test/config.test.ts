@@ -37,22 +37,13 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...good, ALLOW_GHOSTS: "yes" })).toThrow("ALLOW_GHOSTS");
   });
 
-  test("the referee is OutLayer unless REFEREE_MODE=local, which plays on its own contract", () => {
+  test("the referee is OutLayer unless REFEREE_MODE=local; both play on TAIL_CONTRACT", () => {
     const outlayer = loadConfig(good);
     expect(outlayer.refereeMode).toBe("outlayer");
     expect(outlayer.localReferee).toBeNull();
-    expect(() => loadConfig({ ...good, REFEREE_MODE: "local" })).toThrow("LOCAL_TAIL_CONTRACT is not set");
-    expect(() =>
-      loadConfig({ ...good, REFEREE_MODE: "local", LOCAL_TAIL_CONTRACT: good.TAIL_CONTRACT }),
-    ).toThrow("must not be the main TAIL_CONTRACT");
-    const local = loadConfig({
-      ...good,
-      REFEREE_MODE: "local",
-      LOCAL_TAIL_CONTRACT: "tail-local.relay-x.testnet",
-    });
-    expect(local.contract).toBe("tail-local.relay-x.testnet");
-    expect(local.dbPath).toEndWith("data/relay-local.db");
-    expect(outlayer.dbPath).toEndWith("data/relay.db");
+    const local = loadConfig({ ...good, REFEREE_MODE: "local" });
+    expect(local.contract).toBe(good.TAIL_CONTRACT);
+    expect(local.dbPath).toBe(outlayer.dbPath);
     expect(local.localReferee?.bin).toEndWith("crates/referee-wasi/target/release/tail-referee");
     expect(describeConfig(local).referee).toBe("local test referee (not an enclave)");
     expect(() => loadConfig({ ...good, REFEREE_MODE: "enclave" })).toThrow("REFEREE_MODE");

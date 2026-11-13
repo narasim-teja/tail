@@ -72,28 +72,35 @@ if (import.meta.main) {
     }
     throw e;
   }
-  if (config.refereeMode === "local") await checkLocalPins(config);
+  await checkPins(config);
   startRelay(config);
 }
 
 /**
- * The local test referee signs with its own keys, so its contract must pin them, or every
- * verdict would be refused on chain mid-match. Checked once, before serving.
+ * The contract pins one referee's keys at a time, and every verdict is checked against them, so
+ * the relay refuses to run beside a referee the contract does not pin: every verdict would be
+ * refused mid-match. Checked once, before serving. A referee that does not answer cannot be
+ * checked; the relay starts anyway and the guard reports it down.
  */
-async function checkLocalPins(config: Config) {
-  const [keys, pinned] = await Promise.all([
-    makeReferee(config).pubkeys(),
-    new NearChain(config, log).config(),
-  ]);
-  if (pinned.referee_pk !== toHex(keys.refereePk) || pinned.vrf_pk !== toHex(keys.vrfPk)) {
+async function checkPins(config: Config) {
+  const pinned = await new NearChain(config, log).config();
+  const keys = await makeReferee(config)
+    .pubkeys()
+    .catch((e: unknown) => {
+      log.warn({ err: (e as Error).message }, "could not check the contract's pinned referee keys");
+      return null;
+    });
+  if (keys && (pinned.referee_pk !== toHex(keys.refereePk) || pinned.vrf_pk !== toHex(keys.vrfPk))) {
     log.fatal(
-      { contract: config.contract },
-      "the contract does not pin the local referee's keys; run apps/server/scripts/pin-referee.ts with REFEREE_MODE=local",
+      { contract: config.contract, mode: config.refereeMode },
+      `the contract pins another referee's keys; run REFEREE_MODE=${config.refereeMode} bun apps/server/scripts/pin-referee.ts`,
     );
     process.exit(1);
   }
-  log.warn(
-    { contract: config.contract },
-    "local test referee: verdicts are signed on this machine, not in an enclave",
-  );
+  if (config.refereeMode === "local") {
+    log.warn(
+      { contract: config.contract },
+      "local test referee: verdicts are signed on this machine, not in an enclave",
+    );
+  }
 }

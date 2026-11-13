@@ -31,8 +31,10 @@ export interface Config {
   allowGhosts: boolean;
   /**
    * `outlayer` (default): the referee in OutLayer's enclave. `local`: the same referee code run
-   * natively on this machine, a test referee for when OutLayer is unavailable. Local mode plays
-   * against LOCAL_TAIL_CONTRACT, which pins the local referee's keys, never against the main one.
+   * natively on this machine, a test referee for when OutLayer is unavailable. Both play on
+   * TAIL_CONTRACT: a player's key can call only the contract it was made for, so a second contract
+   * would lock every enrolled player out. The contract pins one referee's keys at a time
+   * (scripts/pin-referee.ts), and main.ts refuses to start when they are not this referee's.
    */
   refereeMode: "outlayer" | "local";
   /** Set in local mode: the native referee binary and the directory holding its keys. */
@@ -73,14 +75,8 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   const mode = opt("REFEREE_MODE", "outlayer");
   if (mode !== "outlayer" && mode !== "local")
     throw new ConfigError("REFEREE_MODE must be outlayer or local");
-  // The local referee signs with keys from a file, so it plays against its own contract: the
-  // main one pins the enclave's keys and would refuse every verdict anyway.
-  const contractVar = mode === "local" ? "LOCAL_TAIL_CONTRACT" : "TAIL_CONTRACT";
-  const contract = need(contractVar);
-  if (!contract.endsWith(".testnet")) throw new ConfigError(`${contractVar} must be a .testnet account`);
-  if (mode === "local" && contract === env["TAIL_CONTRACT"]?.trim()) {
-    throw new ConfigError("LOCAL_TAIL_CONTRACT must not be the main TAIL_CONTRACT");
-  }
+  const contract = need("TAIL_CONTRACT");
+  if (!contract.endsWith(".testnet")) throw new ConfigError("TAIL_CONTRACT must be a .testnet account");
 
   const ghosts = env["ALLOW_GHOSTS"]?.trim();
   if (ghosts !== undefined && ghosts !== "" && ghosts !== "0" && ghosts !== "1") {
@@ -118,11 +114,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     appId: `${need("APPLE_TEAM_ID")}.${need("IOS_BUNDLE_ID")}`,
     appAttestEnvironment: environment,
     port,
-    // Each referee plays on its own contract, so each keeps its own devices and matches.
-    dbPath: opt(
-      "RELAY_DB",
-      new URL(mode === "local" ? "../data/relay-local.db" : "../data/relay.db", import.meta.url).pathname,
-    ),
+    dbPath: opt("RELAY_DB", new URL("../data/relay.db", import.meta.url).pathname),
     allowGhosts: network === "testnet" && ghosts === "1",
     refereeMode: mode,
     localReferee:

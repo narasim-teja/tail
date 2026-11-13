@@ -226,21 +226,22 @@ answer. `GET /health` reports the state.
 `.keys/local-referee`. It is for testing while OutLayer is unavailable. It is not an enclave and
 nothing attests the code that signed, so:
 
-- it plays against its own contract, `LOCAL_TAIL_CONTRACT`, which pins the local keys; the relay
-  refuses to start if the contract pins other keys, and refuses `LOCAL_TAIL_CONTRACT` equal to
-  `TAIL_CONTRACT`;
-- it keeps its own database (`data/relay-local.db`);
+- it plays on the same `TAIL_CONTRACT`: a player's NEAR key can call only the contract it was
+  made for, so a second contract would lock every enrolled player out. Switching referees means
+  pinning the other one's keys on the contract (`scripts/pin-referee.ts`). Matches keep the keys
+  they were created with;
+- the relay checks at startup that the contract pins the keys of the referee it runs with, in
+  either mode, and refuses to start otherwise;
 - every replay bundle it serves says `referee.kind: "local"`, and the replay page labels the
   signatures as the test referee's;
 - the Handler answers with its template lines (no model call).
 
 ```sh
 cargo build --release --manifest-path crates/referee-wasi/Cargo.toml --bin tail-referee
-cd contracts/tail/e2e && bun run deploy.ts --local     # tail-local.<relay account>, pinned to the local keys
+REFEREE_MODE=local bun apps/server/scripts/pin-referee.ts   # pin the local keys on TAIL_CONTRACT
 REFEREE_MODE=local bun apps/server/src/main.ts
+bun apps/server/scripts/pin-referee.ts                      # back to the enclave once OutLayer answers
 ```
-
-Phones then set Settings > Contract to `LOCAL_TAIL_CONTRACT`.
 
 ## Run
 
@@ -255,8 +256,8 @@ Environment (placeholders in `.env.example`): `NEAR_NETWORK` (testnet only), `NE
 `NEAR_RELAY_PRIVATE_KEY`, `TAIL_CONTRACT`, `OUTLAYER_API`, `OUTLAYER_OWNER`, `REFEREE_PROJECT`,
 `REFEREE_PAYMENT_KEY` (or `OUTLAYER_PAYMENT_KEY`), `REFEREE_VERSION` (optional pin), `APPLE_TEAM_ID`,
 `IOS_BUNDLE_ID`, `APP_ATTEST_ENV`, `TAIL_TOKEN`, `NEAR_RPC_URL`, `RELAY_PORT`, `RELAY_DB`,
-`ALLOW_GHOSTS`, `REFEREE_MODE` (`outlayer` or `local`), and for local mode `LOCAL_TAIL_CONTRACT`,
-`LOCAL_REFEREE_BIN`, `LOCAL_REFEREE_DIR`. A missing value or a leftover placeholder stops the relay at startup.
+`ALLOW_GHOSTS`, `REFEREE_MODE` (`outlayer` or `local`), and for local mode `LOCAL_REFEREE_BIN` and
+`LOCAL_REFEREE_DIR` (both optional). A missing value or a leftover placeholder stops the relay at startup.
 
 `scripts/ghost-match.ts` runs the relay in-process with a fresh database, enrols three ghosts,
 opens a 5-minute lobby, tops them up, has them join, starts, and plays `CLEAN_TAG`: the hunter
