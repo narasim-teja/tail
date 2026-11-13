@@ -470,7 +470,9 @@ was match `f40e8fdda22b1276c2851caf49eea037`:
 
 ## Not done
 
-- Mesh carry is served (`POST /carry`), but nothing here has measured it between real phones.
+- Mesh carry is served (`POST /carry`). On 2026-11-13 two iPhones posted 16 carried reports to it
+  while one of them was in airplane mode, and all 16 were answered 200. The app keeps carry off by
+  default because, with it on, the phones' beacons are hardly heard (`apps/mobile/README.md`).
 - The relay is not an Offline Protocol node: carried requests reach it as `POST /carry`
   envelopes, posted by whichever phone has signal.
 - One relay process; no horizontal scaling. SQLite holds everything the loop needs to resume.
