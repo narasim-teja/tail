@@ -2,122 +2,30 @@
 // signed requests, the ghost door, the lobby, the tick loop's failure handling, the replay and
 // the HUD socket. Each refusal has a twin that succeeds. Waits poll with a deadline.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { decodeSignedVerdict, enrollClientDataHash, equal, type ReplayBundle, sha256 } from "@tail/protocol";
-import { createRelay, type RelayDeps } from "../src/app.ts";
-import { hudDigest, replayDigest, signRequestHeaders } from "../src/auth.ts";
-import { Store, type Zone } from "../src/db.ts";
+import { replayDigest, signRequestHeaders } from "../src/auth.ts";
+import { CHAIN_VIEW_MS } from "../src/chainview.ts";
+import type { Store, Zone } from "../src/db.ts";
+import { MAX_OPEN_CHALLENGES_PER_HANDLE } from "../src/enroll.ts";
 import { zoneHash } from "../src/matches.ts";
 import { GuardedReferee } from "../src/referee.ts";
-import { FakeChain, FakeReferee, quietLog, seedDevice, until } from "./fakes.ts";
-
-const PARENT = "relay.testnet";
-const relays: { stop: () => void }[] = [];
-afterEach(() => {
-  for (const r of relays.splice(0)) r.stop();
-});
-
-function setup(over: Partial<RelayDeps> = {}) {
-  const store = new Store(":memory:");
-  const chain = new FakeChain();
-  const referee = new FakeReferee();
-  const relay = createRelay({
-    store,
-    chain,
-    referee,
-    log: quietLog(),
-    parentAccount: PARENT,
-    appId: "TEAM.app",
-    environment: "development",
-    token: "usdc.fakes.testnet",
-    replay: {
-      contract: "tail.relay.testnet",
-      network: "testnet",
-      refereeProject: "relay.testnet/tail-referee",
-      outlayerApi: "https://testnet-api.outlayer.ai",
-      refereeKind: "outlayer",
-    },
-    testnet: true,
-    allowGhosts: false,
-    tickMs: 5,
-    verifyAttestation: async () => new Uint8Array(65).fill(4),
-    ...over,
-  });
-  relays.push({
-    stop: () => {
-      relay.matches.stop();
-      relay.enrolment.stop();
-    },
-  });
-  return { store, chain, referee, ...relay };
-}
-
-type Env = ReturnType<typeof setup>;
-interface Player {
-  account: string;
-  seed: Uint8Array;
-}
-
-function player(env: Env, name: string): Player {
-  const seed = ed25519.utils.randomSecretKey();
-  const account = `${name}.${PARENT}`;
-  seedDevice(env.store, account, ed25519.getPublicKey(seed));
-  return { account, seed };
-}
-
-// Two identical signed requests in the same millisecond are a replay to the relay; each test
-// request gets its own time so none of them is.
-let lastTime = 0;
-const freshTime = () => {
-  lastTime = Math.max(Date.now(), lastTime + 1);
-  return lastTime;
-};
-
-async function req(
-  env: Env,
-  method: string,
-  path: string,
-  body?: unknown,
-  as?: Player,
-  timeMs = freshTime(),
-) {
-  const bytes = new TextEncoder().encode(body === undefined ? "" : JSON.stringify(body));
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  if (as) Object.assign(headers, signRequestHeaders(as.account, as.seed, method, path, bytes, timeMs));
-  const res = await env.app.request(path, { method, headers, ...(method === "GET" ? {} : { body: bytes }) });
-  return { status: res.status, json: (await res.json()) as Record<string, unknown> };
-}
-
-const MATCH = {
-  stake: "1000000",
-  duration_ms: 300_000,
-  zone: { lat_e7: 423_550_000, lon_e7: -710_656_000, radius_m: 1500 },
-  public_replay: true,
-  min_players: 3,
-  max_players: 3,
-};
-
-async function lobby(env: Env) {
-  const [a, b, c] = [player(env, "ana"), player(env, "bo"), player(env, "cy")] as [Player, Player, Player];
-  const r = await req(env, "POST", "/matches", { ...MATCH, start_by_ms: Date.now() + 600_000 }, a);
-  expect(r.status).toBe(200);
-  const id = String(r.json["match_id"]);
-  for (const p of [a, b, c]) env.chain.join(id, p.account);
-  return { id, a, b, c };
-}
-
-async function started(env: Env) {
-  const l = await lobby(env);
-  const r = await req(env, "POST", `/matches/${l.id}/start`, {}, l.a);
-  expect(r.status).toBe(200);
-  return { ...l, start: r.json };
-}
-
-const ended = (env: Env, id: string) =>
-  until(() => env.store.match(id)?.phase === "ended", "the match to end");
-const appliedSeqs = (env: Env) =>
-  env.chain.applied.map((raw) => new DataView(raw.buffer, raw.byteOffset + 16, 4).getUint32(0, true));
+import { FakeReferee, seedDevice, until } from "./fakes.ts";
+import {
+  appliedSeqs,
+  type Env,
+  ended,
+  hudSocket,
+  lobby,
+  MATCH,
+  PARENT,
+  type Player,
+  player,
+  req,
+  setup,
+  started,
+} from "./harness.ts";
 
 // ── Enrolment ──────────────────────────────────────────────────────────────────────
 
@@ -135,12 +43,15 @@ describe("enrolment", () => {
     return { ...out, seenHash };
   }
 
-  async function attemptIn(env: Env) {
-    const ch = await req(env, "POST", "/enroll/challenge", { handle: "dana" });
+  async function attemptIn(
+    env: Env,
+    handle = "dana",
+    near = ed25519.getPublicKey(ed25519.utils.randomSecretKey()),
+  ) {
+    const ch = await req(env, "POST", "/enroll/challenge", { handle });
     expect(ch.status).toBe(200);
     const challenge = new Uint8Array(Buffer.from(String(ch.json["challenge"]), "base64"));
     const box = new Uint8Array(32).fill(1);
-    const near = ed25519.getPublicKey(ed25519.utils.randomSecretKey());
     const body = {
       challenge: ch.json["challenge"],
       key_id: Buffer.alloc(32, 9).toString("base64"),
@@ -155,9 +66,72 @@ describe("enrolment", () => {
       ch,
       body,
       near,
-      expected: enrollClientDataHash(challenge, `dana.${PARENT}`, box, near),
+      challenge,
+      expected: enrollClientDataHash(challenge, `${handle}.${PARENT}`, box, near),
     };
   }
+
+  test("the referee gets the attestation and challenge exactly as sent; the relay drops them after", async () => {
+    const env = setup({ refereeRetryMs: [] });
+    const { r, challenge } = await attemptIn(env);
+    expect(r.status).toBe(200);
+    const kept = env.store.device(`dana.${PARENT}`);
+    expect(kept?.attestation).toEqual(new Uint8Array(Buffer.from("attestation")));
+    expect(kept?.challenge).toEqual(challenge);
+    await env.enrolment.ensureWithReferee([`dana.${PARENT}`]);
+    expect(env.referee.enrolls[0]?.attestation).toEqual(new Uint8Array(Buffer.from("attestation")));
+    expect(env.referee.enrolls[0]?.challenge).toEqual(challenge);
+    const done = env.store.device(`dana.${PARENT}`);
+    expect(done?.receipt).not.toBeNull();
+    expect(done?.attestation).toBeNull();
+    expect(done?.challenge).toBeNull();
+  });
+
+  test("one device enrols once: its NEAR key under a second handle is refused", async () => {
+    const env = setup();
+    const near = ed25519.getPublicKey(ed25519.utils.randomSecretKey());
+    expect((await attemptIn(env, "dana", near)).r.status).toBe(200);
+    const twice = await attemptIn(env, "dana2", near);
+    expect(twice.r.status).toBe(409);
+    expect(twice.r.json["error"]).toBe("this device is already enrolled");
+    expect(env.chain.accounts.has(`dana2.${PARENT}`)).toBe(false);
+    expect((await attemptIn(env, "dana3")).r.status).toBe(200);
+  });
+
+  test("the store refuses a second device with a known App Attest key", () => {
+    const env = setup();
+    const a = player(env, "ana");
+    const pk = env.store.device(a.account)?.app_attest_pk as Uint8Array;
+    expect(env.store.deviceWithKey(pk, new Uint8Array(32).fill(9))).toBe(a.account);
+    expect(() =>
+      env.store.putDevice({
+        ...(env.store.device(a.account) as NonNullable<ReturnType<Store["device"]>>),
+        account_id: `bo.${PARENT}`,
+        near_pk: new Uint8Array(32).fill(9),
+      }),
+    ).toThrow("UNIQUE");
+  });
+
+  test("unanswered challenges are capped per handle; another handle still gets one", async () => {
+    const env = setup();
+    for (let i = 0; i < MAX_OPEN_CHALLENGES_PER_HANDLE; i++)
+      expect((await req(env, "POST", "/enroll/challenge", { handle: "dana" })).status).toBe(200);
+    const over = await req(env, "POST", "/enroll/challenge", { handle: "dana" });
+    expect(over.status).toBe(429);
+    expect((await req(env, "POST", "/enroll/challenge", { handle: "eli" })).status).toBe(200);
+  });
+
+  test("unanswered challenges are capped in all", () => {
+    const env = setup();
+    const caps = { total: 2, perAccount: 5 };
+    const put = (n: number, now: number) =>
+      env.store.putEnrolChallenge(new Uint8Array(32).fill(n), `h${n}`, now + 100, now, caps);
+    expect(put(1, 0)).toBe(true);
+    expect(put(2, 0)).toBe(true);
+    expect(put(3, 0)).toBe(false);
+    // Expired ones no longer count.
+    expect(put(3, 1_000)).toBe(true);
+  });
 
   test("a phone enrols with an attestation over its challenge and gets an account holding its key", async () => {
     const { env, r, near, seenHash, expected } = await attempt(true);
@@ -209,18 +183,28 @@ describe("the ghost door", () => {
     player_box_pk: Buffer.alloc(32, 1).toString("base64"),
     near_pk: Buffer.alloc(32, 2).toString("base64"),
   };
-
-  test("the ghost enrolment route does not exist unless ghosts are allowed", async () => {
-    const env = setup({ allowGhosts: false });
-    expect((await req(env, "POST", "/dev/ghosts/enroll", ghostBody)).status).toBe(404);
-    expect(env.chain.accounts.size).toBe(0);
+  const ghostKeys = (n: number) => ({
+    appAttestPk: new Uint8Array(65).fill(n),
+    playerBoxPk: new Uint8Array(32).fill(1),
+    nearPk: ed25519.getPublicKey(new Uint8Array(32).fill(n)),
   });
 
-  test("with ghosts allowed, a ghost enrols without an attestation and is recorded as a ghost", async () => {
+  test("no HTTP route enrols a ghost, with the door open or shut", async () => {
+    for (const allowGhosts of [false, true]) {
+      const env = setup({ allowGhosts });
+      expect((await req(env, "POST", "/dev/ghosts/enroll", ghostBody)).status).toBe(404);
+      expect(env.chain.accounts.size).toBe(0);
+    }
+  });
+
+  test("a ghost enrols in-process without an attestation and is recorded as a ghost", async () => {
     const env = setup({ allowGhosts: true });
-    const r = await req(env, "POST", "/dev/ghosts/enroll", ghostBody);
-    expect(r.status).toBe(200);
+    const r = await env.enrolment.enrollGhost({ handle: "ghost-ana", ...ghostKeys(4) });
+    expect(r.account_id).toBe(`ghost-ana.${PARENT}`);
     expect(env.store.device(`ghost-ana.${PARENT}`)?.kind).toBe("ghost");
+    // The referee gets no attestation for a ghost: it has none.
+    await until(() => env.referee.enrolls.length, "the referee registration");
+    expect(env.referee.enrolls[0]?.attestation).toBeUndefined();
   });
 
   test("a relay refuses to allow ghosts off testnet", () => {
@@ -373,30 +357,100 @@ describe("signed requests", () => {
 // ── Lobby and start ────────────────────────────────────────────────────────────────
 
 describe("the match view", () => {
-  test("serves the zone and safehouses, and they hash to the zone_hash the host was given", async () => {
-    const env = setup();
-    const a = player(env, "ana");
+  async function withSafehouse(env: Env, host: Player, extra: Record<string, unknown> = {}) {
     const safehouse = { lat_e7: 423_552_000, lon_e7: -710_655_000, radius_m: 25 };
     const created = await req(
       env,
       "POST",
       "/matches",
-      { ...MATCH, safehouses: [safehouse], start_by_ms: Date.now() + 600_000 },
-      a,
+      { ...MATCH, safehouses: [safehouse], start_by_ms: Date.now() + 600_000, ...extra },
+      host,
     );
     expect(created.status).toBe(200);
-    const view = await req(env, "GET", `/matches/${String(created.json["match_id"])}`);
+    return { id: String(created.json["match_id"]), zoneHash: String(created.json["zone_hash"]) };
+  }
+
+  test("the public view shows the lobby but not the zone, the sealed keys or the relay's error", async () => {
+    const env = setup();
+    env.referee.overAt = 1_000_000;
+    const m = await started(env);
+    const view = await req(env, "GET", `/matches/${m.id}`);
+    expect(view.status).toBe(200);
+    expect(Object.keys(view.json).sort()).toEqual(
+      [
+        "chain",
+        "code",
+        "end_ms",
+        "host",
+        "last_seq",
+        "match_id",
+        "phase",
+        "players",
+        "start_ms",
+        "tick_no",
+      ].sort(),
+    );
+    expect(view.json["phase"]).toBe("running");
+  });
+
+  test("the host gets the zone and safehouses, and they hash to the zone_hash it was given", async () => {
+    const env = setup();
+    const a = player(env, "ana");
+    const { id, zoneHash: zh } = await withSafehouse(env, a);
+    const view = await req(env, "GET", `/matches/${id}/zone`, undefined, a);
     expect(view.status).toBe(200);
     const zone = view.json["zone"] as Zone;
     expect(zone).toEqual({
       zone: { latE7: 423_550_000, lonE7: -710_656_000, radiusM: 1500 },
       safehouses: [{ latE7: 423_552_000, lonE7: -710_655_000, radiusM: 25 }],
     });
-    expect(Buffer.from(zoneHash(zone)).toString("hex")).toBe(String(created.json["zone_hash"]));
+    expect(Buffer.from(zoneHash(zone)).toString("hex")).toBe(zh);
     // Twin: a different zone does not hash to the same value.
-    expect(Buffer.from(zoneHash({ ...zone, safehouses: [] })).toString("hex")).not.toBe(
-      String(created.json["zone_hash"]),
-    );
+    expect(Buffer.from(zoneHash({ ...zone, safehouses: [] })).toString("hex")).not.toBe(zh);
+    expect(view.json["keys"]).toEqual([]);
+    expect(view.json["error"]).toBeNull();
+  });
+
+  test("the zone is refused unsigned and to strangers; an invitee and a player who just joined get it", async () => {
+    const env = setup();
+    const [a, b, eve] = [player(env, "ana"), player(env, "bo"), player(env, "eve")];
+    const inv = player(env, "ivy");
+    const { id } = await withSafehouse(env, a, { invites: [inv.account, a.account, b.account] });
+    expect((await req(env, "GET", `/matches/${id}/zone`)).status).toBe(401);
+    expect((await req(env, "GET", `/matches/${id}/zone`, undefined, eve)).status).toBe(403);
+    expect((await req(env, "GET", `/matches/${id}/zone`, undefined, inv)).status).toBe(200);
+    // bo is invited too; now take a non-invited lobby to check a fresh joiner.
+    const open = await withSafehouse(env, b);
+    expect((await req(env, "GET", `/matches/${open.id}`)).status).toBe(200); // fills the view cache
+    env.chain.join(open.id, eve.account);
+    expect((await req(env, "GET", `/matches/${open.id}/zone`, undefined, eve)).status).toBe(200);
+    expect((await req(env, "GET", `/matches/${open.id}/zone`, undefined, a)).status).toBe(403);
+  });
+
+  test("after Start each player gets only its own sealed keys", async () => {
+    const env = setup();
+    env.referee.overAt = 1_000_000;
+    const m = await started(env);
+    const view = await req(env, "GET", `/matches/${m.id}/zone`, undefined, m.b);
+    expect(view.status).toBe(200);
+    expect(view.json["keys"]).toEqual([{ player: 1, account_id: m.b.account, sealed: "AQ==" }]);
+  });
+
+  test("the public view reads the chain at most once per few seconds", async () => {
+    let now = Date.now();
+    const env = setup({ now: () => now });
+    const { id } = await withSafehouse(env, player(env, "ana"));
+    let reads = 0;
+    const get = env.chain.getMatch.bind(env.chain);
+    env.chain.getMatch = (mid) => {
+      reads++;
+      return get(mid);
+    };
+    for (let i = 0; i < 5; i++) expect((await req(env, "GET", `/matches/${id}`)).status).toBe(200);
+    expect(reads).toBe(1);
+    now += CHAIN_VIEW_MS;
+    await req(env, "GET", `/matches/${id}`);
+    expect(reads).toBe(2);
   });
 });
 
@@ -409,6 +463,35 @@ describe("creating a match", () => {
     expect(free.status).toBe(400);
     expect(free.json["error"]).toBe("stake must be more than 0");
     expect((await req(env, "POST", "/matches", at, a)).status).toBe(200);
+  });
+
+  test("a host holds one open lobby; once the chain calls it off, a new one opens", async () => {
+    const env = setup();
+    const [a, b] = [player(env, "ana"), player(env, "bo")];
+    const at = () => ({ ...MATCH, start_by_ms: Date.now() + 600_000 });
+    const first = await req(env, "POST", "/matches", at(), a);
+    const id = String(first.json["match_id"]);
+    const again = await req(env, "POST", "/matches", at(), a);
+    expect(again.status).toBe(409);
+    expect(again.json["match_id"]).toBe(id);
+    expect(env.chain.matches.size).toBe(1);
+    // Another host is not held up by ana's lobby.
+    expect((await req(env, "POST", "/matches", at(), b)).status).toBe(200);
+    env.chain.abort(id);
+    expect((await req(env, "POST", "/matches", at(), a)).status).toBe(200);
+    expect(env.store.match(id)?.phase).toBe("failed");
+    expect(env.store.match(id)?.error).toBe("the lobby was aborted on chain");
+  });
+
+  test("a lobby whose start time passed no longer counts as open", async () => {
+    let now = Date.now();
+    const env = setup({ now: () => now });
+    const a = player(env, "ana");
+    const first = await req(env, "POST", "/matches", { ...MATCH, start_by_ms: Date.now() + 120_000 }, a);
+    now += 180_000;
+    const next = await req(env, "POST", "/matches", { ...MATCH, start_by_ms: Date.now() + 600_000 }, a);
+    expect(next.status).toBe(200);
+    expect(env.store.match(String(first.json["match_id"]))?.error).toBe("the lobby's start time passed");
   });
 });
 
@@ -423,9 +506,8 @@ describe("lobby codes", () => {
 
   test("creating a match returns a short code, and the match view shows the same code", async () => {
     const env = setup();
-    const a = player(env, "ana");
-    const one = await create(env, a);
-    const two = await create(env, a);
+    const one = await create(env, player(env, "ana"));
+    const two = await create(env, player(env, "bo"));
     expect(one.code).toMatch(CODE);
     expect(two.code).not.toBe(one.code);
     expect((await req(env, "GET", `/matches/${one.id}`)).json["code"]).toBe(one.code);
@@ -438,14 +520,18 @@ describe("lobby codes", () => {
     expect((await req(env, "GET", `/join/${unknown}`)).status).toBe(404);
     const known = await req(env, "GET", `/join/${code}`);
     expect(known.status).toBe(200);
-    expect(known.json).toEqual({ match_id: id });
+    // The code is what lets people in, so it also shows them where the match is played.
+    expect(known.json).toEqual({
+      match_id: id,
+      zone: { zone: { latE7: 423_550_000, lonE7: -710_656_000, radiusM: 1500 }, safehouses: [] },
+    });
   });
 
   test("a code resolves in any case and without its dash; something that cannot be a code is refused", async () => {
     const env = setup();
     const { id, code } = await create(env, player(env, "ana"));
     const loose = code.replace("-", "").toLowerCase();
-    expect((await req(env, "GET", `/join/${loose}`)).json).toEqual({ match_id: id });
+    expect((await req(env, "GET", `/join/${loose}`)).json["match_id"]).toBe(id);
     expect((await req(env, "GET", `/join/${loose.slice(0, 5)}0`)).status).toBe(400);
   });
 
@@ -453,16 +539,19 @@ describe("lobby codes", () => {
     const env = setup();
     const l = await lobby(env);
     const code = String((await req(env, "GET", `/matches/${l.id}`)).json["code"]);
+    // /join reads the relay's own phase first, so a start shows at once.
     expect((await req(env, "GET", `/join/${code}`)).status).toBe(200);
     expect((await req(env, "POST", `/matches/${l.id}/start`, {}, l.a)).status).toBe(200);
     expect((await req(env, "GET", `/join/${code}`)).status).toBe(404);
   });
 
-  test("a code stops resolving once its lobby is called off", async () => {
-    const env = setup();
+  test("a code stops resolving once its lobby is called off (after the view's few seconds)", async () => {
+    let now = Date.now();
+    const env = setup({ now: () => now });
     const { id, code } = await create(env, player(env, "ana"));
     expect((await req(env, "GET", `/join/${code}`)).status).toBe(200);
     env.chain.abort(id);
+    now += CHAIN_VIEW_MS;
     expect((await req(env, "GET", `/join/${code}`)).status).toBe(404);
   });
 });
@@ -724,6 +813,32 @@ describe("the replay", () => {
     expect((ok.json as unknown as ReplayBundle).match.publicReplay).toBe(false);
   });
 
+  test("the replay says per player what device it was and whether the referee checked its attestation", async () => {
+    const env = setup({ allowGhosts: true });
+    const [a, b] = [player(env, "ana"), player(env, "bo")];
+    const r = await req(env, "POST", "/matches", { ...MATCH, start_by_ms: Date.now() + 600_000 }, a);
+    const id = String(r.json["match_id"]);
+    for (const p of [a, b]) env.chain.join(id, p.account);
+    const ghost = String(
+      (await req(env, "POST", "/dev/ghosts/fill", { match_id: id }, a)).json["account_id"],
+    );
+    env.referee.overAt = 1;
+    expect((await req(env, "POST", `/matches/${id}/start`, {}, a)).status).toBe(200);
+    await ended(env, id);
+    const bundle = (await req(env, "GET", `/replay/${id}`)).json;
+    const devices = bundle["devices"] as { accountId: string; kind: string; attested: boolean }[];
+    expect(devices.find((x) => x.accountId === ghost)).toEqual({
+      accountId: ghost,
+      kind: "ghost",
+      attested: false,
+    });
+    expect(devices.find((x) => x.accountId === a.account)).toEqual({
+      accountId: a.account,
+      kind: "phone",
+      attested: true,
+    });
+  });
+
   test("a hint's Handler line is in the replay", async () => {
     const env = setup();
     const m = await started(env);
@@ -736,31 +851,7 @@ describe("the replay", () => {
 // ── HUD socket ─────────────────────────────────────────────────────────────────────
 
 describe("the HUD socket", () => {
-  async function socket(env: Env, matchId: string, who: Player, signer: Uint8Array) {
-    const server = Bun.serve({ port: 0, fetch: env.app.fetch, websocket: env.websocket });
-    relays.push({ stop: () => server.stop(true) });
-    const ws = new WebSocket(
-      `ws://localhost:${server.port}/hud?match_id=${matchId}&account_id=${who.account}`,
-    );
-    const got: Record<string, unknown>[] = [];
-    const closed = { code: 0 };
-    ws.onmessage = (ev) => {
-      const m = JSON.parse(String(ev.data)) as Record<string, unknown>;
-      got.push(m);
-      if (m["type"] === "challenge") {
-        const nonce = new Uint8Array(Buffer.from(String(m["nonce"]), "base64"));
-        const sig = ed25519.sign(
-          hudDigest(nonce, Uint8Array.from(Buffer.from(matchId, "hex")), who.account),
-          signer,
-        );
-        ws.send(JSON.stringify({ type: "auth", sig: Buffer.from(sig).toString("base64") }));
-      }
-    };
-    ws.onclose = (ev) => {
-      closed.code = ev.code;
-    };
-    return { ws, got, closed };
-  }
+  const socket = hudSocket;
 
   test("a socket signed with another key is closed without a HUD", async () => {
     const env = setup();

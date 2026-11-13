@@ -79,15 +79,57 @@ describe("the device table", () => {
     store.putDevice({
       account_id: "bo.r.testnet",
       kind: "phone",
-      app_attest_pk: new Uint8Array(65),
+      app_attest_pk: new Uint8Array(65).fill(1),
       player_box_pk: new Uint8Array(32),
-      near_pk: new Uint8Array(32),
+      near_pk: new Uint8Array(32).fill(1),
       receipt: null,
       receipt_sig: null,
       enroll_call_id: null,
       created_ms: 2,
+      attestation: new Uint8Array([0xa1]),
+      challenge: new Uint8Array(32).fill(7),
+      attested: null,
     });
     expect(store.devicesAwaitingReferee()).toEqual(["bo.r.testnet"]);
     store.close();
+  });
+
+  test("a database with one challenges table moves enrolment and replay challenges to their own", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "tail-relay-")), "relay.db");
+    const old = new Database(path, { create: true });
+    old.run(
+      "CREATE TABLE challenges (challenge BLOB PRIMARY KEY, account_id TEXT NOT NULL, expires_ms INTEGER NOT NULL)",
+    );
+    const match = "ab".repeat(16);
+    old.query("INSERT INTO challenges VALUES (?, 'dana.r.testnet', 9e15)").run(new Uint8Array(32).fill(1));
+    old
+      .query("INSERT INTO challenges VALUES (?, ?, 9e15)")
+      .run(new Uint8Array(32).fill(2), `replay:${match}:bo.r.testnet`);
+    old.close();
+
+    const store = new Store(path);
+    expect(store.takeEnrolChallenge(new Uint8Array(32).fill(1))?.account_id).toBe("dana.r.testnet");
+    expect(store.takeReplayChallenge(new Uint8Array(32).fill(2))).toMatchObject({
+      match_id: match,
+      account_id: "bo.r.testnet",
+    });
+    // Neither kind answers for the other.
+    expect(store.takeEnrolChallenge(new Uint8Array(32).fill(2))).toBeUndefined();
+    expect(store.db.query("SELECT 1 FROM sqlite_master WHERE name = 'challenges'").get()).toBeNull();
+    store.close();
+  });
+
+  test("a database where two accounts share a device key stops with their names", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "tail-relay-")), "relay.db");
+    const old = new Database(path, { create: true });
+    old.run(`CREATE TABLE devices (
+      account_id TEXT PRIMARY KEY, kind TEXT NOT NULL, app_attest_pk BLOB NOT NULL,
+      player_box_pk BLOB NOT NULL, near_pk BLOB NOT NULL, receipt BLOB, receipt_sig BLOB,
+      enroll_call_id TEXT, created_ms INTEGER NOT NULL)`);
+    const q = old.query("INSERT INTO devices VALUES (?, 'phone', ?, ?, ?, NULL, NULL, NULL, 1)");
+    q.run("ana.r.testnet", new Uint8Array(65).fill(1), new Uint8Array(32), new Uint8Array(32).fill(1));
+    q.run("bo.r.testnet", new Uint8Array(65).fill(2), new Uint8Array(32), new Uint8Array(32).fill(1));
+    old.close();
+    expect(() => new Store(path)).toThrow("devices share one near_pk: ana.r.testnet, bo.r.testnet");
   });
 });

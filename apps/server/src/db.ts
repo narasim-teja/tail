@@ -18,12 +18,24 @@ const DEVICE_COLUMNS = `
   receipt BLOB,
   receipt_sig BLOB,
   enroll_call_id TEXT,
-  created_ms INTEGER NOT NULL
+  created_ms INTEGER NOT NULL,
+  attestation BLOB,
+  challenge BLOB,
+  attested INTEGER
 `;
+/** The columns a devices table had before the attestation was kept for the referee. */
+const DEVICE_COLUMNS_V1 =
+  "account_id, kind, app_attest_pk, player_box_pk, near_pk, receipt, receipt_sig, enroll_call_id, created_ms";
 
 const SCHEMA = `
-CREATE TABLE IF NOT EXISTS challenges (
+CREATE TABLE IF NOT EXISTS enroll_challenges (
   challenge BLOB PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  expires_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS replay_challenges (
+  nonce BLOB PRIMARY KEY,
+  match_id TEXT NOT NULL,
   account_id TEXT NOT NULL,
   expires_ms INTEGER NOT NULL
 );
@@ -44,7 +56,9 @@ CREATE TABLE IF NOT EXISTS matches (
   tick_no INTEGER NOT NULL DEFAULT 0,
   reveal TEXT,
   trails_done INTEGER NOT NULL DEFAULT 0,
-  error TEXT
+  error TEXT,
+  public_replay INTEGER,
+  purged_ms INTEGER
 );
 CREATE TABLE IF NOT EXISTS batches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,6 +130,19 @@ CREATE TABLE IF NOT EXISTS seen_requests (
   digest BLOB PRIMARY KEY,
   expires_ms INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS topups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  requester TEXT NOT NULL,
+  target TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS topups_by_requester ON topups (requester, at_ms);
+CREATE TABLE IF NOT EXISTS leases (
+  match_id TEXT PRIMARY KEY,
+  holder TEXT NOT NULL,
+  expires_ms INTEGER NOT NULL
+);
 `;
 
 export type Phase = "lobby" | "starting" | "running" | "ending" | "ended" | "failed";
@@ -136,6 +163,18 @@ export interface DeviceRow {
   receipt_sig: Uint8Array | null;
   enroll_call_id: string | null;
   created_ms: number;
+  /**
+   * The CBOR attestation object exactly as the phone sent it, and the challenge it answered.
+   * Kept only until the referee has the device (it checks the attestation itself), then cleared.
+   * Null for ghosts, which have no attestation.
+   */
+  attestation: Uint8Array | null;
+  challenge: Uint8Array | null;
+  /**
+   * What the referee said when it registered the device: 1 it checked an Apple attestation, 0 it
+   * took the device unattested (a ghost). Null until registered, or if the referee did not say.
+   */
+  attested: number | null;
 }
 
 /** What the referee's `enroll` returns, stored on the device row. */
@@ -144,6 +183,7 @@ export interface RefereeReceipt {
   receipt: Uint8Array;
   receipt_sig: Uint8Array;
   enroll_call_id: string;
+  attested: boolean | null;
 }
 
 export interface Zone {
@@ -178,6 +218,10 @@ export interface MatchRow {
   /** 1 once the declassified batches (trails) are stored. */
   trails_done: number;
   error: string | null;
+  /** 1 public, 0 private, null for matches made before the relay kept it (read it on chain). */
+  public_replay: number | null;
+  /** When the retention purge deleted the match's sealed batches and trails (retention.ts). */
+  purged_ms: number | null;
 }
 
 interface MatchRaw extends Omit<MatchRow, "zone" | "players" | "keys" | "reveal"> {
@@ -242,10 +286,21 @@ export class Store {
     // Relays created before lobby codes have a matches table without the column. A code is
     // unique across every match the relay ever made, not only open lobbies: a start that fails
     // before the referee answers returns the match to its lobby, and its code must still be its own.
-    const cols = this.db.query<{ name: string }, []>("PRAGMA table_info(matches)").all();
-    if (!cols.some((c) => c.name === "code")) this.db.run("ALTER TABLE matches ADD COLUMN code TEXT");
+    this.addColumn("matches", "code", "TEXT");
     this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS matches_code ON matches (code)");
+    this.addColumn("matches", "public_replay", "INTEGER");
+    this.addColumn("matches", "purged_ms", "INTEGER");
     this.relaxDeviceReceipts();
+    this.addColumn("devices", "attestation", "BLOB");
+    this.addColumn("devices", "challenge", "BLOB");
+    this.addColumn("devices", "attested", "INTEGER");
+    this.uniqueDeviceKeys();
+    this.splitChallenges();
+  }
+
+  private addColumn(table: string, name: string, type: string) {
+    const cols = this.db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+    if (!cols.some((c) => c.name === name)) this.db.run(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
   }
 
   /**
@@ -257,9 +312,67 @@ export class Store {
     if (!cols.some((c) => c.name === "receipt" && c.notnull === 1)) return;
     this.tx(() => {
       this.db.run(`CREATE TABLE devices_relaxed (${DEVICE_COLUMNS})`);
-      this.db.run("INSERT INTO devices_relaxed SELECT * FROM devices");
+      this.db.run(
+        `INSERT INTO devices_relaxed (${DEVICE_COLUMNS_V1}) SELECT ${DEVICE_COLUMNS_V1} FROM devices`,
+      );
       this.db.run("DROP TABLE devices");
       this.db.run("ALTER TABLE devices_relaxed RENAME TO devices");
+    });
+  }
+
+  /**
+   * One device, one account: an App Attest key or a NEAR key enrolled twice would let one phone
+   * hold two seats. Enrolment refuses a known key (enroll.ts); the index is the backstop. A
+   * database that already holds a shared key is not repaired silently: which account keeps the
+   * device is the operator's call, so the relay names them and stops.
+   */
+  private uniqueDeviceKeys() {
+    for (const col of ["app_attest_pk", "near_pk"]) {
+      const dup = this.db
+        .query<{ accounts: string }, []>(
+          `SELECT group_concat(account_id, ', ') AS accounts FROM devices GROUP BY ${col} HAVING COUNT(*) > 1`,
+        )
+        .all();
+      if (dup.length) {
+        throw new Error(`devices share one ${col}: ${dup.map((d) => d.accounts).join("; ")}`);
+      }
+      this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS devices_${col} ON devices (${col})`);
+    }
+  }
+
+  /**
+   * Relays before separate challenge tables kept enrolment and replay challenges in one table,
+   * replay ones under `replay:<match id>:<account>`. Outstanding ones move over (a phone may be
+   * mid-enrolment), then the old table goes.
+   */
+  private splitChallenges() {
+    const old = this.db
+      .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'challenges'")
+      .get();
+    if (!old) return;
+    this.tx(() => {
+      const rows = this.db
+        .query<{ challenge: Uint8Array; account_id: string; expires_ms: number }, []>(
+          "SELECT challenge, account_id, expires_ms FROM challenges",
+        )
+        .all();
+      for (const r of rows) {
+        const replay = /^replay:([0-9a-f]{32}):(.+)$/.exec(r.account_id);
+        if (replay) {
+          this.db
+            .query(
+              "INSERT OR IGNORE INTO replay_challenges (nonce, match_id, account_id, expires_ms) VALUES (?, ?, ?, ?)",
+            )
+            .run(r.challenge, replay[1] as string, replay[2] as string, r.expires_ms);
+        } else {
+          this.db
+            .query(
+              "INSERT OR IGNORE INTO enroll_challenges (challenge, account_id, expires_ms) VALUES (?, ?, ?)",
+            )
+            .run(r.challenge, r.account_id, r.expires_ms);
+        }
+      }
+      this.db.run("DROP TABLE challenges");
     });
   }
 
@@ -272,32 +385,88 @@ export class Store {
     return this.db.transaction(f)();
   }
 
-  // ── Enrolment challenges ─────────────────────────────────────────────────────────
+  // ── Challenges ───────────────────────────────────────────────────────────────────
 
-  putChallenge(challenge: Uint8Array, accountId: string, expiresMs: number) {
-    this.db.query("DELETE FROM challenges WHERE expires_ms < ?").run(Date.now());
-    this.db
-      .query("INSERT INTO challenges (challenge, account_id, expires_ms) VALUES (?, ?, ?)")
-      .run(challenge, accountId, expiresMs);
+  /**
+   * Stores an enrolment challenge unless too many are outstanding, in all (`total`) or for this
+   * account (`perAccount`). Expired ones are dropped first. False when a cap is reached.
+   */
+  putEnrolChallenge(
+    challenge: Uint8Array,
+    accountId: string,
+    expiresMs: number,
+    nowMs: number,
+    caps: { total: number; perAccount: number },
+  ): boolean {
+    return this.tx(() => {
+      this.db.query("DELETE FROM enroll_challenges WHERE expires_ms < ?").run(nowMs);
+      const n = this.db
+        .query<{ total: number; mine: number }, [string]>(
+          "SELECT COUNT(*) AS total, COALESCE(SUM(account_id = ?), 0) AS mine FROM enroll_challenges",
+        )
+        .get(accountId);
+      if ((n?.total ?? 0) >= caps.total || (n?.mine ?? 0) >= caps.perAccount) return false;
+      this.db
+        .query("INSERT INTO enroll_challenges (challenge, account_id, expires_ms) VALUES (?, ?, ?)")
+        .run(challenge, accountId, expiresMs);
+      return true;
+    });
   }
 
   /** Single use: the row is deleted whether or not it is still valid. */
-  takeChallenge(challenge: Uint8Array): { account_id: string; expires_ms: number } | undefined {
+  takeEnrolChallenge(challenge: Uint8Array): { account_id: string; expires_ms: number } | undefined {
     const row = this.db
       .query<{ account_id: string; expires_ms: number }, [Uint8Array]>(
-        "DELETE FROM challenges WHERE challenge = ? RETURNING account_id, expires_ms",
+        "DELETE FROM enroll_challenges WHERE challenge = ? RETURNING account_id, expires_ms",
       )
       .get(challenge);
     return row ?? undefined;
   }
 
+  /** As putEnrolChallenge, for a private replay: caps per (match, account) and in all. */
+  putReplayChallenge(
+    nonce: Uint8Array,
+    matchId: string,
+    accountId: string,
+    expiresMs: number,
+    nowMs: number,
+    caps: { total: number; perAccount: number },
+  ): boolean {
+    return this.tx(() => {
+      this.db.query("DELETE FROM replay_challenges WHERE expires_ms < ?").run(nowMs);
+      const n = this.db
+        .query<{ total: number; mine: number }, [string, string]>(
+          "SELECT COUNT(*) AS total, COALESCE(SUM(match_id = ? AND account_id = ?), 0) AS mine FROM replay_challenges",
+        )
+        .get(matchId, accountId);
+      if ((n?.total ?? 0) >= caps.total || (n?.mine ?? 0) >= caps.perAccount) return false;
+      this.db
+        .query("INSERT INTO replay_challenges (nonce, match_id, account_id, expires_ms) VALUES (?, ?, ?, ?)")
+        .run(nonce, matchId, accountId, expiresMs);
+      return true;
+    });
+  }
+
+  /** Single use, like takeEnrolChallenge. */
+  takeReplayChallenge(
+    nonce: Uint8Array,
+  ): { match_id: string; account_id: string; expires_ms: number } | undefined {
+    const row = this.db
+      .query<{ match_id: string; account_id: string; expires_ms: number }, [Uint8Array]>(
+        "DELETE FROM replay_challenges WHERE nonce = ? RETURNING match_id, account_id, expires_ms",
+      )
+      .get(nonce);
+    return row ?? undefined;
+  }
+
   // ── Devices ──────────────────────────────────────────────────────────────────────
 
+  /** A new device. Throws on a known account or key: REPLACE would drop another account's row. */
   putDevice(d: DeviceRow) {
     this.db
       .query(
-        `INSERT OR REPLACE INTO devices (account_id, kind, app_attest_pk, player_box_pk, near_pk, receipt, receipt_sig, enroll_call_id, created_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO devices (account_id, kind, app_attest_pk, player_box_pk, near_pk, receipt, receipt_sig, enroll_call_id, created_ms, attestation, challenge, attested)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         d.account_id,
@@ -309,7 +478,21 @@ export class Store {
         d.receipt_sig,
         d.enroll_call_id,
         d.created_ms,
+        d.attestation,
+        d.challenge,
+        d.attested,
       );
+  }
+
+  /** The account already enrolled with this App Attest key or this NEAR key, if any. */
+  deviceWithKey(appAttestPk: Uint8Array, nearPk: Uint8Array): string | undefined {
+    return (
+      this.db
+        .query<{ account_id: string }, [Uint8Array, Uint8Array]>(
+          "SELECT account_id FROM devices WHERE app_attest_pk = ? OR near_pk = ? LIMIT 1",
+        )
+        .get(appAttestPk, nearPk)?.account_id ?? undefined
+    );
   }
 
   device(accountId: string): DeviceRow | undefined {
@@ -322,16 +505,28 @@ export class Store {
       near_pk: u8(r.near_pk),
       receipt: r.receipt ? u8(r.receipt) : null,
       receipt_sig: r.receipt_sig ? u8(r.receipt_sig) : null,
+      attestation: r.attestation ? u8(r.attestation) : null,
+      challenge: r.challenge ? u8(r.challenge) : null,
     };
   }
 
-  /** The referee answered for this device: keep its receipt and its normalised App Attest key. */
+  /**
+   * The referee answered for this device: keep its receipt and its normalised App Attest key.
+   * The attestation and challenge were kept only for the referee, so they go.
+   */
   setDeviceReceipt(accountId: string, r: RefereeReceipt) {
     this.db
       .query(
-        "UPDATE devices SET app_attest_pk = ?, receipt = ?, receipt_sig = ?, enroll_call_id = ? WHERE account_id = ?",
+        "UPDATE devices SET app_attest_pk = ?, receipt = ?, receipt_sig = ?, enroll_call_id = ?, attested = ?, attestation = NULL, challenge = NULL WHERE account_id = ?",
       )
-      .run(r.app_attest_pk, r.receipt, r.receipt_sig, r.enroll_call_id, accountId);
+      .run(
+        r.app_attest_pk,
+        r.receipt,
+        r.receipt_sig,
+        r.enroll_call_id,
+        r.attested === null ? null : r.attested ? 1 : 0,
+        accountId,
+      );
   }
 
   /** Devices the referee has not registered yet, oldest first. */
@@ -346,12 +541,46 @@ export class Store {
 
   // ── Matches ──────────────────────────────────────────────────────────────────────
 
-  putMatch(matchId: string, host: string, zone: Zone, code: string, createdMs: number) {
+  putMatch(
+    matchId: string,
+    host: string,
+    zone: Zone,
+    code: string,
+    createdMs: number,
+    publicReplay: boolean,
+  ) {
     this.db
       .query(
-        "INSERT INTO matches (match_id, host, zone, code, phase, created_ms) VALUES (?, ?, ?, ?, 'lobby', ?)",
+        "INSERT INTO matches (match_id, host, zone, code, phase, created_ms, public_replay) VALUES (?, ?, ?, ?, 'lobby', ?, ?)",
       )
-      .run(matchId, host, JSON.stringify(zone), code, createdMs);
+      .run(matchId, host, JSON.stringify(zone), code, createdMs, publicReplay ? 1 : 0);
+  }
+
+  /** The host's lobbies the relay still holds open (lobby or starting), newest first. */
+  openLobbiesOf(host: string): string[] {
+    return this.db
+      .query<{ match_id: string }, [string]>(
+        "SELECT match_id FROM matches WHERE host = ? AND phase IN ('lobby', 'starting') ORDER BY created_ms DESC",
+      )
+      .all(host)
+      .map((r) => r.match_id);
+  }
+
+  /**
+   * On boot: a `starting` match with no stored state never got the referee's answer (or the
+   * relay died before storing it), so its lobby is open again and the host can press Start.
+   * Skips a match another live process holds the lease of: that one is starting it right now.
+   */
+  reopenInterruptedStarts(nowMs: number): string[] {
+    return this.db
+      .query<{ match_id: string }, [number]>(
+        `UPDATE matches SET phase = 'lobby', error = 'the relay restarted during Start; press Start again'
+         WHERE phase = 'starting' AND state IS NULL
+           AND match_id NOT IN (SELECT match_id FROM leases WHERE expires_ms > ?)
+         RETURNING match_id`,
+      )
+      .all(nowMs)
+      .map((r) => r.match_id);
   }
 
   codeTaken(code: string): boolean {
@@ -671,6 +900,99 @@ export class Store {
       .query<{ batch: Uint8Array }, [string]>("SELECT batch FROM trails WHERE match_id = ? ORDER BY idx")
       .all(matchId)
       .map((r) => u8(r.batch));
+  }
+
+  // ── Retention ────────────────────────────────────────────────────────────────────
+
+  /**
+   * Ended matches whose trails are due for the purge: not purged yet, End applied (or, if that
+   * time was lost, the match's end) before `endedBeforeMs`, and not known to be public.
+   * `public_replay` null means a match from before the relay kept it; the caller asks the chain.
+   */
+  purgeCandidates(endedBeforeMs: number): { match_id: string; public_replay: number | null }[] {
+    return this.db
+      .query<{ match_id: string; public_replay: number | null }, [number]>(
+        `SELECT m.match_id, m.public_replay FROM matches m
+         JOIN verdicts v ON v.match_id = m.match_id AND v.kind = 'End'
+         WHERE m.phase = 'ended' AND m.purged_ms IS NULL AND COALESCE(m.public_replay, 0) = 0
+           AND COALESCE(v.applied_ms, m.end_ms) < ?`,
+      )
+      .all(endedBeforeMs);
+  }
+
+  setPublicReplay(matchId: string, publicReplay: boolean) {
+    this.db
+      .query("UPDATE matches SET public_replay = ? WHERE match_id = ?")
+      .run(publicReplay ? 1 : 0, matchId);
+  }
+
+  /** Deletes a match's sealed batches and declassified trails, and records when. */
+  purgeMatch(matchId: string, nowMs: number): { batches: number; trails: number } {
+    return this.tx(() => {
+      const batches = this.db.query("DELETE FROM batches WHERE match_id = ?").run(matchId).changes;
+      const trails = this.db.query("DELETE FROM trails WHERE match_id = ?").run(matchId).changes;
+      this.db.query("UPDATE matches SET purged_ms = ? WHERE match_id = ?").run(nowMs, matchId);
+      return { batches, trails };
+    });
+  }
+
+  // ── Dev top-ups ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Books a top-up against `requester` if their total over the last `windowMs` stays within
+   * `cap`; returns the booking id, or null when it would not. Booked before the mint so two
+   * requests at once cannot both pass the check.
+   */
+  bookTopup(
+    requester: string,
+    target: string,
+    amount: bigint,
+    nowMs: number,
+    windowMs: number,
+    cap: bigint,
+  ): number | null {
+    return this.tx(() => {
+      const spent =
+        this.db
+          .query<{ n: number | bigint }, [string, number]>(
+            "SELECT COALESCE(SUM(amount), 0) AS n FROM topups WHERE requester = ? AND at_ms > ?",
+          )
+          .get(requester, nowMs - windowMs)?.n ?? 0;
+      if (BigInt(spent) + amount > cap) return null;
+      return Number(
+        this.db
+          .query("INSERT INTO topups (requester, target, amount, at_ms) VALUES (?, ?, ?, ?)")
+          .run(requester, target, amount, nowMs).lastInsertRowid,
+      );
+    });
+  }
+
+  /** A booked top-up whose mint failed no longer counts. */
+  cancelTopup(id: number) {
+    this.db.query("DELETE FROM topups WHERE id = ?").run(id);
+  }
+
+  // ── Match leases ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Takes or renews the lease on a match for `holder` until `nowMs + ttlMs`. False when another
+   * holder's lease has not run out: two processes on one database must never tick one match,
+   * or they would fork its sealed state.
+   */
+  holdLease(matchId: string, holder: string, nowMs: number, ttlMs: number): boolean {
+    return (
+      this.db
+        .query(
+          `INSERT INTO leases (match_id, holder, expires_ms) VALUES (?, ?, ?)
+           ON CONFLICT (match_id) DO UPDATE SET holder = excluded.holder, expires_ms = excluded.expires_ms
+           WHERE leases.holder = excluded.holder OR leases.expires_ms <= ?`,
+        )
+        .run(matchId, holder, nowMs + ttlMs, nowMs).changes === 1
+    );
+  }
+
+  releaseLease(matchId: string, holder: string) {
+    this.db.query("DELETE FROM leases WHERE match_id = ? AND holder = ?").run(matchId, holder);
   }
 
   // ── Signed-request replay guard ──────────────────────────────────────────────────

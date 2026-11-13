@@ -4,6 +4,8 @@
 // prove it like on the HUD socket: POST /replay/:id/challenge {account_id} → {nonce}, then
 // GET /replay/:id?account_id=…&nonce=…&sig=… with sig = ed25519 by the NEAR key over
 // replayDigest(nonce, match_id, account_id) (auth.ts). A nonce works once, for 2 minutes.
+// A private match's trails are deleted a while after End (retention.ts); its replay then
+// answers 410 rather than a bundle that silently lacks them.
 
 import type { ReplayBundle } from "@tail/protocol";
 import type { Hono } from "hono";
@@ -14,6 +16,9 @@ import type { Chain } from "../near.ts";
 import { field, jsonBody } from "./util.ts";
 
 export const REPLAY_CHALLENGE_TTL_MS = 120_000;
+/** Unanswered replay challenges kept, in all and per (match, account): asking is free. */
+export const MAX_REPLAY_CHALLENGES = 1_000;
+export const MAX_REPLAY_CHALLENGES_PER_PLAYER = 4;
 
 export interface ReplayMeta {
   contract: string;
@@ -26,7 +31,6 @@ export interface ReplayMeta {
 }
 
 const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
-const challengeKey = (matchId: string, account: string) => `replay:${matchId}:${account}`;
 
 export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: ReplayMeta }) {
   app.post("/replay/:id/challenge", async (c) => {
@@ -35,7 +39,12 @@ export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: R
     if (!d.store.match(id)?.players?.includes(account))
       throw new HttpError(403, "not a player in this match");
     const nonce = crypto.getRandomValues(new Uint8Array(32));
-    d.store.putChallenge(nonce, challengeKey(id, account), Date.now() + REPLAY_CHALLENGE_TTL_MS);
+    const now = Date.now();
+    const stored = d.store.putReplayChallenge(nonce, id, account, now + REPLAY_CHALLENGE_TTL_MS, now, {
+      total: MAX_REPLAY_CHALLENGES,
+      perAccount: MAX_REPLAY_CHALLENGES_PER_PLAYER,
+    });
+    if (!stored) throw new HttpError(429, "too many replay requests waiting; try again in a minute");
     return c.json({ nonce: b64(nonce) });
   });
 
@@ -53,17 +62,19 @@ export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: R
     ) {
       throw new HttpError(409, "the replay opens when the match has ended");
     }
+    if (m.purged_ms !== null) throw new HttpError(410, "this match's trails were deleted after it ended");
     const chain = await d.chain.getMatch(id);
     if (!chain) throw new HttpError(404, "match is not on chain");
     if (!chain.public_replay) {
       const account = c.req.query("account_id") ?? "";
       const nonce = new Uint8Array(Buffer.from(c.req.query("nonce") ?? "", "base64"));
       const sig = new Uint8Array(Buffer.from(c.req.query("sig") ?? "", "base64"));
-      const ch = nonce.length === 32 ? d.store.takeChallenge(nonce) : undefined;
+      const ch = nonce.length === 32 ? d.store.takeReplayChallenge(nonce) : undefined;
       const device = d.store.device(account);
       if (
         !ch ||
-        ch.account_id !== challengeKey(id, account) ||
+        ch.match_id !== id ||
+        ch.account_id !== account ||
         ch.expires_ms < Date.now() ||
         !device ||
         !m.players.includes(account) ||
@@ -79,7 +90,12 @@ export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: R
 
     const reveal = m.reveal;
     const ring = Array.isArray(reveal["ring"]) ? (reveal["ring"] as unknown[]).map(String) : [];
-    const bundle: ReplayBundle = {
+    // Beside the protocol's bundle: per player, in index order, what kind of device it was and
+    // whether the referee itself checked its Apple attestation (false: a ghost taken unattested;
+    // null: not recorded). The replay labels unattested players with it.
+    const bundle: ReplayBundle & {
+      devices: { accountId: string; kind: "phone" | "ghost" | null; attested: boolean | null }[];
+    } = {
       version: 1,
       match: {
         id,
@@ -110,6 +126,14 @@ export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: R
         vrfSignature: String(reveal["vrf_signature"] ?? ""),
         ring,
       },
+      devices: m.players.map((accountId) => {
+        const dev = d.store.device(accountId);
+        return {
+          accountId,
+          kind: dev?.kind ?? null,
+          attested: dev?.attested === null || dev?.attested === undefined ? null : dev.attested === 1,
+        };
+      }),
       handler: d.store.voicedHints(id).map((h) => ({
         hintId: h.hint_id,
         text: h.text ?? "",

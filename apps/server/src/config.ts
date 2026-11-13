@@ -3,6 +3,7 @@
 // it never runs half-configured against testnet.
 
 import { existsSync, readFileSync } from "node:fs";
+import { DEFAULT_RETENTION_HOURS } from "./retention.ts";
 
 export type Network = "testnet";
 
@@ -39,6 +40,8 @@ export interface Config {
   refereeMode: "outlayer" | "local";
   /** Set in local mode: the native referee binary and the directory holding its keys. */
   localReferee: { bin: string; dir: string } | null;
+  /** How long after End a private match's sealed batches and trails are kept (retention.ts). */
+  retentionMs: number;
 }
 
 export class ConfigError extends Error {
@@ -93,6 +96,10 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   const api = need("OUTLAYER_API");
   if (!api.startsWith("https://")) throw new ConfigError("OUTLAYER_API must be an https URL");
   if (!api.includes("testnet")) throw new ConfigError("OUTLAYER_API must be the testnet API");
+  const retentionHours = Number(opt("RELAY_RETENTION_HOURS", String(DEFAULT_RETENTION_HOURS)));
+  if (!Number.isInteger(retentionHours) || retentionHours < 1 || retentionHours > 8_760) {
+    throw new ConfigError("RELAY_RETENTION_HOURS must be a whole number of hours from 1 to 8760");
+  }
   const version = env["REFEREE_VERSION"]?.trim();
   if (version && !/^[0-9a-f]{64}$/.test(version))
     throw new ConfigError("REFEREE_VERSION must be a wasm sha256");
@@ -128,6 +135,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
             dir: opt("LOCAL_REFEREE_DIR", new URL("../../../.keys/local-referee", import.meta.url).pathname),
           }
         : null,
+    retentionMs: retentionHours * 3_600_000,
   };
 }
 
@@ -147,6 +155,7 @@ export function describeConfig(c: Config) {
     appId: c.appId,
     port: c.port,
     allowGhosts: c.allowGhosts,
+    retentionHours: c.retentionMs / 3_600_000,
   };
 }
 

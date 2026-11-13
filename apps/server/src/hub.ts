@@ -14,8 +14,39 @@ export interface Sink {
   send(text: string): void;
 }
 
+/**
+ * Authenticated HUD sockets one account may hold at once. A phone needs one; a reconnect can
+ * briefly overlap the socket it replaces. A newer socket closes the oldest, so whoever proves the
+ * key last always gets in.
+ */
+export const MAX_HUD_SOCKETS_PER_ACCOUNT = 3;
+/**
+ * Sockets still in their 10 s auth window, across all accounts. Anyone can open one for any
+ * account, so this bound is global and does not count towards the account's own cap.
+ */
+export const MAX_PENDING_HUD_SOCKETS = 1_024;
+
 export class HudHub {
   private readonly subs = new Map<string, Set<Sink>>();
+  private readonly byAccount = new Map<string, (() => void)[]>();
+  pending = 0;
+
+  /**
+   * Counts an authenticated socket against its account. If the account already holds the
+   * maximum, the oldest is closed through its `evict`. Returns the release for the socket's close.
+   */
+  admit(account: string, evict: () => void): () => void {
+    const list = this.byAccount.get(account) ?? [];
+    // An evicted socket's close may release synchronously and drop the emptied entry; set it after.
+    while (list.length >= MAX_HUD_SOCKETS_PER_ACCOUNT) list.shift()?.();
+    list.push(evict);
+    this.byAccount.set(account, list);
+    return () => {
+      const i = list.indexOf(evict);
+      if (i >= 0) list.splice(i, 1);
+      if (list.length === 0 && this.byAccount.get(account) === list) this.byAccount.delete(account);
+    };
+  }
 
   private key(matchId: string, player: number) {
     return `${matchId}:${player}`;

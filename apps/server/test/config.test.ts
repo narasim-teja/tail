@@ -31,6 +31,13 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...good, TAIL_CONTRACT: "tail.near" })).toThrow("testnet");
   });
 
+  test("private trails are kept 24 h after End unless RELAY_RETENTION_HOURS says otherwise", () => {
+    expect(loadConfig(good).retentionMs).toBe(24 * 3_600_000);
+    expect(loadConfig({ ...good, RELAY_RETENTION_HOURS: "6" }).retentionMs).toBe(6 * 3_600_000);
+    for (const bad of ["0", "1.5", "forever"])
+      expect(() => loadConfig({ ...good, RELAY_RETENTION_HOURS: bad })).toThrow("RELAY_RETENTION_HOURS");
+  });
+
   test("ghosts are allowed only with ALLOW_GHOSTS=1", () => {
     expect(loadConfig({ ...good, ALLOW_GHOSTS: "0" }).allowGhosts).toBe(false);
     expect(loadConfig({ ...good, ALLOW_GHOSTS: "1" }).allowGhosts).toBe(true);

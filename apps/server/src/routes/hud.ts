@@ -8,7 +8,7 @@ import type { UpgradeWebSocket } from "hono/ws";
 import { hudDigest, verifyEd25519 } from "../auth.ts";
 import type { Store } from "../db.ts";
 import { HttpError } from "../errors.ts";
-import type { HudHub } from "../hub.ts";
+import { type HudHub, MAX_PENDING_HUD_SOCKETS } from "../hub.ts";
 import { field } from "./util.ts";
 
 /** A socket that has not answered the challenge by then is closed. */
@@ -28,6 +28,8 @@ export function hudRoutes(
       if (!m.players) throw new HttpError(409, "match has not started");
       if (!m.players.includes(account) || !d.store.device(account))
         throw new HttpError(403, "not a player in this match");
+      if (d.hub.pending >= MAX_PENDING_HUD_SOCKETS)
+        throw new HttpError(503, "too many connections; try again");
       await next();
     },
     d.upgradeWebSocket((c) => {
@@ -35,9 +37,17 @@ export function hudRoutes(
       const account = c.req.query("account_id") as string;
       const nonce = crypto.getRandomValues(new Uint8Array(32));
       let unsubscribe: (() => void) | undefined;
+      let release: (() => void) | undefined;
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let pending = false;
+      const settle = () => {
+        if (pending) d.hub.pending--;
+        pending = false;
+      };
       return {
         onOpen(_evt, ws) {
+          pending = true;
+          d.hub.pending++;
           ws.send(JSON.stringify({ type: "challenge", nonce: Buffer.from(nonce).toString("base64") }));
           timer = setTimeout(() => ws.close(4401, "auth timeout"), HUD_AUTH_TIMEOUT_MS);
         },
@@ -60,6 +70,8 @@ export function hudRoutes(
             return;
           }
           clearTimeout(timer);
+          settle();
+          release = d.hub.admit(account, () => ws.close(4408, "replaced by a newer connection"));
           unsubscribe = d.hub.subscribe(matchId, player, { send: (t) => ws.send(t) });
           ws.send(JSON.stringify({ type: "ready", match_id: matchId, player }));
           const keys = m?.keys?.find((k) => k.player === player);
@@ -79,6 +91,8 @@ export function hudRoutes(
         },
         onClose() {
           clearTimeout(timer);
+          settle();
+          release?.();
           unsubscribe?.();
         },
       };

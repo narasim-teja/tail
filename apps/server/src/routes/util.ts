@@ -11,12 +11,36 @@ export const MAX_BODY = 64 * 1024;
 
 type Obj = Record<string, unknown>;
 
-async function bodyBytes(c: Context): Promise<Uint8Array> {
+/**
+ * The body, read chunk by chunk and given up on as soon as it passes MAX_BODY: a chunked upload
+ * has no length to check first, and reading it whole before checking would let one request fill
+ * memory. A declared length over the cap is refused before anything is read.
+ */
+export async function bodyBytes(c: Context): Promise<Uint8Array> {
   const len = Number(c.req.header("content-length") ?? 0);
   if (len > MAX_BODY) throw new HttpError(413, "request too large");
-  const b = new Uint8Array(await c.req.arrayBuffer());
-  if (b.length > MAX_BODY) throw new HttpError(413, "request too large");
-  return b;
+  const stream = c.req.raw.body;
+  if (!stream) return new Uint8Array(0);
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > MAX_BODY) {
+      await reader.cancel().catch(() => {});
+      throw new HttpError(413, "request too large");
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const ch of chunks) {
+    out.set(ch, at);
+    at += ch.length;
+  }
+  return out;
 }
 
 function parseJson(b: Uint8Array): Obj {

@@ -22,6 +22,12 @@ import { type Referee, RefereeError } from "./referee.ts";
 
 export const CHALLENGE_TTL_MS = 5 * 60_000;
 /**
+ * Unanswered enrolment challenges the relay keeps, in all and per handle. Asking costs nothing,
+ * so without a cap anyone could fill the table; a real phone needs one at a time.
+ */
+export const MAX_OPEN_CHALLENGES = 1_000;
+export const MAX_OPEN_CHALLENGES_PER_HANDLE = 3;
+/**
  * Waits between background attempts to register a device with the referee. After the last one
  * the device waits for the next start (or relay restart) to try again.
  */
@@ -91,8 +97,13 @@ export class Enrolment {
     const accountId = this.accountFor(handle, false);
     this.ensureFree(accountId);
     const challenge = crypto.getRandomValues(new Uint8Array(32));
-    const expires = this.now() + CHALLENGE_TTL_MS;
-    this.d.store.putChallenge(challenge, accountId, expires);
+    const now = this.now();
+    const expires = now + CHALLENGE_TTL_MS;
+    const stored = this.d.store.putEnrolChallenge(challenge, accountId, expires, now, {
+      total: MAX_OPEN_CHALLENGES,
+      perAccount: MAX_OPEN_CHALLENGES_PER_HANDLE,
+    });
+    if (!stored) throw new HttpError(429, "too many enrolments waiting; try again in a few minutes");
     return { challenge: b64(challenge), account_id: accountId, expires_ms: expires };
   }
 
@@ -106,7 +117,7 @@ export class Enrolment {
     if (i.challenge.length !== 32 || i.playerBoxPk.length !== 32 || i.nearPk.length !== 32) {
       throw new HttpError(400, "challenge, player_box_pk and near_pk are 32 bytes each");
     }
-    const ch = this.d.store.takeChallenge(i.challenge);
+    const ch = this.d.store.takeEnrolChallenge(i.challenge);
     if (!ch || ch.expires_ms < this.now()) throw new HttpError(401, "challenge unknown or expired");
     let appAttestPk: Uint8Array;
     try {
@@ -121,10 +132,18 @@ export class Enrolment {
       this.d.log.warn({ accountId: ch.account_id, err: (e as Error).message }, "attestation refused");
       throw new HttpError(401, "device attestation failed");
     }
-    return this.register(ch.account_id, "phone", appAttestPk, i.playerBoxPk, i.nearPk);
+    // Kept for the referee, which checks the attestation again inside the enclave.
+    return this.register(ch.account_id, "phone", appAttestPk, i.playerBoxPk, i.nearPk, {
+      attestation: i.attestation,
+      challenge: i.challenge,
+    });
   }
 
-  /** The testing door. The route that calls this exists only when the config allows ghosts. */
+  /**
+   * The testing door, in-process only: ghosts/fill.ts and scripts/ghost-match.ts call it with
+   * keys they made themselves. No HTTP route reaches it, so no client can enrol a device without
+   * an attestation, and fill.ts runs only when the config allows ghosts.
+   */
   async enrollGhost(i: {
     handle: string;
     appAttestPk: Uint8Array;
@@ -144,25 +163,40 @@ export class Enrolment {
     appAttestPk: Uint8Array,
     playerBoxPk: Uint8Array,
     nearPk: Uint8Array,
+    proof: { attestation: Uint8Array; challenge: Uint8Array } | null = null,
   ): Promise<Enrolled> {
     this.ensureFree(accountId);
+    if (this.d.store.deviceWithKey(appAttestPk, nearPk)) {
+      throw new HttpError(409, "this device is already enrolled");
+    }
     try {
       await this.d.chain.createPlayerAccount(accountId, nearPk);
     } catch (e) {
       if (e instanceof AccountTakenError) throw new HttpError(409, "that handle is taken");
       throw e;
     }
-    this.d.store.putDevice({
-      account_id: accountId,
-      kind,
-      app_attest_pk: appAttestPk,
-      player_box_pk: playerBoxPk,
-      near_pk: nearPk,
-      receipt: null,
-      receipt_sig: null,
-      enroll_call_id: null,
-      created_ms: this.now(),
-    });
+    try {
+      this.d.store.putDevice({
+        account_id: accountId,
+        kind,
+        app_attest_pk: appAttestPk,
+        player_box_pk: playerBoxPk,
+        near_pk: nearPk,
+        receipt: null,
+        receipt_sig: null,
+        enroll_call_id: null,
+        created_ms: this.now(),
+        attestation: proof?.attestation ?? null,
+        challenge: proof?.challenge ?? null,
+        attested: null,
+      });
+    } catch (e) {
+      // Two enrolments of one device at once both passed the check above; the index stops one.
+      if (/UNIQUE constraint/.test((e as Error).message)) {
+        throw new HttpError(409, "this device is already enrolled");
+      }
+      throw e;
+    }
     this.d.log.info({ accountId, kind }, "enrolled; registering with the referee");
     this.retryInBackground(accountId);
     return { account_id: accountId };
@@ -203,14 +237,18 @@ export class Enrolment {
         appAttestPk: dev.app_attest_pk,
         playerBoxPk: dev.player_box_pk,
         nearPk: dev.near_pk,
+        ...(dev.attestation && dev.challenge
+          ? { attestation: dev.attestation, challenge: dev.challenge }
+          : {}),
       });
       this.d.store.setDeviceReceipt(accountId, {
         app_attest_pk: r.appAttestPk,
         receipt: r.receipt,
         receipt_sig: r.sig,
         enroll_call_id: r.callId,
+        attested: r.attested,
       });
-      this.d.log.info({ accountId }, "registered with the referee");
+      this.d.log.info({ accountId, attested: r.attested }, "registered with the referee");
     })().finally(() => this.inFlight.delete(accountId));
     this.inFlight.set(accountId, p);
     return p;

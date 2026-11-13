@@ -25,12 +25,23 @@ export interface EnrollInput {
   appAttestPk: Uint8Array;
   playerBoxPk: Uint8Array;
   nearPk: Uint8Array;
+  /**
+   * A phone's CBOR attestation object exactly as it sent it, and the 32-byte challenge the relay
+   * issued, so the referee can check the attestation itself. Absent for ghosts (no attestation).
+   */
+  attestation?: Uint8Array;
+  challenge?: Uint8Array;
 }
 export interface EnrollResult {
   callId: string;
   appAttestPk: Uint8Array;
   receipt: Uint8Array;
   sig: Uint8Array;
+  /**
+   * Whether the referee checked an Apple attestation for this device itself (false: a ghost the
+   * referee took unattested). Null when the referee's answer predates the field.
+   */
+  attested: boolean | null;
 }
 
 /** A borsh SignedVerdict as the referee returned it, plus its decoded form. */
@@ -288,6 +299,11 @@ export interface LocalRefereeOptions {
   dir: string;
   /** The account the VRF alpha names as sender, as OutLayer names the project owner. */
   owner: string;
+  /**
+   * Sets ALLOW_UNATTESTED=1 for the referee process, so it registers ghosts (no Apple
+   * attestation). True only when the relay itself allows ghosts (testnet, ALLOW_GHOSTS=1).
+   */
+  allowUnattested: boolean;
   timeoutMs?: number;
 }
 
@@ -307,6 +323,7 @@ export function localTransport(o: LocalRefereeOptions): RefereeTransport {
         PATH: process.env["PATH"] ?? "",
         TAIL_LOCAL_REFEREE_DIR: o.dir,
         TAIL_LOCAL_REFEREE_OWNER: o.owner,
+        ...(o.allowUnattested ? { ALLOW_UNATTESTED: "1" } : {}),
       },
     });
     proc.stdin.write(JSON.stringify({ cmd, ...input }));
@@ -394,6 +411,9 @@ export class RefereeClient implements Referee {
       app_attest_pk: b64(i.appAttestPk),
       player_box_pk: b64(i.playerBoxPk),
       near_pk: b64(i.nearPk),
+      ...(i.attestation && i.challenge
+        ? { attestation: b64(i.attestation), challenge: b64(i.challenge) }
+        : {}),
     });
     const s = shape("enroll");
     if (s.str(r, "account_id") !== i.accountId)
@@ -403,6 +423,7 @@ export class RefereeClient implements Referee {
       appAttestPk: s.bytes(r, "app_attest_pk"),
       receipt: s.bytes(r, "receipt"),
       sig: s.bytes(r, "sig"),
+      attested: r["attested"] === undefined ? null : s.bool(r, "attested"),
     };
   }
 
@@ -549,7 +570,7 @@ export class LocalReferee extends RefereeClient {
 /** The referee this config asks for: OutLayer's enclave by default, the local test referee in local mode. */
 export function makeReferee(c: Config): RefereeClient {
   if (c.refereeMode === "local" && c.localReferee) {
-    return new LocalReferee({ ...c.localReferee, owner: c.relayAccount });
+    return new LocalReferee({ ...c.localReferee, owner: c.relayAccount, allowUnattested: c.allowGhosts });
   }
   return new OutLayerReferee({
     api: c.outlayerApi,

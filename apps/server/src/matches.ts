@@ -15,6 +15,9 @@
 //   next one, so a lost RPC answer can never apply a verdict twice or out of order.
 // - The relay ticks only when every verdict it holds is on chain: the referee refuses a sealed
 //   state whose seq is ahead of `last_seq`.
+// - Across processes on one database, a match is stepped only by the holder of its lease row
+//   (db.ts `holdLease`), and every write of new state re-checks the lease in its transaction, so
+//   a second relay on the same file cannot fork a match either.
 
 import type { Logger } from "@tail/log";
 import {
@@ -46,6 +49,16 @@ import {
 export const MAX_BATCHES_PER_TICK = 256;
 /** A hint not voiced within this long is dropped: the referee waits 120 s for its receipt. */
 export const VOICE_WINDOW_MS = 90_000;
+/**
+ * How long a lease on a match lasts without renewal. Each step renews it, and so does each write;
+ * a process that dies leaves the match to another after this long.
+ */
+export const LEASE_MS = 120_000;
+
+/** Thrown inside a write when another process took the match's lease: nothing is stored. */
+class LeaseLostError extends Error {
+  override name = "LeaseLostError";
+}
 
 export interface MatchDeps {
   store: Store;
@@ -98,11 +111,28 @@ export class Matches {
   private readonly tickMs: number;
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly running = new Set<string>();
+  /** Hosts with a create in flight: one open lobby per host, and the check spans an await. */
+  private readonly creating = new Set<string>();
+  /** This process's name on lease rows. */
+  readonly holder = `${process.pid}-${toHex(crypto.getRandomValues(new Uint8Array(6)))}`;
   private stopped = false;
 
   constructor(private readonly d: MatchDeps) {
     this.now = d.now ?? Date.now;
     this.tickMs = d.tickMs ?? TICK_MS;
+  }
+
+  /** Takes or renews this process's lease on the match; false while another process holds it. */
+  private lease(matchId: string): boolean {
+    return this.d.store.holdLease(matchId, this.holder, this.now(), LEASE_MS);
+  }
+
+  /** Runs `f` in one transaction that first renews the lease, and stores nothing without it. */
+  private leasedTx(matchId: string, f: () => void) {
+    this.d.store.tx(() => {
+      if (!this.lease(matchId)) throw new LeaseLostError("another relay process holds this match");
+      f();
+    });
   }
 
   // ── Lobby ────────────────────────────────────────────────────────────────────────
@@ -113,6 +143,43 @@ export class Matches {
   ): Promise<{ matchId: string; zoneHash: string; code: string }> {
     // The referee refuses to start a match with no stake (ZeroStake); say so before anyone joins.
     if (i.stake <= 0n) throw new HttpError(400, "stake must be more than 0");
+    // Each lobby is opened with the relay's NEAR (the match deposit), so a host holds one at a time.
+    if (this.creating.has(host)) throw new HttpError(409, "a lobby is already being made for you");
+    this.creating.add(host);
+    try {
+      await this.closeStaleLobbies(host);
+      return await this.createFor(host, i);
+    } finally {
+      this.creating.delete(host);
+    }
+  }
+
+  /**
+   * Refuses while the host has a lobby that can still start; a lobby the chain called off, or
+   * whose start time passed, is closed here (failed, with why) so it no longer counts.
+   */
+  private async closeStaleLobbies(host: string) {
+    for (const id of this.d.store.openLobbiesOf(host)) {
+      const m = this.d.store.match(id);
+      const chain = await this.d.chain.getMatch(id);
+      // Not on chain yet means just created (the RPC view can lag): still open.
+      const open =
+        m?.phase === "starting" || !chain || (chain.phase === "lobby" && chain.start_by_ms > this.now());
+      if (open) {
+        throw new HttpError(409, "you already have an open lobby; start it or let it lapse first", {
+          match_id: id,
+        });
+      }
+      const why =
+        chain.phase === "lobby" ? "the lobby's start time passed" : `the lobby was ${chain.phase} on chain`;
+      if (this.d.store.claimPhase(id, "lobby", "failed")) this.d.store.setPhase(id, "failed", why);
+    }
+  }
+
+  private async createFor(
+    host: string,
+    i: CreateMatchInput,
+  ): Promise<{ matchId: string; zoneHash: string; code: string }> {
     const zone: Zone = { zone: i.zone, safehouses: i.safehouses };
     const zh = hexId(zoneHash(zone));
     const matchId = await this.d.chain.createMatch({
@@ -130,7 +197,7 @@ export class Matches {
     // creates cannot take the same code. A clash is one in hundreds of millions; redraw it.
     let code = mintCode();
     while (this.d.store.codeTaken(code)) code = mintCode();
-    this.d.store.putMatch(matchId, host, zone, code, this.now());
+    this.d.store.putMatch(matchId, host, zone, code, this.now(), i.publicReplay);
     this.d.log.info({ matchId, host, code }, "match created");
     return { matchId, zoneHash: zh, code };
   }
@@ -145,6 +212,11 @@ export class Matches {
     if (m.host !== caller) throw new HttpError(403, "only the host can start the match");
     if (!this.d.store.claimPhase(matchId, "lobby", "starting"))
       throw new HttpError(409, `match is ${m.phase}`);
+    // The lease marks this start as live, so a relay booting meanwhile does not reopen the lobby.
+    if (!this.lease(matchId)) {
+      this.d.store.setPhase(matchId, "lobby", m.error);
+      throw new HttpError(409, "another relay process holds this match");
+    }
     const progress = { refereeStarted: false };
     try {
       return await this.startClaimed(matchId, m.zone, progress);
@@ -153,6 +225,7 @@ export class Matches {
       // and the lobby refunds through `abort`. Before that, the host may simply try again.
       const final = progress.refereeStarted || (e instanceof RefereeError && e.refused);
       this.d.store.setPhase(matchId, final ? "failed" : "lobby", (e as Error).message);
+      this.d.store.releaseLease(matchId, this.holder);
       throw e;
     }
   }
@@ -205,7 +278,7 @@ export class Matches {
     if (BigInt(started.startMs) !== start.body.startMs || BigInt(started.endMs) !== start.body.endMs) {
       throw new Error("referee start times disagree with its Start verdict");
     }
-    this.d.store.tx(() => {
+    this.leasedTx(matchId, () => {
       this.d.store.setStarted(matchId, { startMs: started.startMs, endMs: started.endMs, players, keys });
       this.d.store.setState(matchId, started.state, 0);
       this.d.store.appendLog(matchId, started.log);
@@ -253,15 +326,24 @@ export class Matches {
 
   // ── The loop ─────────────────────────────────────────────────────────────────────
 
-  /** Restarts the loop for every match that was mid-game when the relay stopped. */
+  /**
+   * On boot: reopens lobbies whose Start the last run left unfinished (no state stored, so the
+   * referee's answer never landed here; db.ts `reopenInterruptedStarts`), and restarts the loop
+   * of every match that was mid-game.
+   */
   resume() {
+    const reopened = this.d.store.reopenInterruptedStarts(this.now());
+    if (reopened.length) this.d.log.warn({ matches: reopened }, "Start was interrupted; lobbies open again");
     for (const id of this.d.store.matchesIn(["running", "ending"])) this.schedule(id, 0);
   }
 
+  /** Stops the loop and hands back this process's leases, so another relay can go on at once. */
   stop() {
     this.stopped = true;
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
+    for (const id of this.d.store.matchesIn(["starting", "running", "ending"]))
+      if (!this.running.has(id)) this.d.store.releaseLease(id, this.holder);
   }
 
   /** True while a step is scheduled or running for this match. */
@@ -291,23 +373,33 @@ export class Matches {
     } finally {
       this.running.delete(matchId);
     }
+    // Stopped mid-step: hand the match over now rather than when the lease runs out.
+    if (this.stopped) this.d.store.releaseLease(matchId, this.holder);
     if (again) this.schedule(matchId, Math.max(0, this.tickMs - (this.now() - t0)));
   }
 
   /** One serialised step of a match. Returns false once the match needs no more steps. */
   async step(matchId: string): Promise<boolean> {
     const m = this.d.store.match(matchId);
-    if (!m || (m.phase !== "running" && m.phase !== "ending")) return false;
+    if (!m || (m.phase !== "running" && m.phase !== "ending")) {
+      this.d.store.releaseLease(matchId, this.holder);
+      return false;
+    }
+    // Another process is stepping this match; look again next tick, and take over if it stops.
+    if (!this.lease(matchId)) return true;
     if (!(await this.flushVerdicts(matchId))) return true;
     await this.voicePending(matchId);
     if (m.phase === "running") {
       if (m.start_ms !== null && this.now() < m.start_ms) return true;
       await this.tick(matchId);
-      if (this.d.store.match(matchId)?.phase !== "ending") return true;
-      if (!(await this.flushVerdicts(matchId))) return true;
+      // The tick's verdicts go on chain now, not a tick later: a Tag or a Forfeit moves money.
+      const flushed = await this.flushVerdicts(matchId);
+      if (this.d.store.match(matchId)?.phase !== "ending" || !flushed) return true;
       await this.voicePending(matchId);
     }
-    return !(await this.finish(matchId));
+    const done = await this.finish(matchId);
+    if (done) this.d.store.releaseLease(matchId, this.holder);
+    return !done;
   }
 
   private async tick(matchId: string) {
@@ -327,7 +419,7 @@ export class Matches {
     const now = this.now();
     // The relay holds the only full copy of the log; refuse to go on with a copy that differs.
     this.checkLog(matchId, r.log, r.logSize, r.logRoot);
-    this.d.store.tx(() => {
+    this.leasedTx(matchId, () => {
       this.d.store.setState(matchId, r.state, r.tickNo);
       this.d.store.appendLog(matchId, r.log);
       this.storeVerdicts(matchId, r.verdicts);
@@ -412,7 +504,7 @@ export class Matches {
       if (end?.kind !== "End") throw new Error("referee end returned no End verdict");
       // End carries the log before its own entry; the entries `end` returns come after it.
       this.checkLog(matchId, [], Number(end.logSize), end.root);
-      this.d.store.tx(() => {
+      this.leasedTx(matchId, () => {
         this.d.store.setState(matchId, r.state, m?.tick_no ?? 0);
         this.d.store.appendLog(matchId, r.log);
         this.storeVerdicts(matchId, r.verdicts);

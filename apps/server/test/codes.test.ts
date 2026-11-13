@@ -48,11 +48,11 @@ describe("lobby codes", () => {
 
   test("the store keeps a code to one match; a different code is free", () => {
     const s = new Store(":memory:");
-    s.putMatch("a".repeat(32), "host.testnet", ZONE, "K7M4QX", 1);
+    s.putMatch("a".repeat(32), "host.testnet", ZONE, "K7M4QX", 1, true);
     expect(s.codeTaken("K7M4QX")).toBe(true);
-    expect(() => s.putMatch("b".repeat(32), "host.testnet", ZONE, "K7M4QX", 2)).toThrow();
+    expect(() => s.putMatch("b".repeat(32), "host.testnet", ZONE, "K7M4QX", 2, true)).toThrow();
     expect(s.codeTaken("K7M4QY")).toBe(false);
-    s.putMatch("b".repeat(32), "host.testnet", ZONE, "K7M4QY", 2);
+    s.putMatch("b".repeat(32), "host.testnet", ZONE, "K7M4QY", 2, true);
     expect(s.lobbyByCode("K7M4QY")).toBe("b".repeat(32));
   });
 
@@ -70,7 +70,7 @@ describe("lobby codes", () => {
       old.close();
       const s = new Store(path);
       expect(s.match("a".repeat(32))?.code).toBeNull();
-      s.putMatch("b".repeat(32), "host.testnet", ZONE, "K7M4QX", 2);
+      s.putMatch("b".repeat(32), "host.testnet", ZONE, "K7M4QX", 2, true);
       expect(s.match("b".repeat(32))?.code).toBe("K7M4QX");
       s.close();
     } finally {

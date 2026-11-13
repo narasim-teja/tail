@@ -5,6 +5,7 @@ import { verifyAttestation as appleVerify, type Environment } from "@tail/appatt
 import type { Logger } from "@tail/log";
 import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
+import { ChainView } from "./chainview.ts";
 import type { Store } from "./db.ts";
 import { Enrolment, type VerifyAttestation } from "./enroll.ts";
 import { HttpError } from "./errors.ts";
@@ -13,6 +14,7 @@ import { HudHub } from "./hub.ts";
 import { Matches } from "./matches.ts";
 import type { Chain } from "./near.ts";
 import { type Referee, RefereeError, type RefereeHealth, RefereeUnavailableError } from "./referee.ts";
+import { DEFAULT_RETENTION_HOURS, Retention } from "./retention.ts";
 import { batchRoutes } from "./routes/batch.ts";
 import { ghostRoutes, topupRoutes } from "./routes/dev.ts";
 import { enrollRoutes } from "./routes/enroll.ts";
@@ -34,10 +36,14 @@ export interface RelayDeps {
   /** NEAR_NETWORK=testnet: mounts POST /dev/topup. */
   testnet: boolean;
   /**
-   * NEAR_NETWORK=testnet and ALLOW_GHOSTS=1 (config.ts): mounts POST /dev/ghosts/enroll and
-   * POST /dev/ghosts/fill, and /health says `test_players: true`.
+   * NEAR_NETWORK=testnet and ALLOW_GHOSTS=1 (config.ts): mounts POST /dev/ghosts/fill, and
+   * /health says `test_players: true`. Ghosts enrol in-process only; no route enrols one.
    */
   allowGhosts: boolean;
+  /** How long after End a private match's trails are kept (RELAY_RETENTION_HOURS). */
+  retentionMs?: number;
+  /** How long the public match views may be stale (chainview.ts); tests shorten it. */
+  chainViewMs?: number;
   verifyAttestation?: VerifyAttestation;
   /** Whether the referee is answering (referee.ts GuardedReferee); /health reports it. */
   refereeHealth?: () => RefereeHealth;
@@ -75,6 +81,15 @@ export function createRelay(d: RelayDeps) {
     ...(d.tickMs !== undefined ? { tickMs: d.tickMs } : {}),
   });
   const { upgradeWebSocket, websocket } = createBunWebSocket();
+  const now = d.now ?? Date.now;
+  const view = new ChainView(d.chain, now, d.chainViewMs);
+  const retention = new Retention({
+    store: d.store,
+    chain: d.chain,
+    log: d.log,
+    windowMs: d.retentionMs ?? DEFAULT_RETENTION_HOURS * 3_600_000,
+    now,
+  });
 
   const app = new Hono();
   // One line per request: what was asked, how it ended, how long it took. The phone's errors
@@ -92,7 +107,7 @@ export function createRelay(d: RelayDeps) {
     else d.log.info(line, "request");
   });
   app.onError((e, c) => {
-    if (e instanceof HttpError) return c.json({ error: e.message }, e.status);
+    if (e instanceof HttpError) return c.json({ ...e.extra, error: e.message }, e.status);
     // Plain sentences: the phone shows these as they are.
     if (e instanceof RefereeUnavailableError) {
       return c.json({ error: "The referee isn't answering right now. Try again in a minute." }, 503);
@@ -142,11 +157,11 @@ export function createRelay(d: RelayDeps) {
     return c.json(await pubkeys);
   });
   enrollRoutes(app, enrolment);
-  matchRoutes(app, { store: d.store, chain: d.chain, matches });
+  matchRoutes(app, { store: d.store, chain: d.chain, view, matches });
   batchRoutes(app, { store: d.store, matches });
   hudRoutes(app, { store: d.store, hub, upgradeWebSocket });
   replayRoutes(app, { store: d.store, chain: d.chain, meta: d.replay });
-  if (d.testnet) topupRoutes(app, { store: d.store, chain: d.chain });
+  if (d.testnet) topupRoutes(app, { store: d.store, chain: d.chain, now });
   if (d.allowGhosts) {
     const filler = new GhostFiller({
       store: d.store,
@@ -156,8 +171,8 @@ export function createRelay(d: RelayDeps) {
       token: d.token,
       ...(d.now ? { now: d.now } : {}),
     });
-    ghostRoutes(app, { store: d.store, enrolment, filler });
+    ghostRoutes(app, { store: d.store, filler });
   }
 
-  return { app, websocket, matches, enrolment, hub };
+  return { app, websocket, matches, enrolment, hub, retention };
 }

@@ -2,7 +2,8 @@
 // and the HUD WebSocket. It has the three keys a phone has (a NEAR function-call key, an X25519
 // box key, a P-256 App Attest-style key), builds real batches with real beacon tokens, chains
 // them, asserts them (assertion.ts) and seals them to the referee. The only thing it skips is
-// Apple's attestation at enrolment (the testing door, routes/dev.ts).
+// Apple's attestation at enrolment (the testing door): it enrols in-process, through the relay's
+// own Enrolment, because no HTTP route enrols a device without an attestation.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
@@ -26,6 +27,7 @@ import {
 } from "@tail/protocol";
 import type { JsonRpcProvider } from "near-api-js";
 import { hudDigest, signRequestHeaders } from "../auth.ts";
+import type { Enrolment } from "../enroll.ts";
 import { joinMatchWithKey } from "../near.ts";
 import { signAssertion } from "./assertion.ts";
 import { newGhostKeys } from "./keys.ts";
@@ -73,12 +75,13 @@ export class Ghost {
     return json;
   }
 
-  async enroll() {
-    const r = await this.request<{ account_id: string }>("POST", "/dev/ghosts/enroll", {
+  /** Enrols through the relay's Enrolment in the same process (the relay must allow ghosts). */
+  async enroll(enrolment: Enrolment) {
+    const r = await enrolment.enrollGhost({
       handle: this.handle,
-      app_attest_pk: b64(this.k.attestPk),
-      player_box_pk: b64(this.k.boxPk),
-      near_pk: b64(this.k.nearPk),
+      appAttestPk: this.k.attestPk,
+      playerBoxPk: this.k.boxPk,
+      nearPk: this.k.nearPk,
     });
     this.accountId = r.account_id;
     return r;

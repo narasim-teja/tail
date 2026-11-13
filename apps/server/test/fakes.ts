@@ -184,6 +184,8 @@ export class FakeChain implements Chain {
 /** Referee whose rules are a script: `onTick` decides what each tick returns. */
 export class FakeReferee implements Referee {
   calls: string[] = [];
+  /** Every enroll input, as the relay sent it. */
+  enrolls: EnrollInput[] = [];
   /** Throw a transport error on the next N tick calls. */
   failTicks = 0;
   /** Throw a transport error on the next N enroll calls (the referee not answering). */
@@ -199,7 +201,8 @@ export class FakeReferee implements Referee {
   private seq = new Map<string, number>();
   private log = new Map<string, LogEntry[]>();
   private tickNo = new Map<string, number>();
-  private hintAtTick = 2;
+  /** Tick number that issues a Hint verdict. */
+  hintAtTick = 2;
 
   private verdict(matchId: Uint8Array, body: Verdict): RawVerdict {
     const key = Buffer.from(matchId).toString("hex");
@@ -231,6 +234,7 @@ export class FakeReferee implements Referee {
   }
   async enroll(i: EnrollInput): Promise<EnrollResult> {
     this.calls.push("enroll");
+    this.enrolls.push(i);
     if (this.failEnrolls > 0) {
       this.failEnrolls--;
       throw new RefereeError("enroll", "request failed: The operation timed out.", false);
@@ -240,6 +244,8 @@ export class FakeReferee implements Referee {
       appAttestPk: i.appAttestPk,
       receipt: new Uint8Array(8),
       sig: new Uint8Array(64),
+      // As the referee: attested when it got an attestation to check.
+      attested: i.attestation !== undefined,
     };
   }
   async start(i: StartInput): Promise<StartResult> {
@@ -407,12 +413,16 @@ export function seedDevice(
   store.putDevice({
     account_id: accountId,
     kind,
-    app_attest_pk: new Uint8Array(65),
+    // Each device its own App Attest key, as the store requires.
+    app_attest_pk: crypto.getRandomValues(new Uint8Array(65)),
     player_box_pk: new Uint8Array(32),
     near_pk: nearPk,
     receipt: withReferee ? new Uint8Array(1) : null,
     receipt_sig: withReferee ? new Uint8Array(64) : null,
     enroll_call_id: withReferee ? "c" : null,
     created_ms: 0,
+    attestation: null,
+    challenge: null,
+    attested: withReferee ? (kind === "phone" ? 1 : 0) : null,
   });
 }

@@ -9,6 +9,7 @@ import { type Config, ConfigError, describeConfig, loadConfig, loadRepoEnv } fro
 import { Store } from "./db.ts";
 import { NearChain } from "./near.ts";
 import { GuardedReferee, makeReferee } from "./referee.ts";
+import { MAX_BODY } from "./routes/util.ts";
 
 const log = createLogger("relay");
 
@@ -38,12 +39,20 @@ export function startRelay(config: Config) {
     refereeHealth: () => referee.health(),
     testnet: config.network === "testnet",
     allowGhosts: config.allowGhosts,
+    retentionMs: config.retentionMs,
   });
   relay.matches.resume();
   relay.enrolment.resumePending();
-  const server = Bun.serve({ port: config.port, fetch: relay.app.fetch, websocket: relay.websocket });
+  relay.retention.start();
+  // Bun refuses a larger body before the app sees it; routes/util.ts caps the streamed read too.
+  const server = Bun.serve({
+    port: config.port,
+    fetch: relay.app.fetch,
+    websocket: relay.websocket,
+    maxRequestBodySize: MAX_BODY,
+  });
   log.info({ ...describeConfig(config), url: server.url.href }, "relay listening");
-  if (config.allowGhosts) log.warn("ghost enrolment is open (testnet testing door, no App Attest)");
+  if (config.allowGhosts) log.warn("test players are on (testnet testing door, no App Attest)");
   return {
     ...relay,
     store,
@@ -54,6 +63,7 @@ export function startRelay(config: Config) {
     stop() {
       relay.matches.stop();
       relay.enrolment.stop();
+      relay.retention.stop();
       server.stop(true);
       store.close();
     },

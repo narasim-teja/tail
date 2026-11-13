@@ -60,7 +60,7 @@ try {
   );
 
   // ── enrol ────────────────────────────────────────────────────────────────────────
-  for (const g of ghosts) await g.enroll();
+  for (const g of ghosts) await g.enroll(relay.enrolment);
   for (const g of ghosts) {
     const list = await relay.chain.provider.viewAccessKeyList({ accountId: g.accountId });
     const k = list.keys[0];
