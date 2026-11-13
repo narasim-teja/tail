@@ -130,9 +130,12 @@ export function Briefing() {
   const app = useApp();
   const b = app.briefing;
   const [now, setNow] = useState(Date.now());
+  // Re-checked whenever the app stops being busy: the host's own Start can still be running when
+  // the match goes live and this screen opens, and the orders must not wait for a manual retry.
+  const { busy, error } = app;
   useEffect(() => {
-    if (!b && !app.busy && !app.error) void app.brief();
-  }, [b, app]);
+    if (!b && !busy && !error) void app.brief();
+  }, [b, busy, error, app]);
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1_000);
     return () => clearInterval(t);

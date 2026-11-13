@@ -9,7 +9,15 @@ import {
   seal,
   TargetStatus,
 } from "@tail/protocol";
-import { describeHintFact, describeRejection, formatAmount, hudView, openHud, openPlayerKeys } from "./hud";
+import {
+  describeHintFact,
+  describeRefusal,
+  describeRejection,
+  formatAmount,
+  hudView,
+  openHud,
+  openPlayerKeys,
+} from "./hud";
 
 const sk = x25519.utils.randomSecretKey();
 const pk = x25519.getPublicKey(sk);
@@ -88,6 +96,17 @@ describe("HUD", () => {
     expect(formatAmount(5_250_000n)).toBe("5.25");
     expect(formatAmount(1n)).toBe("0.000001");
     expect(formatAmount(3_000_000n)).toBe("3.00");
+  });
+
+  test("referee refusals read as plain sentences, whatever the Debug shape", () => {
+    expect(describeRefusal("hint", "NoFix")).toBe(
+      "Hint refused. No location for you or your target yet. Try again in a minute.",
+    );
+    expect(describeRefusal("strike", "Lock { lock: 2 }")).toBe("Strike refused. Your lock isn't full.");
+    expect(describeRefusal("hint", "Cooldown { ready_ms: 5 }")).toBe(
+      "Hint refused. Too soon for another hint.",
+    );
+    expect(describeRefusal("", "Something new")).toBe("Refused. Something new");
   });
 
   test("referee rejection reasons read as plain sentences", () => {

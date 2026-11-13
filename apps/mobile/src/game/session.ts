@@ -26,7 +26,7 @@ import { type Assert, BatchBuilder, type ChainState, type OutboxItem } from "./b
 import { currentEpoch, EpochTimer, realTimers, type Timers } from "./epoch";
 import { FixCollector } from "./fixes";
 import { type Circle, inCircle } from "./geo";
-import { describeRejection, formatAmount, type HudView, hudView, openHud } from "./hud";
+import { describeRefusal, describeRejection, formatAmount, type HudView, hudView, openHud } from "./hud";
 import { Outbox, Uploader, type UploadState } from "./outbox";
 import { VehicleWatch } from "./rules";
 import { SightingAggregator } from "./sightings";
@@ -391,7 +391,7 @@ export class HuntSession {
         this.note("rejected", describeRejection(m.reason));
         return;
       case "refused":
-        this.note("refused", `${m.action || "Action"} refused: ${m.reason}`);
+        this.note("refused", describeRefusal(m.action, m.reason));
         return;
       case "over":
         this.update({ over: true });

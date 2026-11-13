@@ -99,6 +99,35 @@ export function formatAmount(units: bigint, decimals = 6): string {
 }
 
 /**
+ * Why the referee refused a strike or a hint (referee-core `Refuse`, Debug text such as
+ * `NoFix` or `Lock { lock: 2 }`), as a short line a player understands.
+ */
+export function describeRefusal(action: string, reason: string): string {
+  const what = action ? `${action.charAt(0).toUpperCase()}${action.slice(1)} refused.` : "Refused.";
+  const r = reason.toLowerCase();
+  const why = r.startsWith("nofix")
+    ? "No location for you or your target yet. Try again in a minute."
+    : r.startsWith("lock")
+      ? "Your lock isn't full."
+      : r.startsWith("nocontact")
+        ? "Your target wasn't in range just then."
+        : r.startsWith("cooldown")
+          ? "Too soon for another hint."
+          : r.startsWith("insufficienthead")
+            ? "Your head can't cover that hint."
+            : r.startsWith("texttoolong")
+              ? "Your question is too long."
+              : r.startsWith("playerout")
+                ? "You're out."
+                : r.startsWith("timeup") || r.startsWith("matchover")
+                  ? "The match is over."
+                  : r.startsWith("unknownhint")
+                    ? "That hint doesn't exist."
+                    : reason;
+  return `${what} ${why}`;
+}
+
+/**
  * The referee's reason for rejecting a batch (Rust Debug text, e.g. `FixFlags { flags: 1 }`)
  * as a short line a player understands.
  */
