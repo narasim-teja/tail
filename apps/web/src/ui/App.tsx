@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { TooltipProvider } from "../components/ui/tooltip.tsx";
 import { type PagePhase, pageState } from "../replay/copy.ts";
-import { type Loaded, loadBundle, type Source, sourceFromUrl } from "../replay/load.ts";
+import { type Loaded, loadBundle, type SignIn, type Source, sourceFromUrl } from "../replay/load.ts";
 import { BundleError, type DecodedBundle, decodeBundle } from "../verify/bundle.ts";
 import { nearReader } from "../verify/chain.ts";
 import { type Prepared, prepare } from "../verify/index.ts";
@@ -16,7 +16,8 @@ import { Loading, PageState, ProgressLine, Retry } from "./States.tsx";
 
 type Phase = { kind: "loading" } | { kind: "ready"; decoded: DecodedBundle; prepared: Prepared } | PagePhase;
 
-export function App() {
+/** `signIn`: a player's one-time sign-in for a private replay, taken from the address (main.tsx). */
+export function App({ signIn }: { signIn: SignIn | null }) {
   // `/dossier/<account>` is a player's dossier.
   const dossier = /^\/dossier\/([^/]+)\/?$/.exec(location.pathname)?.[1];
   if (dossier) return <DossierPage account={decodeURIComponent(dossier)} />;
@@ -28,11 +29,27 @@ export function App() {
         <PresencePage initial={presence} />
       </TooltipProvider>
     );
-  return <ReplayApp />;
+  return <ReplayApp signIn={signIn} />;
 }
 
-function ReplayApp() {
-  const [request, setRequest] = useState<{ source: Source; n: number }>(() => ({
+type LoadRequest = { source: Source; n: number };
+
+// One fetch per request, however often its effect runs. A sign-in's nonce works once, and
+// StrictMode (in development) runs every effect twice: aborting the first fetch on cleanup does
+// not stop the relay from spending the nonce, so the second would be refused. A stale answer is
+// dropped instead of the fetch being aborted.
+const loads = new WeakMap<LoadRequest, Promise<Loaded>>();
+function loadOnce(request: LoadRequest, signIn: SignIn | null): Promise<Loaded> {
+  let load = loads.get(request);
+  if (!load) {
+    load = loadBundle(request.source, signIn);
+    loads.set(request, load);
+  }
+  return load;
+}
+
+function ReplayApp({ signIn }: { signIn: SignIn | null }) {
+  const [request, setRequest] = useState<LoadRequest>(() => ({
     source: sourceFromUrl(location.search),
     n: 0,
   }));
@@ -40,11 +57,11 @@ function ReplayApp() {
 
   useEffect(() => {
     const { source } = request;
-    const ac = new AbortController();
+    let stale = false;
     setPhase({ kind: "loading" });
     void (async () => {
-      const r: Loaded = await loadBundle(source, ac.signal);
-      if (ac.signal.aborted) return;
+      const r = await loadOnce(request, signIn);
+      if (stale) return;
       if (r.kind === "ok") {
         try {
           const decoded = decodeBundle(r.json);
@@ -67,15 +84,17 @@ function ReplayApp() {
               .read(PINS.contract, source.matchId)
               .then((c) => (c.kind === "found" ? c.match : null))
           : null;
-      if (ac.signal.aborted) return;
+      if (stale) return;
       setPhase(
         r.kind === "private"
-          ? { kind: "private", players: chain?.players.length ?? null }
+          ? { kind: "private", players: chain?.players.length ?? null, refused: r.refused }
           : { kind: "not-finished", chain },
       );
     })();
-    return () => ac.abort();
-  }, [request]);
+    return () => {
+      stale = true;
+    };
+  }, [request, signIn]);
 
   const retry = useCallback(() => setRequest((r) => ({ ...r, n: r.n + 1 })), []);
 

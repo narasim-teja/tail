@@ -2,8 +2,13 @@ import { colors, markSvg } from "@tail/brand";
 import appleTouchIcon from "@tail/brand/assets/apple-touch-icon.png";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { takeSignIn } from "./replay/load.ts";
 import { App } from "./ui/App.tsx";
 import "./styles.css";
+
+// First, before any request or render: a private replay's sign-in leaves the address bar, so a
+// copied or shared address carries no signature.
+const signIn = takeSignIn(location, history);
 
 // Brand colours are the single source; CSS derives every other token from these in OKLCH.
 const root = document.documentElement.style;
@@ -29,7 +34,7 @@ void document.fonts.load('700 16px "Archivo Variable"').finally(() => {
   if (el)
     createRoot(el).render(
       <StrictMode>
-        <App />
+        <App signIn={signIn} />
       </StrictMode>,
     );
 });

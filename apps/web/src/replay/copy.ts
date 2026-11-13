@@ -130,7 +130,8 @@ export function refundLine(s: Settlement): string | null {
 
 /** A page with no film to play, as the relay and NEAR left it (ui/App.tsx). */
 export type PagePhase =
-  | { kind: "private"; players: number | null }
+  /** `refused`: the page offered the relay a player's sign-in and it said no. */
+  | { kind: "private"; players: number | null; refused: boolean }
   | { kind: "not-finished"; chain: ChainMatch | null }
   | { kind: "purged" }
   | { kind: "missing" }
@@ -140,11 +141,15 @@ export type PagePhase =
 export function pageState(p: PagePhase): { title: string; body: string; retry: boolean } {
   switch (p.kind) {
     case "private":
-      // The relay serves a private replay only to a player who signs its challenge with their
-      // NEAR key, and this page has no wallet: it can't show one to anybody, players included.
+      // The relay serves a private replay only to a player who signs its challenge with their NEAR
+      // key. This page holds no key: the TAIL app signs on the phone and opens the replay with a
+      // sign-in that works once, for two minutes. Without one (a plain link, a reload) or after
+      // the relay refused it, all the page can do is send the player back to the app.
       return {
         title: "This replay is private",
-        body: `The host kept it for the ${p.players ? `${p.players} ` : ""}players, and this page has no sign-in, so it can't show it here.`,
+        body: p.refused
+          ? "This sign-in link had expired or was already used. Each one works once, within two minutes. If you played, open the replay again from the TAIL app."
+          : `The host kept it for the ${p.players ? `${p.players} ` : ""}players. If you played, open it from the TAIL app, which signs you in for one viewing.`,
         retry: false,
       };
     case "not-finished":

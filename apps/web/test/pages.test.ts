@@ -39,12 +39,12 @@ describe("pages with no film", () => {
     });
   });
 
-  test("a private replay says this page can't show it, rather than asking a player to open it", async () => {
-    expect(await answer(403)).toEqual({ kind: "private" });
-    const p = pageState({ kind: "private", players: 4 });
+  test("a private replay with no sign-in sends a player to the TAIL app", async () => {
+    expect(await answer(403)).toEqual({ kind: "private", refused: false });
+    const p = pageState({ kind: "private", players: 4, refused: false });
     expect(p.title).toBe("This replay is private");
     expect(p.body).toBe(
-      "The host kept it for the 4 players, and this page has no sign-in, so it can't show it here.",
+      "The host kept it for the 4 players. If you played, open it from the TAIL app, which signs you in for one viewing.",
     );
     expect(p.retry).toBe(false);
   });
