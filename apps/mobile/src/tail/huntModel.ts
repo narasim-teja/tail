@@ -5,7 +5,7 @@ import { HINT_NAME, HintKind, LOCK_EPOCHS, type PlayerKeys, priceReason } from "
 import type { Blocked } from "../proximity/client";
 import type { RefereeKind } from "../relay/client";
 import type { LatLon } from "./geo";
-import { type Board, formatAmount, LOG_FORKED, priceNow } from "./hud";
+import { type Board, formatAmount, LOG_FORKED, priceNow, refusalBanner } from "./hud";
 import type { HuntSnapshot, Note } from "./hunt";
 import { clock, darkState, zoneState } from "./rules";
 import type { Zone } from "./zone";
@@ -14,10 +14,15 @@ export type Banner =
   | { kind: "dark"; title: string; detail: string }
   | { kind: "zone"; title: string; detail: string }
   /** The referee's log roots do not fit together; it stays up for the rest of the match. */
-  | { kind: "fork"; title: string; detail: string };
+  | { kind: "fork"; title: string; detail: string }
+  /** The referee refused one of your actions just now: why, for REFUSED_SHOW_MS. */
+  | { kind: "refused"; title: string; detail: string };
 
 /** How long "You were invisible N s" stays up after you are back. */
 export const INVISIBLE_SHOW_MS = 10_000;
+
+/** How long a refused strike or hint says why on the hunt screen. */
+export const REFUSED_SHOW_MS = 10_000;
 
 export interface HintOption {
   kind: HintKind;
@@ -190,6 +195,8 @@ export function huntModel(
             title: `Dark ${dark.seconds} s`,
             detail: `Your area was shown. Head forfeits in ${dark.forfeitIn} s`,
           };
+  } else if (s.refused && nowMs - s.refused.atMs < REFUSED_SHOW_MS) {
+    banner = { kind: "refused", ...refusalBanner(s.refused.action, s.refused.code) };
   } else if (s.invisible && nowMs - s.invisible.atMs < INVISIBLE_SHOW_MS) {
     banner = {
       kind: "dark",

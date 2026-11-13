@@ -131,6 +131,17 @@ export function describeRefusal(action: string, code: number | null): string {
   return `${what} ${refuseWhy(code)}`;
 }
 
+/**
+ * The refusal as the hunt screen's banner. A strike refused for no recent contact gets its own
+ * words: STRIKE can stay lit after contact is lost, so the player must learn to get close again.
+ */
+export function refusalBanner(action: string, code: number | null): { title: string; detail: string } {
+  if (action === "strike" && code === RefuseCode.NoContact)
+    return { title: "Out of range", detail: "Get close and strike again." };
+  const what = action ? `${action.charAt(0).toUpperCase()}${action.slice(1)} refused` : "Refused";
+  return { title: what, detail: refuseWhy(code) };
+}
+
 function refuseWhy(code: number | null): string {
   switch (code) {
     case RefuseCode.NoFix:

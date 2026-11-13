@@ -5,6 +5,7 @@ import {
   HintKind,
   LOCK_EPOCHS,
   type PlayerKeys,
+  RefuseCode,
   TargetStatus,
 } from "@tail/protocol";
 import { hudOf } from "../../test/referee";
@@ -16,6 +17,7 @@ import {
   huntModel,
   INVISIBLE_SHOW_MS,
   isTestPlayer,
+  REFUSED_SHOW_MS,
   resultOutcome,
   taggedLines,
 } from "./huntModel";
@@ -61,6 +63,7 @@ const snap = (o: Partial<HuntSnapshot> = {}): HuntSnapshot => ({
   tags: 0,
   dark: null,
   outSinceMs: null,
+  refused: null,
   frozenUntilMs: null,
   blocked: null,
   invisible: null,
@@ -164,6 +167,24 @@ describe("hunt model", () => {
     // Being dark right now matters more than having been invisible.
     const dark = snap({ invisible: { seconds: 42, atMs: NOW }, dark: darkRun(25_000) });
     expect(huntModel(dark, ctx, NOW).banner?.title).toBe("Dark 25 s");
+  });
+
+  test("a strike the referee refused says why on the hunt screen, for a few seconds", () => {
+    // STRIKE stays lit for a while after contact is lost (the HUD carries only the lock count),
+    // so this line is all that tells the player the strike did not land.
+    const far = snap({ refused: { atMs: NOW - 2_000, action: "strike", code: RefuseCode.NoContact } });
+    expect(huntModel(far, ctx, NOW).banner).toEqual({
+      kind: "refused",
+      title: "Out of range",
+      detail: "Get close and strike again.",
+    });
+    expect(huntModel(far, ctx, NOW - 2_000 + REFUSED_SHOW_MS).banner).toBeNull();
+    const early = snap({ refused: { atMs: NOW, action: "strike", code: RefuseCode.Lock } });
+    expect(huntModel(early, ctx, NOW).banner).toEqual({
+      kind: "refused",
+      title: "Strike refused",
+      detail: "Your lock isn't full.",
+    });
   });
 
   test("a log fork is the banner above every other warning, for the rest of the match", () => {

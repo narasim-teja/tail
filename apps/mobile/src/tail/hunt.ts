@@ -74,6 +74,8 @@ interface TailState {
   dark: DarkInfo | null;
   /** When you left the zone; null while inside (or with no zone to judge by). */
   outSinceMs: number | null;
+  /** The referee's last refusal of one of your actions (a strike out of range, a hint too soon). */
+  refused: { atMs: number; action: string; code: number | null } | null;
 }
 
 export interface HuntSnapshot extends ProximityStatus, TailState {
@@ -104,6 +106,7 @@ export class TailHunt {
       tags: d.record.tags,
       dark: null,
       outSinceMs: null,
+      refused: null,
     };
     this.proxRecord = d.record;
     this.handler = [...d.record.handler];
@@ -194,6 +197,7 @@ export class TailHunt {
         return;
       }
       case "refused":
+        this.update({ refused: { atMs: this.now(), action: m.action, code: m.reason } });
         this.note("refused", describeRefusal(m.action, m.reason));
         return;
       default:

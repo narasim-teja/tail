@@ -59,7 +59,11 @@ export function WarningBanner({ banner, reduceMotion }: { banner: Banner | null;
           accessibilityRole="alert"
           accessibilityLabel={`${b.title}. ${b.detail}`}
         >
-          <Icon name={b.kind === "zone" ? "zone" : "dark"} size={22} tint={color.paper} />
+          <Icon
+            name={b.kind === "zone" ? "zone" : b.kind === "refused" ? "strike" : "dark"}
+            size={22}
+            tint={color.paper}
+          />
           <View style={styles.grow}>
             <Text maxFontSizeMultiplier={maxScale.text} style={[text.bodyStrong, { color: color.paper }]}>
               {b.title}
