@@ -10,27 +10,33 @@ positions and holds no key that signs a verdict. Three things qualify that today
 
 - **The live contract pins a local test referee, not the enclave.** It is the same referee code,
   run on our machine, the one that also runs the relay. We pinned it when OutLayer testnet stopped
-  running calls on 2026-11-12. OutLayer runs the v2 build now, but it enrols only iPhones with an
-  Apple attestation, we have two, and a match needs three, so test players fill the third seat on
-  the local referee. While it is pinned, that machine holds the verdict key and could sign any
-  verdict, so trust in the referee is trust in us. The replay says so: a "Test referee" chip
-  beside the header line and on the finale, and test-referee wording on every signature.
-- **The code here is ahead of the OutLayer build.** The referee source in this repository has
-  changed since the v2 build was uploaded and builds a different wasm, which is not uploaded. The
-  relay in this repository asks the referee's `devices` command before every Start, and the
-  active OutLayer build has no such command, so this relay cannot start a match on OutLayer as it
-  stands.
+  running calls on 2026-11-12, and it is still pinned: on the evening of 2026-11-13 OutLayer took
+  requests, but every call returned HTTP 524 after about two minutes. While it is pinned, that
+  machine holds the verdict key and could sign any verdict, so trust in the referee is trust in
+  us. The replay says so: a "Test referee" chip beside the header line and on the finale, and
+  test-referee wording on every signature.
+- **The enclave build has never run a call, and the replay does not pin it.** The wasm built from
+  this source (`092ec57c…41f694`) has been OutLayer's active version since 2026-11-13. No match
+  has run on it. `apps/web/src/verify/pins.ts` lists only the two builds before it, so until its
+  hash is added there, the replay would say each of its verdicts ran a build that "isn't a
+  published referee build".
 - **One account runs the relay, the contract and the OutLayer project**
   (`tail-dev-a38d13.testnet`). With the enclave, that owner could publish a new referee version,
   which signs with the same key. Each verdict's OutLayer attestation record names the build that
   ran, so a swap is caught after the fact, not prevented.
 
-**Protocol v2 is live on testnet; no phone has run it yet.** On 2026-11-13 the contract
+**Protocol v2 is live on testnet and has run on two iPhones.** On 2026-11-13 the contract
 `tail.tail-dev-a38d13.testnet` was upgraded in place (`migrate` kept every balance, match and
-pinned key), OutLayer's active referee became the v2 build `3f9320a6…85690`, and a full 3-player
-match with test players ran through the relay on the upgraded contract and the local test
-referee: Start, a priced hint, a tag from simulated Bluetooth sightings, four checkpoints, End
-with the contract's own replay and payout, and `tail-verify` re-running it identically.
+pinned key), and a full 3-player match with test players ran through the relay on the upgraded
+contract and the local test referee: Start, a priced hint, a tag from simulated Bluetooth
+sightings, four checkpoints, End with the contract's own replay and payout, and `tail-verify`
+re-running it identically. That evening two iPhones (17 Pro Max, 14) and one test player played
+match `5f36dbbb…` indoors on the same contract and referee: both phones re-enrolled with a fresh
+App Attest attestation, one bought two demand-priced hints, a Tag from real mutual Bluetooth
+contact landed 84 s after Start, the test player forfeited after 180 s dark, and End paid the
+survivor 3 USDC after the contract's replay. `tail-verify`, with the keys pinned from `get_match`,
+re-ran its 90 log entries and 8 verdicts identically. Its Handler lines were templates: the local
+test referee has no network. Range, pocket-mode and outdoor tests have not run.
 
 Built for the NEAR hackathon, on NEAR testnet. What each proof shows and where it stops is in
 [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -58,7 +64,8 @@ Entered: Games, Privacy, Open, NFTs.
   one-line reason, and the contract recomputes the price from earlier hints' times and refuses
   any other amount. The Handler is not an agent with a wallet: it has no NEAR account, key or
   balance. It is this pricing rule plus a voice. A hint's money moves from the asker's head into
-  the match's hint pool, and from there to the hint's target.
+  the match's hint pool, and from there to the hint's target. In the iPhone match one player paid
+  0.02 USDC, then 0.0625 (a 5 % hint with one bought in the last 5 minutes) on a 1 USDC stake.
 - **Watch the economy move.** The replay's economy view shows the hint pool, the price, every
   player's head and each transfer, all rebuilt from the signed verdicts.
   `/?fixture=boston-common-economy&view=economy` is a 12-player, 60-minute match played through
@@ -99,6 +106,12 @@ Entered: Games, Privacy, Open, NFTs.
   nonce, and the panel shows the script's saved result for them. NEAR AI publishes no expected
   image measurements, so nothing pins _which_ code runs: this proves a genuine, up-to-date TDX
   machine holds the signing key, not that it runs NEAR AI's published stack.
+- **Private by default.** A match the app creates keeps its replay, with every player's trail, to
+  its players unless the host turns on Public replay. The relay serves a private replay only to a
+  player who signs its challenge. The phone signs it and opens the replay with that one-time pass
+  in the link's fragment, which the browser never sends to the web server; the page sends it to
+  the relay once and stores nothing. This passes its tests; the phone's signed link has not run on
+  a device yet.
 - **Retention.** A private match's sealed batches, trails, log, zone and Handler lines are purged
   24 h after End (`apps/server/src/retention.ts`, `apps/server/scripts/purge.ts`).
 
@@ -118,15 +131,18 @@ Entered: Games, Privacy, Open, NFTs.
 - **A soulbound Dossier per player.** NEP-171 with NEP-177 metadata and NEP-181 enumeration, on
   the tail contract. The token id is the player's sub-account, minted at registration. Its record
   is written when a match settles: totals over matches the contract replayed and paid out, and
-  the last 12 entries. Refunds are listed and count for nothing. The code here also logs NEP-171
+  the last 12 entries. Refunds are listed and count for nothing. The iPhone match updated its
+  three players' dossiers on the live contract. The code here also logs NEP-171
   `nft_metadata_update` at each settlement so indexers refresh the card; the live contract does
   not yet (not upgraded since).
 - **Art on-chain.** `media` is an SVG data URI the contract draws from the record on every read:
   a trail with one segment per kept entry. It is byte-identical to `packages/brand/src/dossier.ts`,
   pinned by golden vectors on both sides. The largest vector is 3,969 bytes, and both sides' tests
-  check the vectors stay within 4 KB; the builder itself enforces no size limit. The replay shows
-  the card at `/dossier/<account>`, reads the contract's `nft_token` and compares its SVG with
-  its own drawing byte for byte. The phone shows it on Profile.
+  check the vectors stay within 4 KB; the builder itself enforces no size limit. After the iPhone
+  match, each player's live `nft_token` SVG was byte-identical to `dossierSvg` of their
+  `get_dossier` (checked by a script). The replay shows the card at `/dossier/<account>`, reads
+  the contract's `nft_token` and compares its SVG with its own drawing byte for byte; that page
+  has not been run against the live contract in a browser yet. The phone shows it on Profile.
 - **Credential-gated lobbies.** `create_match` takes `requires: {min_matches, min_survived}`, and
   `join_match` refuses a dossier below it. The relay passes an optional `requires` from
   `POST /matches`, and `apps/server/scripts/gated-lobby.ts` shows a gated lobby with test players;
@@ -172,9 +188,10 @@ Entered: Games, Privacy, Open, NFTs.
   carries an App Attest assertion, checked against the same constant: the relay cannot name
   another app. An enrolled account keeps its device. Moving it to new keys takes a signature by
   the account's NEAR key (`rebind_sig`), so a relay holding an iPhone of its own cannot take over
-  someone's seat. The v2 build active on OutLayer has these checks. Batches with a simulated
-  location are refused. A test player without an attestation is recorded as one, and the replay
-  says so.
+  someone's seat. The build active on OutLayer has these checks, but has not run a call yet. On
+  2026-11-13 both iPhones re-enrolled this way, with a fresh attestation, after the local test
+  referee's device records were reset. Batches with a simulated location are refused. A test
+  player without an attestation is recorded as one, and the replay says so.
 - **Which code signed.** Each verdict names the OutLayer call that produced it. That call's
   public attestation record names the wasm build that ran, and the replay compares it with the
   published hash. The local test referee has no such record, and the replay says "test referee".
@@ -274,9 +291,10 @@ cd apps/web
 bun run dev
 ```
 
-Open http://localhost:5173. A generated match on Boston Common plays as a short film: players
-walk the park's real paths, the lock line tightens, and each tag flashes on the spot. Click a tag
-to see its proof. In your browser the page re-checks:
+Open http://localhost:5173 (the dev server listens on every interface, so a phone on the same
+network can open `http://<mac>.local:5173`). A generated match on Boston Common plays as a short
+film: players walk the park's real paths, the lock line tightens, and each tag flashes on the
+spot. Click a tag to see its proof. In your browser the page re-checks:
 
 - every verdict signature and the verdict chain;
 - every Merkle root, and consistency between successive roots;
@@ -324,9 +342,9 @@ leaves and the declassified log against End's root, and one inclusion and one co
 
 On 2026-11-13 it passed on the upgraded contract with `REFEREE_MODE=local` (28/28 checks, about
 0.54 testnet NEAR). Against OutLayer it needs `ALLOW_UNATTESTED=1` set on the enclave, because
-test players have no Apple attestation, and a referee build with the `devices` command, which
-the active one lacks (see the top). The three runs in `apps/server/README.md` (2026-11-12, about
-0.43 testnet NEAR and $0.05 of OutLayer each) were protocol v1, on OutLayer.
+test players have no Apple attestation (it was set on 2026-11-13), and an OutLayer that runs
+calls, which it did not that evening (see the top). The three runs in `apps/server/README.md`
+(2026-11-12, about 0.43 testnet NEAR and $0.05 of OutLayer each) were protocol v1, on OutLayer.
 
 Ghosts are a testing door. They have no Apple attestation, so the referee enrols them only with
 `ALLOW_UNATTESTED=1` and logs them as unattested. The relay makes them only on testnet with
@@ -349,18 +367,19 @@ Ghosts are a testing door. They have no Apple attestation, so the referee enrols
   `apps/server/scripts/pin-referee.ts` puts the enclave's keys back; phones then re-enrol with
   the new referee (below).
 - Referee: OutLayer project `tail-dev-a38d13.testnet/tail-referee` on testnet. Its active version
-  is the protocol v2 build `3f9320a6…85690` (2026-11-13; same enclave keys as the v1 build
-  `20446c64…08664` before it). It refuses devices without an Apple attestation, since
-  `ALLOW_UNATTESTED` is not set there. It predates the `devices` command and the repeatable
-  `end`, so the source here builds a different wasm (not uploaded), and the relay here cannot
-  start a match on it. Commands, manifest and measured latency are in
-  `crates/referee-wasi/README.md`.
+  (`get_project` on `outlayer.testnet`) is `092ec57c…41f694`, built from this source and deployed
+  on 2026-11-13, with `ALLOW_UNATTESTED` set. Before it came the v2 build `3f9320a6…85690`,
+  which returned the same enclave keys as the v1 build `20446c64…08664`. The new build has not
+  answered a call yet (HTTP 524), so whether it returns those keys is not checked. Commands,
+  manifest and measured latency are in `crates/referee-wasi/README.md`.
 
 ### 6. Play on iPhones
 
 You need two iPhones with Developer Mode on, an Apple developer team with the App Attest
-capability, and the relay running where the phones can reach it. Build and install steps are in
-`apps/mobile/README.md`.
+capability, and the relay running where the phones can reach it
+(`bun run --cwd apps/server start`; its settings are in `apps/server/README.md`). A match needs
+three players; on a testnet relay run with `ALLOW_GHOSTS=1` the host can add a test player for
+the third seat. Build and install steps are in `apps/mobile/README.md`.
 
 ## Where NEAR fits
 
@@ -369,7 +388,7 @@ capability, and the relay running where the phones can reach it. Build and insta
 | Rust contract with `env::ed25519_verify`   | Holds stakes; applies only referee-signed verdicts, in order; checks the VRF reveal; refunds if the referee goes silent. It also checks the verdict chain, consistency proofs, the demand price of each hint, the replay at End                     | `contracts/tail`                                               |
 | `env::sha256` in the contract              | Verifies RFC 9162 consistency proofs and, in the `verify_inclusion` view, Merkle audit paths                                                                                                                                                        | `contracts/tail`, `crates/tail-protocol`                       |
 | NEP-171 / 177 / 181 on the same contract   | One soulbound Dossier per player, its SVG drawn on-chain, gating who may join a match                                                                                                                                                               | `contracts/tail/src/dossier.rs`, `art.rs`                      |
-| OutLayer (Intel TDX) on `outlayer.testnet` | The referee: sealed match state, the verdict signing key, VRF, the Handler call. v2 build active since 2026-11-13, not pinned on the contract; the referee source here builds a newer wasm, not uploaded (see the top)                              | `crates/referee-wasi`, `crates/referee-core`                   |
+| OutLayer (Intel TDX) on `outlayer.testnet` | The referee: sealed match state, the verdict signing key, VRF, the Handler call. The build from this source is active since 2026-11-13 but has not run a call (HTTP 524), and is not pinned on the contract or in the replay (see the top)          | `crates/referee-wasi`, `crates/referee-core`                   |
 | NEAR AI Cloud                              | The Handler's lines from an open-weight model; the chat signature is logged and re-checked, and the signing key is shown held in a genuine Intel TDX machine (no image pinned). No v2 match has a model line: the local test referee uses templates | `crates/referee-wasi/src/voice.rs`, `scripts/verify-nearai.ts` |
 | Named sub-accounts with function-call keys | Each player's account holds only a key that can join, leave and withdraw; it is also the Dossier's token id                                                                                                                                         | `apps/server/src/near.ts`                                      |
 | NEP-141 token (`usdc.fakes.testnet`)       | Stakes, heads and payouts                                                                                                                                                                                                                           | `contracts/tail`                                               |
@@ -410,21 +429,21 @@ capability, and the relay running where the phones can reach it. Build and insta
 
 ## Status
 
-| Part                                        | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Wire formats (TS + Rust)                    | Protocol v2, including demand pricing and padded phone seals; golden vectors shared by both                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Rules engine and simulator                  | 28 scripted scenarios, random 12-player runs in the tests, and `referee-sim bench` (12 players, 60 minutes by default)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `tail-verify`                               | Re-runs a v2 bundle through the rules engine; passes on the demo and a relay-served match in the tests, and passed by hand on the economy fixture and the 2026-11-13 testnet match (186 log entries, 8 verdicts, all identical)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Referee on OutLayer testnet                 | v2 build `3f9320a6…85690` active since 2026-11-13; answers with the same enclave keys and refuses unattested devices. Not pinned on the contract (above). No v2 match has run on it, and the relay here cannot start one: it lacks the `devices` command. A 3-player match passed end to end on the v1 build on 2026-11-12                                                                                                                                                                                                                                                                                                                                                                                        |
-| Local test referee                          | Pinned on the live contract; judged the 2026-11-12 iPhone matches (v1) and the 2026-11-13 v2 match with test players                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| NEAR contract on testnet                    | Upgraded in place to this round's code on 2026-11-13 (`migrate`). On it a v2 match of test players ran: verdict chain, consistency-checked checkpoints, a demand-priced hint, End replayed by the contract and paid out, the players' dossiers updated. Its 8 verdict transactions burned 2.3 to 4.2 Tgas each in the contract (End the most). Matches from before the upgrade read `settled_as: "payout_unreplayed"`                                                                                                                                                                                                                                                                                             |
-| Contract reviews                            | The first version was security-reviewed and the findings fixed, each with a regression test (`contracts/tail/src/tests.rs`). No outside review of this round's changes yet                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Relay                                       | Protocol v2; per-address limits on challenges, HUD sockets and new enrolments; re-enrolment when the contract pins another referee; before each Start, asks the referee whether it holds every player's device; releases device keys, assertions and refused batches after End. Runs locally against the live contract (not deployed)                                                                                                                                                                                                                                                                                                                                                                             |
-| Web replay                                  | Protocol v2, and reads v1 bundles; strict ed25519 checks, economy view, NEAR AI attestation panel, presence page (reads the phone's proofs too), dossier page compared with the contract's NFT; runs locally                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| iPhone app                                  | Two iPhones (17 Pro Max, 14) ran enrolment with App Attest, lobbies and a Tag from Bluetooth contact indoors on 2026-11-12 (v1). The v2 paths (signed HUDs, chain recovery, receipts, the log monitor, the check of each Handler line against the logged receipt, re-enrolment, the Dossier card) pass their tests and have not run on a phone                                                                                                                                                                                                                                                                                                                                                                    |
-| Range, pocket and outdoor tests             | **Not run yet**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Mesh carry (Offline Protocol SDK)           | Phone to phone, with no relay node: an offline phone seals its signed request to the relay and a nearby phone posts it. **Off by default, experimental.** Carry works phone to phone on device and breaks the beacon: on 2026-11-13, two iPhones with it on delivered 16 reports to the relay through each other while one was in airplane mode, but each phone heard the other's beacon in only 1 of every 8 fifteen-second windows (every 120 s; 6 to 50 packets against 350 to 500 with it off), so the lock never passed 1 of 4. The SDK always advertises its own 128-bit service UUID on iOS and the two do not fit in the foreground advertisement. It stays off until the SDK can run without advertising |
-| Sponsor-funded public matches (Sputnik DAO) | The contract supports sponsors; no DAO flow                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Part                                        | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wire formats (TS + Rust)                    | Protocol v2, including demand pricing and padded phone seals; golden vectors shared by both                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Rules engine and simulator                  | 28 scripted scenarios, random 12-player runs in the tests, and `referee-sim bench` (12 players, 60 minutes by default)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `tail-verify`                               | Re-runs a v2 bundle through the rules engine; passes on the demo and a relay-served match in the tests, and passed by hand on the economy fixture, a 2026-11-13 testnet match of test players (186 log entries, 8 verdicts, all identical) and the 2026-11-13 iPhone match (90 log entries and 8 verdicts identical, 51 batches' App Attest assertions re-checked, keys pinned from `get_match`)                                                                                                                                                                                                                                                                                                                            |
+| Referee on OutLayer testnet                 | Active version `092ec57c…41f694`, built from this source and deployed 2026-11-13, with `ALLOW_UNATTESTED` set. It has never run a call: that evening every call, to it or to the v2 build `3f9320a6…85690` before it, returned HTTP 524 after about 125 s. Not pinned on the contract or in the replay (above). No v2 match has run in the enclave. A 3-player match passed end to end on the v1 build on 2026-11-12                                                                                                                                                                                                                                                                                                        |
+| Local test referee                          | Pinned on the live contract; judged the 2026-11-12 iPhone matches (v1), the 2026-11-13 iPhone matches (v2) and the v2 matches with test players                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| NEAR contract on testnet                    | Upgraded in place to this round's code on 2026-11-13 (`migrate`). On it v2 matches of test players and one of two iPhones with a test player ran: verdict chain, consistency-checked checkpoints, demand-priced hints, End replayed by the contract and paid out, the players' dossiers updated. A test-player match's 8 verdict transactions burned 2.3 to 4.2 Tgas each in the contract (End the most). It predates the `nft_metadata_update` event in the source here. Matches from before the upgrade read `settled_as: "payout_unreplayed"`                                                                                                                                                                            |
+| Contract reviews                            | The first version was security-reviewed and the findings fixed, each with a regression test (`contracts/tail/src/tests.rs`). No outside review of this round's changes yet                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Relay                                       | Protocol v2; per-address limits on challenges, HUD sockets and new enrolments; re-enrolment when the contract pins another referee; before each Start, asks the referee whether it holds every player's device, and waits for the lobby lock to show; the host can call off a lobby whose lock ran out; `GET /health` names the replay site; releases device keys, assertions and refused batches after End. Ran the 2026-11-13 iPhone matches, including 16 mesh-carried reports. Runs locally against the live contract (not deployed)                                                                                                                                                                                    |
+| Web replay                                  | Protocol v2, and reads v1 bundles; strict ed25519 checks, economy view, NEAR AI attestation panel, presence page (reads the phone's proofs too), dossier page compared with the contract's NFT, a private match opened with a player's one-time sign-in from the app; runs locally. Its checks passed on the iPhone match's bundle (8 of 8 verdicts, the tag's evidence fits the lock rule), run by a script, not in a browser. The private sign-in has run only in tests, and the dossier page has not been run against the live contract in a browser                                                                                                                                                                     |
+| iPhone app                                  | Two iPhones (17 Pro Max, 14), indoors, with the local test referee. 2026-11-12 (v1): enrolment with App Attest, lobbies and a Tag from Bluetooth contact. 2026-11-13 (v2): re-enrolment with a fresh attestation, signed HUDs, two demand-priced hints, a Tag from mutual contact (each phone heard the other's token 132 to 581 times per 15 s epoch), a test player's forfeit, the log monitor, every report found under End's root (36 lookups), Results and the dossier update. Not run on a phone yet: chain recovery (no report was refused), a NEAR AI Handler line, Leave match, the lobby's failed-Start states and Call it off, the new Settings screen and the signed private-replay link; they pass their tests |
+| Range, pocket and outdoor tests             | **Not run yet**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Mesh carry (Offline Protocol SDK)           | Phone to phone, with no relay node: an offline phone seals its signed request to the relay and a nearby phone posts it. **Off by default, experimental.** Carry works phone to phone on device and breaks the beacon: on 2026-11-13, two iPhones with it on delivered 16 reports to the relay through each other while one was in airplane mode, but each phone heard the other's beacon in only 1 of every 8 fifteen-second windows (every 120 s; 6 to 50 packets against 350 to 500 with it off), so the lock never passed 1 of 4. The SDK always advertises its own 128-bit service UUID on iOS and the two do not fit in the foreground advertisement. It stays off until the SDK can run without advertising           |
+| Sponsor-funded public matches (Sputnik DAO) | The contract supports sponsors; no DAO flow                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 Measured on testnet with the v1 code (2026-11-12): a game tick took 2.9 s at the median and 6.7 s
 at p95, of which about 1.5 s was inside the enclave. An `apply` of one verdict burned about
