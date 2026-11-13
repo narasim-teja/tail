@@ -437,6 +437,14 @@ export class RelayClient extends RelayTransport {
     await this.send(await this.sign(signer, "POST", `/matches/${matchId}/start`, "{}"), SLOW_CALL_MS);
   }
 
+  /**
+   * Host only: the relay aborts a lobby that can no longer start (its lock ran out, or its start
+   * time passed), so every stake goes back. 409 while it can still start.
+   */
+  async cancelMatch(signer: Signer, matchId: string): Promise<void> {
+    await this.send(await this.sign(signer, "POST", `/matches/${matchId}/cancel`, "{}"), SLOW_CALL_MS);
+  }
+
   // ── After the match ──────────────────────────────────────────────────────────────────────
 
   /**

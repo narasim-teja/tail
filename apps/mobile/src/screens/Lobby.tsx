@@ -1,13 +1,15 @@
 // Lobby: a big QR first (friends scan it in person), then the short code large enough to read
 // across a park and a Share link carrying it, players as initials with names, stake and
-// length, Start for the host (enabled at min players), Leave. The QR keeps the full match id:
+// length, Start for the host (enabled at min players), Leave. A lobby that can no longer start
+// offers only what the chain still allows (tail/lobby.ts): leave, or the host calls it off. The QR keeps the full match id:
 // it never expires, while the short code works only while the lobby is open.
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Animated, Share, StyleSheet, View } from "react-native";
 import Svg, { Path, Rect } from "react-native-svg";
 import { joinLink } from "../relay/client";
 import { TOP_UP, useApp } from "../state/app";
 import { handleOf, money } from "../tail/huntModel";
+import { type LobbyMay, type LobbyState, lobbyState } from "../tail/lobby";
 import { haptic } from "../ui/haptics";
 import {
   Avatar,
@@ -32,14 +34,6 @@ import { color, radius, space } from "../ui/theme";
 /** Open seats drawn before the rest fold into a count. */
 const SEATS_SHOWN = 3;
 
-export type LobbyState =
-  | { kind: "loading" }
-  | { kind: "waiting"; need: number }
-  | { kind: "ready" }
-  | { kind: "starting" }
-  | { kind: "failed"; error: string }
-  | { kind: "aborted" };
-
 export interface LobbyModel {
   matchId: string;
   /** "K7M-4QX"; null for a match the relay made before lobby codes. */
@@ -49,6 +43,8 @@ export interface LobbyModel {
   players: { id: string; host: boolean; me: boolean }[];
   minPlayers: number;
   state: LobbyState;
+  /** What this person can do now, as the chain would take it (tail/lobby.ts). */
+  may: LobbyMay;
   isHost: boolean;
   joined: boolean;
   balance: bigint | null;
@@ -64,6 +60,7 @@ export interface LobbyActions {
   onJoin: () => void;
   onLeave: () => void;
   onStart: () => void;
+  onCallOff: () => void;
   onTopUp: () => void;
   onAddTestPlayer: () => void;
   onRefresh?: () => Promise<unknown>;
@@ -93,7 +90,14 @@ function Qr({ value, size }: { value: string; size: number }) {
   );
 }
 
-function stateLine(s: LobbyState): { title: string; detail?: string } | null {
+function stateLine(
+  m: Pick<LobbyModel, "state" | "isHost" | "joined">,
+  nowMs: number,
+): {
+  title: string;
+  detail?: string;
+} | null {
+  const s = m.state;
   switch (s.kind) {
     case "loading":
       return { title: "Loading the lobby" };
@@ -103,8 +107,27 @@ function stateLine(s: LobbyState): { title: string; detail?: string } | null {
       return { title: "Ready to start" };
     case "starting":
       return { title: "Starting", detail: "The referee is dealing targets." };
-    case "failed":
-      return { title: "Start failed", detail: s.error };
+    case "retry":
+      return {
+        title: "Start didn't go through",
+        detail: m.isHost ? s.reason : `${s.reason} The host can try again.`,
+      };
+    case "dead": {
+      if (s.freeAtMs === null)
+        return { title: "This lobby can't start", detail: `${s.reason} Leave to get your stake back.` };
+      const min = Math.max(1, Math.ceil((s.freeAtMs - nowMs) / 60_000));
+      const then = m.isHost ? "call it off and every stake goes back" : "leave and get your stake back";
+      return { title: "This lobby can't start", detail: `${s.reason} In ${min} min you can ${then}.` };
+    }
+    case "lapsed": {
+      const title = s.why === "lock" ? "The start ran out of time" : "The start time passed";
+      const detail = m.isHost
+        ? "Nobody can join or start it now. Call it off and every stake goes back."
+        : m.joined
+          ? "Nobody can join or start it now. Leave to get your stake back, or the host can call it off."
+          : "Nobody can join or start it now.";
+      return { title, detail };
+    }
     case "aborted":
       return { title: "Match called off", detail: "Every stake went back to its player's balance." };
   }
@@ -150,7 +173,16 @@ function OpenSeat({ reduceMotion }: { reduceMotion: boolean }) {
   );
 }
 
-export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions }) {
+export function LobbyView({
+  m,
+  actions,
+  nowMs = Date.now(),
+}: {
+  m: LobbyModel;
+  actions: LobbyActions;
+  /** The clock a held lobby counts down by. */
+  nowMs?: number;
+}) {
   const reduceMotion = useReduceMotion();
   // Someone sat down: a tick in the hand of everyone waiting.
   const count = useRef(m.players.length);
@@ -160,12 +192,14 @@ export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions
   }, [m.players.length]);
   const need = m.state.kind === "waiting" ? m.state.need : 0;
   const link = joinLink(m.matchId);
-  const open = m.state.kind === "waiting" || m.state.kind === "ready" || m.state.kind === "failed";
-  const line = stateLine(m.state);
+  const startable = m.state.kind === "waiting" || m.state.kind === "ready" || m.state.kind === "retry";
+  // A lobby that can't start: getting the stakes back is the one thing left, so it leads.
+  const over = m.state.kind === "dead" || m.state.kind === "lapsed";
+  const line = stateLine(m, nowMs);
   const short = m.stake !== null && m.balance !== null && !m.joined && m.balance < m.stake;
   const footer = (
     <>
-      {open && !m.joined ? (
+      {m.may.join ? (
         short ? (
           <Button
             symbol="plus.circle"
@@ -182,19 +216,28 @@ export function LobbyView({ m, actions }: { m: LobbyModel; actions: LobbyActions
           />
         )
       ) : null}
-      {open && m.joined && m.isHost ? (
+      {startable && m.joined && m.isHost ? (
         <Button
-          title={m.busy ?? (m.state.kind === "failed" ? "Try start again" : "Start")}
+          title={m.busy ?? (m.state.kind === "retry" ? "Try again" : "Start")}
           busy={!!m.busy}
-          disabled={m.state.kind === "waiting"}
+          disabled={!m.may.start}
           hint={m.state.kind === "waiting" ? "Needs more players" : undefined}
           onPress={actions.onStart}
         />
       ) : null}
-      {open && m.joined ? (
+      {m.may.callOff ? (
         <Button
-          kind="quiet"
-          title="Leave"
+          title={m.busy ?? "Call it off"}
+          busy={!!m.busy}
+          onPress={actions.onCallOff}
+          hint="Every stake goes back to its player's balance"
+        />
+      ) : null}
+      {m.may.leave ? (
+        <Button
+          kind={over && !m.may.callOff ? "primary" : "quiet"}
+          title={over && !m.may.callOff && m.busy ? m.busy : "Leave"}
+          busy={over && !m.may.callOff && !!m.busy}
           disabled={!!m.busy}
           onPress={actions.onLeave}
           hint="Your stake goes back to your balance"
@@ -285,6 +328,12 @@ export function Lobby() {
   useEffect(() => {
     void app.checkRelay();
   }, [app]);
+  // A held lobby frees itself on the chain's clock, not on a relay answer: count it down here.
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(t);
+  }, []);
   const m = app.match;
   const chain = m?.chain;
   const me = app.me;
@@ -293,21 +342,32 @@ export function Lobby() {
     host: p.accountId === m?.host,
     me: p.accountId === me,
   }));
-  const state: LobbyState = !m
-    ? { kind: "loading" }
-    : chain?.phase === "aborted"
-      ? { kind: "aborted" }
-      : m.phase === "starting" || (chain?.lockedUntilMs ?? null) !== null
-        ? { kind: "starting" }
-        : m.phase === "failed"
-          ? { kind: "failed", error: app.startError ?? "The referee did not answer." }
-          : chain && players.length < chain.minPlayers
-            ? { kind: "waiting", need: chain.minPlayers - players.length }
-            : chain
-              ? { kind: "ready" }
-              : { kind: "loading" };
+  const isHost = !!m && m.host === me;
+  const joined = players.some((p) => p.me);
+  const { state, may } = lobbyState({
+    match: m
+      ? {
+          phase: m.phase,
+          chain: chain
+            ? {
+                phase: chain.phase,
+                lockedUntilMs: chain.lockedUntilMs,
+                startByMs: chain.startByMs,
+                minPlayers: chain.minPlayers,
+                players: players.length,
+              }
+            : null,
+        }
+      : null,
+    isHost,
+    joined,
+    startPending: app.startPending,
+    startError: app.startError,
+    nowMs: now,
+  });
   return (
     <LobbyView
+      nowMs={now}
       m={{
         matchId: app.matchId ?? "",
         code: m?.code ?? null,
@@ -316,8 +376,9 @@ export function Lobby() {
         players,
         minPlayers: chain?.minPlayers ?? 3,
         state,
-        isHost: m?.host === me,
-        joined: players.some((p) => p.me),
+        may,
+        isHost,
+        joined,
         balance: app.balance,
         testPlayers: app.testPlayers,
         busy: app.busy,
@@ -328,6 +389,7 @@ export function Lobby() {
         onJoin: () => void app.join(),
         onLeave: () => void app.leave(),
         onStart: () => void app.start(),
+        onCallOff: () => void app.callOff(),
         onTopUp: () => void app.topUp(TOP_UP),
         onAddTestPlayer: () => void app.addTestPlayer(),
         onRefresh: () => app.refreshLobby(),

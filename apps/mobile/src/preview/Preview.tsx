@@ -98,6 +98,7 @@ const lobby = (o: Partial<LobbyModel> = {}): LobbyModel => ({
   ],
   minPlayers: 3,
   state: { kind: "waiting", need: 1 },
+  may: { join: false, leave: true, start: false, callOff: false },
   isHost: true,
   joined: true,
   balance: 20_000_000n,
@@ -106,10 +107,12 @@ const lobby = (o: Partial<LobbyModel> = {}): LobbyModel => ({
   error: null,
   ...o,
 });
+const NO_MOVES = { join: false, leave: false, start: false, callOff: false };
 const lobbyActions = {
   onJoin: noop,
   onLeave: noop,
   onStart: noop,
+  onCallOff: noop,
   onTopUp: noop,
   onAddTestPlayer: noop,
   onBack: noop,
@@ -280,7 +283,14 @@ export const STATES: Record<string, () => ReactNode> = {
   "scan-ask": () => <ScanView permission="ask" onAllow={noop} onScanned={noop} onBack={noop} />,
   "lobby-waiting": () => <LobbyView m={lobby()} actions={lobbyActions} />,
   "lobby-ready": () => (
-    <LobbyView m={lobby({ players: three, state: { kind: "ready" } })} actions={lobbyActions} />
+    <LobbyView
+      m={lobby({
+        players: three,
+        state: { kind: "ready" },
+        may: { join: false, leave: true, start: true, callOff: false },
+      })}
+      actions={lobbyActions}
+    />
   ),
   "lobby-join": () => (
     <LobbyView
@@ -289,24 +299,64 @@ export const STATES: Record<string, () => ReactNode> = {
         isHost: false,
         joined: false,
         state: { kind: "ready" },
+        may: { join: true, leave: false, start: false, callOff: false },
       })}
       actions={lobbyActions}
     />
   ),
   "lobby-starting": () => (
-    <LobbyView m={lobby({ players: three, state: { kind: "starting" } })} actions={lobbyActions} />
+    <LobbyView
+      m={lobby({ players: three, state: { kind: "starting" }, may: { ...NO_MOVES } })}
+      actions={lobbyActions}
+    />
   ),
-  "lobby-failed": () => (
+  "lobby-retry": () => (
     <LobbyView
       m={lobby({
         players: three,
-        state: { kind: "failed", error: "The referee did not answer; try again." },
+        state: { kind: "retry", reason: "The referee didn't answer." },
+        may: { join: false, leave: false, start: true, callOff: false },
+      })}
+      actions={lobbyActions}
+    />
+  ),
+  "lobby-dead": () => (
+    <LobbyView
+      nowMs={NOW}
+      m={lobby({
+        players: three,
+        state: { kind: "dead", reason: "The referee turned the start down.", freeAtMs: NOW + 7 * 60_000 },
+        may: { ...NO_MOVES },
+      })}
+      actions={lobbyActions}
+    />
+  ),
+  "lobby-lapsed": () => (
+    <LobbyView
+      m={lobby({
+        players: three,
+        state: { kind: "lapsed", why: "lock" },
+        may: { join: false, leave: true, start: false, callOff: true },
+      })}
+      actions={lobbyActions}
+    />
+  ),
+  "lobby-lapsed-player": () => (
+    <LobbyView
+      m={lobby({
+        players: three.map((p) => ({ ...p, me: p.id.startsWith("maya") })),
+        isHost: false,
+        state: { kind: "lapsed", why: "lock" },
+        may: { join: false, leave: true, start: false, callOff: false },
       })}
       actions={lobbyActions}
     />
   ),
   "lobby-aborted": () => (
-    <LobbyView m={lobby({ players: three, state: { kind: "aborted" } })} actions={lobbyActions} />
+    <LobbyView
+      m={lobby({ players: three, state: { kind: "aborted" }, may: { ...NO_MOVES } })}
+      actions={lobbyActions}
+    />
   ),
   briefing: () => (
     <BriefingView

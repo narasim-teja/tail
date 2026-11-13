@@ -178,6 +178,10 @@ class AppModel {
   ready = false;
   /** The re-enrolment in flight, so a status check and a refused Start never run two at once. */
   private refreshing: Promise<void> | null = null;
+  /** This phone's own Start call is in flight; the lobby shows it as starting. */
+  startPending = false;
+  /** Why this phone's own last Start call failed, kept from the lobby's general error line. */
+  private startFailure: string | null = null;
   /** The last enrolment check made for a failed Start the lobby showed (identity/enrol.ts). */
   private startCheck: { error: string; atMs: number } | null = null;
 
@@ -303,9 +307,13 @@ class AppModel {
     return checkedZone(this.matchZone?.zone ?? null, this.match?.chain?.zoneHash ?? null);
   }
 
-  /** Why the open match's last Start failed, as the relay told the host and players. */
+  /**
+   * Why the open match's last Start failed: this phone's own Start call, which says it first (the
+   * relay may not have heard it at all), else what the relay kept for the host and players. Raw;
+   * the lobby words it (tail/lobby.ts startProblem).
+   */
   get startError(): string | null {
-    return this.matchZone?.error ?? null;
+    return this.startFailure ?? this.matchZone?.error ?? null;
   }
 
   /** Home: reads this account's balance in the contract's first allowed token. */
@@ -559,16 +567,38 @@ class AppModel {
     return this.act("Starting", async () => {
       const matchId = this.needMatch();
       const accountId = this.need().accountId as string;
-      await withRefresh(
-        accountId,
-        () => this.relay.startMatch(nearSigner(this.need()), matchId),
-        async () => {
-          await this.reenrol();
-          this.busy = "Starting";
-          this.emit();
-        },
-      );
+      this.startFailure = null;
+      this.startPending = true;
+      try {
+        await withRefresh(
+          accountId,
+          () => this.relay.startMatch(nearSigner(this.need()), matchId),
+          async () => {
+            await this.reenrol();
+            this.busy = "Starting";
+            this.emit();
+          },
+        );
+      } catch (e) {
+        // The lobby says why in plain words, with Try again; the relay's own text stays off screen.
+        if (this.matchId === matchId) this.startFailure = message(e);
+      } finally {
+        this.startPending = false;
+      }
       await this.refresh();
+    });
+  }
+
+  /**
+   * Host only: a lobby that can no longer start (its lock ran out, or its start time passed) is
+   * aborted on chain by the relay, since this phone's key cannot call `abort`; every stake goes
+   * back to its player's balance.
+   */
+  callOff() {
+    return this.act("Calling it off", async () => {
+      await this.relay.cancelMatch(nearSigner(this.need()), this.needMatch());
+      await this.refresh();
+      void this.refreshWallet();
     });
   }
 
@@ -669,6 +699,7 @@ class AppModel {
     this.resultsNow = false;
     this.huntShown = false;
     this.startCheck = null;
+    this.startFailure = null;
     this.recent = [{ matchId: id, atMs: Date.now() }, ...this.recent.filter((r) => r.matchId !== id)].slice(
       0,
       5,
@@ -759,8 +790,10 @@ class AppModel {
         });
         this.balance = BigInt(bal);
       }
-      // Nothing changes in the lobby once the hunt runs; the HUD socket takes over.
-      if (this.session || m.phase === "ended" || m.phase === "failed") this.stopPolling();
+      // Nothing changes in the lobby once the hunt runs; the HUD socket takes over. A failed
+      // Start still leaves the stakes in the lobby until it is called off or everyone leaves.
+      if (this.session || m.phase === "ended" || (m.phase === "failed" && m.chain?.phase !== "lobby"))
+        this.stopPolling();
     } catch (e) {
       this.error = message(e);
     }
