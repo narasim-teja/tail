@@ -76,6 +76,30 @@
     0 1px 10px oklch(from var(--dusk) calc(l - 0.08) c h / 0.9);
 }
 
+/* The cold open (ui/Intro.tsx): up, hold, then away to the corner title. Opacity and transform
+ * only. Reduced motion never mounts it. */
+@keyframes tail-intro {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  16% {
+    opacity: 1;
+    transform: none;
+  }
+  70% {
+    opacity: 1;
+    transform: none;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+.tail-intro {
+  animation: tail-intro 3.4s var(--ease-out-quart) both;
+}
+
 html {
   font-size: 16px;
   -webkit-text-size-adjust: 100%;

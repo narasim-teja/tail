@@ -18,8 +18,10 @@ import { nearReader } from "../verify/chain.ts";
 import type { BatchCheck } from "../verify/checks.ts";
 import { Caption } from "./Caption.tsx";
 import { type Replay, ReplayProvider, useMedia } from "./context.tsx";
+import { Finale } from "./Finale.tsx";
 import { Header } from "./Header.tsx";
 import { Inspector } from "./Inspector.tsx";
+import { Intro } from "./Intro.tsx";
 import { TrailMark } from "./icons.tsx";
 import { Roster } from "./Roster.tsx";
 import { ProgressLine } from "./States.tsx";
@@ -32,6 +34,7 @@ export function Stage(props: { decoded: DecodedBundle; match: Match; batches: Ba
   const reduced = useMedia("(prefers-reduced-motion: reduce)");
   const compact = !useMedia("(min-width: 768px)");
   // `?t=<seconds>` opens the film at a moment (for linking a scene while reviewing).
+  const startsMidway = useMemo(() => new URLSearchParams(location.search).has("t"), []);
   const play = useMemo(() => {
     const t = Number(new URLSearchParams(location.search).get("t")) * 1000;
     return createPlayStore(Number.isFinite(t) ? Math.max(0, Math.min(match.durationMs - 1, t)) : 0);
@@ -48,6 +51,7 @@ export function Stage(props: { decoded: DecodedBundle; match: Match; batches: Ba
   const progress = useStore(verify, (s) => s.progress);
   const selection = useStore(play, (s) => s.selection);
   const camera = useStore(play, (s) => s.camera);
+  const ended = useStore(play, (s) => s.ended);
 
   useEffect(
     () => runVerification(decoded, verify, nearReader(match.network)),
@@ -150,6 +154,15 @@ export function Stage(props: { decoded: DecodedBundle; match: Match; batches: Ba
           }}
         />
 
+        {/* At the end the map dims, like house lights before the credits, so the standings read. */}
+        <div
+          aria-hidden="true"
+          className={cn(
+            "pointer-events-none absolute inset-0 z-chrome bg-scrim/65 transition-opacity duration-700 ease-out-quart",
+            ended ? "opacity-100" : "opacity-0",
+          )}
+        />
+
         <div
           className={cn(
             "pointer-events-none absolute inset-0 z-chrome flex flex-col",
@@ -161,7 +174,8 @@ export function Stage(props: { decoded: DecodedBundle; match: Match; batches: Ba
             // sheet carries the details, so the rest of the chrome steps aside.
             <div className={cn("flex flex-col gap-3", selection && "invisible")}>
               <Header place={place} compact />
-              <Roster compact />
+              {/* At the end the standings carry everyone; the strip would only repeat them. */}
+              {!ended && <Roster compact />}
             </div>
           ) : (
             <div
@@ -185,7 +199,7 @@ export function Stage(props: { decoded: DecodedBundle; match: Match; batches: Ba
               compact && selection && "invisible",
             )}
           >
-            <Caption compact={compact} />
+            {ended ? <Finale compact={compact} /> : <Caption compact={compact} />}
             {camera === "free" && (
               <Button
                 variant="quiet"
@@ -203,6 +217,8 @@ export function Stage(props: { decoded: DecodedBundle; match: Match; batches: Ba
             <Timeline compact={compact} />
           </div>
         </div>
+
+        {place && !startsMidway && !reduced && <Intro place={place} />}
 
         <Inspector compact={compact} />
       </main>
