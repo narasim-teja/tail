@@ -2,7 +2,7 @@ import * as Linking from "expo-linking";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { type ComponentType, useEffect, useState } from "react";
-import { Settings as Defaults, View } from "react-native";
+import { Animated, Settings as Defaults, StyleSheet, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { Briefing } from "./screens/Briefing";
 import { Create } from "./screens/Create";
@@ -15,6 +15,9 @@ import { Results } from "./screens/Results";
 import { Scan } from "./screens/Scan";
 import { Settings } from "./screens/Settings";
 import { app, useApp } from "./state/app";
+import { Mark } from "./ui/brand";
+import { rise, useArrive, useReduceMotion } from "./ui/motion";
+import { Ripple } from "./ui/scene";
 import { color } from "./ui/theme";
 
 // The splash (the Trail mark on paper) stays up until the app knows which screen to show.
@@ -29,12 +32,43 @@ const DesignPreview: ComponentType<PreviewProps> | null = PREVIEW_BUILD
   ? require("./preview/Preview").Preview
   : null;
 
+/** Each screen arrives with a short fade and rise (state, not choreography); instant with
+ * Reduce Motion. */
 function Route() {
   const a = useApp();
-  if (a.showSettings) return <Settings />;
-  switch (a.route) {
+  const reduceMotion = useReduceMotion();
+  const key = a.showSettings ? "settings" : a.route;
+  const t = useArrive(key, reduceMotion);
+  return (
+    <View style={styles.fill}>
+      <Animated.View style={[styles.fill, rise(t, 10)]}>
+        <Screen route={a.route} settings={a.showSettings} reduceMotion={reduceMotion} />
+      </Animated.View>
+    </View>
+  );
+}
+
+function Screen({
+  route,
+  settings,
+  reduceMotion,
+}: {
+  route: ReturnType<typeof useApp>["route"];
+  settings: boolean;
+  reduceMotion: boolean;
+}) {
+  if (settings) return <Settings />;
+  switch (route) {
     case "loading":
-      return <View style={{ flex: 1, backgroundColor: color.paper }} />;
+      // The splash's mark at the splash's size (120 pt), so the hand-off does not jump; the
+      // rings say the app is still opening your keys.
+      return (
+        <View style={[styles.fill, styles.loading]} accessible accessibilityLabel="Loading">
+          <Ripple size={280} reduceMotion={reduceMotion}>
+            <Mark size={120} />
+          </Ripple>
+        </View>
+      );
     case "enrol":
       return <Enrol />;
     case "primer":
@@ -67,6 +101,11 @@ function previewFrom(url: string | null): { name: string | null; frame: Frame | 
   const m = url ? /^tail:\/\/preview\/?([a-z0-9-]*)(?:\?frame=(pro|small))?/.exec(url) : null;
   return m ? { name: m[1] || null, frame: frameOf(m[2]) } : null;
 }
+
+const styles = StyleSheet.create({
+  fill: { flex: 1, backgroundColor: color.paper },
+  loading: { alignItems: "center", justifyContent: "center" },
+});
 
 export default function App() {
   const url = Linking.useLinkingURL();

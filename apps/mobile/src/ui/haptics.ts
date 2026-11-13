@@ -6,6 +6,14 @@ import * as Haptics from "expo-haptics";
 const later = (ms: number, fn: () => void) => setTimeout(fn, ms);
 
 export const haptic = {
+  /** A choice changed (chips, steppers), or a player arrived in the lobby. */
+  select(): void {
+    void Haptics.selectionAsync();
+  },
+  /** A countdown's last seconds and the moment the target is revealed. */
+  tick(): void {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  },
   /** One heat beat; heavier as heat rises. Cadence: ui/cadence.ts. */
   heatTick(heat: number): void {
     const style =

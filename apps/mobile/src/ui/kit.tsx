@@ -3,9 +3,10 @@
 // context so text always picks the colour that passes contrast on it.
 
 import type { IconName } from "@tail/brand";
-import { createContext, type ReactNode, useContext } from "react";
+import { createContext, type ReactNode, useContext, useRef } from "react";
 import {
   ActivityIndicator,
+  Animated,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,7 +20,27 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon } from "./brand";
-import { color, HIT, maxScale, radius, STRIKE_HEIGHT, space, text } from "./theme";
+import { haptic } from "./haptics";
+import { ease } from "./motion";
+import { color, HIT, maxScale, motion, radius, STRIKE_HEIGHT, space, text } from "./theme";
+
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
+/**
+ * A press that gives under the thumb: scale down fast on touch, settle back on release. Scale
+ * is a transform on the native driver, so it is not layout motion and stays with Reduce Motion
+ * (it is feedback, not movement across the screen).
+ */
+export function usePress(depth = 0.965) {
+  const v = useRef(new Animated.Value(0)).current;
+  const to = (x: number, ms: number) =>
+    Animated.timing(v, { toValue: x, duration: ms, easing: ease.out, useNativeDriver: true }).start();
+  return {
+    scale: v.interpolate({ inputRange: [0, 1], outputRange: [1, depth] }),
+    onPressIn: () => to(1, 90),
+    onPressOut: () => to(0, motion.base),
+  };
+}
 
 export type Tone = "paper" | "ink" | "persimmon";
 
@@ -171,21 +192,23 @@ export function Button({
           ? color.paper
           : inkOn(tone);
   const off = disabled || busy;
+  const press = usePress(kind === "strike" ? 0.94 : 0.965);
   return (
-    <Pressable
+    <AnimatedPressable
       onPress={onPress}
+      onPressIn={press.onPressIn}
+      onPressOut={press.onPressOut}
       disabled={off}
       accessibilityRole="button"
       accessibilityLabel={title}
       {...(hint ? { accessibilityHint: hint } : {})}
       accessibilityState={{ disabled: !!disabled, busy: !!busy }}
-      style={({ pressed }) => [
+      style={[
         s.button,
         kind === "strike" && s.strike,
         kind === "quiet" && s.quiet,
-        { backgroundColor: bg },
+        { backgroundColor: bg, transform: [{ scale: press.scale }] },
         disabled && s.disabled,
-        pressed && s.pressed,
         style,
       ]}
     >
@@ -200,7 +223,134 @@ export function Button({
       >
         {title}
       </Text>
-    </Pressable>
+    </AnimatedPressable>
+  );
+}
+
+/**
+ * One choice from a few: pills in a row, the chosen one in ink. Used where typing a number
+ * would be a chore (stake, length, zone). A selection tick on change, like an iOS picker.
+ */
+export function Choice<T extends string | number>({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: readonly { value: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  const tone = useTone();
+  return (
+    <View style={s.field} accessibilityRole="radiogroup" accessibilityLabel={label}>
+      <Text maxFontSizeMultiplier={maxScale.text} style={[text.label, { color: inkOn(tone) }]}>
+        {label}
+      </Text>
+      <View style={s.chips}>
+        {options.map((o) => (
+          <Chip
+            key={String(o.value)}
+            label={o.label}
+            on={o.value === value}
+            onPress={() => {
+              if (o.value !== value) haptic.select();
+              onChange(o.value);
+            }}
+          />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function Chip({ label, on, onPress }: { label: string; on: boolean; onPress: () => void }) {
+  const press = usePress(0.94);
+  return (
+    <AnimatedPressable
+      onPress={onPress}
+      onPressIn={press.onPressIn}
+      onPressOut={press.onPressOut}
+      accessibilityRole="radio"
+      accessibilityLabel={label}
+      accessibilityState={{ selected: on }}
+      style={[s.chip, on ? s.chipOn : null, { transform: [{ scale: press.scale }] }]}
+    >
+      <Text
+        maxFontSizeMultiplier={maxScale.text}
+        style={[text.figure, { fontSize: 17, color: on ? color.paper : color.ink }]}
+      >
+        {label}
+      </Text>
+    </AnimatedPressable>
+  );
+}
+
+/** A count with − and + either side (players to start). */
+export function Stepper({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+  unit,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (v: number) => void;
+  unit?: (n: number) => string;
+}) {
+  const tone = useTone();
+  const step = (d: number) => {
+    const n = Math.min(max, Math.max(min, value + d));
+    if (n !== value) {
+      haptic.select();
+      onChange(n);
+    }
+  };
+  return (
+    <View
+      style={s.stepper}
+      accessible
+      accessibilityRole="adjustable"
+      accessibilityLabel={label}
+      accessibilityValue={{ min, max, now: value, text: unit ? unit(value) : String(value) }}
+      accessibilityActions={[{ name: "increment" }, { name: "decrement" }]}
+      onAccessibilityAction={(e) => step(e.nativeEvent.actionName === "increment" ? 1 : -1)}
+    >
+      <View style={s.fillRow}>
+        <Text maxFontSizeMultiplier={maxScale.text} style={[text.label, { color: inkOn(tone) }]}>
+          {label}
+        </Text>
+        <Text maxFontSizeMultiplier={maxScale.number} style={[text.number, { color: inkOn(tone) }]}>
+          {unit ? unit(value) : value}
+        </Text>
+      </View>
+      <StepButton sign="-" off={value <= min} onPress={() => step(-1)} />
+      <StepButton sign="+" off={value >= max} onPress={() => step(1)} />
+    </View>
+  );
+}
+
+function StepButton({ sign, off, onPress }: { sign: "-" | "+"; off: boolean; onPress: () => void }) {
+  const press = usePress(0.9);
+  return (
+    <AnimatedPressable
+      onPress={onPress}
+      onPressIn={press.onPressIn}
+      onPressOut={press.onPressOut}
+      disabled={off}
+      importantForAccessibility="no"
+      accessibilityElementsHidden
+      style={[s.stepButton, off && s.disabled, { transform: [{ scale: press.scale }] }]}
+    >
+      <Text allowFontScaling={false} style={s.stepSign}>
+        {sign === "-" ? "\u2212" : "+"}
+      </Text>
+    </AnimatedPressable>
   );
 }
 
@@ -349,7 +499,6 @@ const s = StyleSheet.create({
   quiet: { minHeight: HIT, paddingHorizontal: space.m },
   strike: { minHeight: STRIKE_HEIGHT, borderRadius: radius.l, gap: space.m },
   disabled: { opacity: 0.38 },
-  pressed: { opacity: 0.8, transform: [{ scale: 0.985 }] },
   buttonText: { ...text.label, fontSize: 17 },
   strikeText: {
     fontFamily: text.hero.fontFamily,
@@ -374,4 +523,26 @@ const s = StyleSheet.create({
   notice: { flexDirection: "row", gap: space.m, alignItems: "flex-start", paddingVertical: space.s },
   row: { flexDirection: "row", alignItems: "center", flexWrap: "wrap" },
   rule: { height: StyleSheet.hairlineWidth, backgroundColor: color.line },
+  // A few options share the row equally, so a fourth never wraps alone onto a second line.
+  chips: { flexDirection: "row", gap: space.s },
+  chip: {
+    flex: 1,
+    minHeight: HIT,
+    paddingHorizontal: space.s,
+    borderRadius: radius.pill,
+    backgroundColor: color.sand,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  chipOn: { backgroundColor: color.ink },
+  stepper: { flexDirection: "row", alignItems: "center", gap: space.s, minHeight: HIT },
+  stepButton: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: color.sand,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  stepSign: { fontFamily: text.title.fontFamily, fontSize: 26, lineHeight: 30, color: color.ink },
 });
