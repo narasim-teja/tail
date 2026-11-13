@@ -35,7 +35,7 @@ strings in the token's smallest unit. Errors are `{error: "<short message>"}` wi
 | `GET /referee`                           | –                                           | –                                                                                                                                                             | `{referee_pk, referee_box_pk, box_pk_sig, vrf_pk}` (base64, from the referee's `pubkeys`, cached)                                              |
 | `POST /enroll/challenge`                 | – (rate limited per client)                 | `{handle}`                                                                                                                                                    | `{challenge (32 B), account_id, expires_ms}`                                                                                                   |
 | `POST /enroll`                           | attestation                                 | `{challenge, key_id (32 B), attestation (CBOR), player_box_pk (32 B), near_pk (32 B ed25519), rebind_sig? (64 B)}`                                            | `{account_id}`, once the referee holds the device and the account exists (below)                                                               |
-| `GET /enroll/status`                     | signed (the account)                        | –                                                                                                                                                             | `{account_id, with_referee}`: false means the referee the relay runs with now does not know this device; refresh                               |
+| `GET /enroll/status`                     | signed (the account)                        | –                                                                                                                                                             | `{account_id, with_referee, app_attest_key_id}`: refresh when `with_referee` is false or the keyId is not the phone's ("Refresh" below)        |
 | `POST /enroll/refresh/challenge`         | signed (the account)                        | `{}`                                                                                                                                                          | `{challenge (32 B), account_id, expires_ms}`                                                                                                   |
 | `POST /enroll/refresh`                   | signed (the account)                        | `{challenge, key_id (32 B), attestation (CBOR), player_box_pk (32 B), rebind_sig (64 B)}`                                                                     | `{account_id}`, once the referee accepted                                                                                                      |
 | `POST /matches`                          | signed (host)                               | `{stake, duration_ms, zone: {lat_e7, lon_e7, radius_m}, safehouses?: [circle], public_replay, min_players, max_players, start_by_ms, invites?: [account_id]}` | `{match_id, zone_hash (hex), code}` (`code`: the short lobby code, e.g. `K7M-4QX`)                                                             |
@@ -198,7 +198,10 @@ attestation cannot be sent to it again: Apple's credential certificate in it is 
 the referee before it locks the lobby, and drops the receipt). Start then answers 409 `{error,
 code: "refresh", accounts: [account_id]}`, and every listed phone refreshes:
 
-1. `GET /enroll/status` (signed) → `{account_id, with_referee}`. Ask on launch; refresh when false.
+1. `GET /enroll/status` (signed) → `{account_id, with_referee, app_attest_key_id}`. Ask on
+   launch; refresh when `with_referee` is false, or when `app_attest_key_id` (base64
+   SHA256 of the uncompressed App Attest key the relay holds, Apple's keyId) is not the keyId
+   of the key the phone holds.
 2. `POST /enroll/refresh/challenge {}` (signed) → `{challenge, account_id, expires_ms}` (5 min,
    single use, only for this account).
 3. Attest an App Attest key (a new one, or the same one again) with clientDataHash =

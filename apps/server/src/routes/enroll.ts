@@ -36,8 +36,9 @@ export function enrollRoutes(
     );
   });
 
-  // Signed by the account. → {account_id, with_referee}: whether the referee the relay runs with
-  // now holds this device; false means the phone should refresh.
+  // Signed by the account. → {account_id, with_referee, app_attest_key_id}: whether the referee
+  // the relay runs with now holds this device (false: the phone should refresh), and the keyId
+  // of the App Attest key the relay holds for it (a phone holding another should refresh).
   app.get("/enroll/status", async (c) => {
     const { account } = await d.auth.signed(c);
     return c.json(await d.enrolment.status(account));

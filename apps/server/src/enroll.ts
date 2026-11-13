@@ -371,11 +371,21 @@ export class Enrolment {
     return { account_id: accountId };
   }
 
-  /** Whether the referee the relay runs with now holds this device. */
-  async status(accountId: string): Promise<{ account_id: string; with_referee: boolean }> {
+  /**
+   * Whether the referee the relay runs with now holds this device, and the keyId (SHA256 of the
+   * uncompressed key, as Apple names it) of the App Attest key the relay holds for it, so a
+   * phone holding another key knows to refresh.
+   */
+  async status(
+    accountId: string,
+  ): Promise<{ account_id: string; with_referee: boolean; app_attest_key_id: string }> {
     const dev = this.d.store.device(accountId);
     if (!dev) throw new HttpError(404, "not enrolled here");
-    return { account_id: accountId, with_referee: await this.withReferee(dev) };
+    return {
+      account_id: accountId,
+      with_referee: await this.withReferee(dev),
+      app_attest_key_id: b64(sha256(dev.app_attest_pk)),
+    };
   }
 
   /**

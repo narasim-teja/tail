@@ -370,6 +370,10 @@ describe("after the contract pins another referee", () => {
     expect((await req(env, "GET", "/enroll/status", undefined, l.b)).json).toEqual({
       account_id: l.b.account,
       with_referee: false,
+      // Apple's keyId of the key the relay holds: SHA256 of the uncompressed key, base64.
+      app_attest_key_id: Buffer.from(
+        sha256(env.store.device(l.b.account)?.app_attest_pk ?? new Uint8Array()),
+      ).toString("base64"),
     });
 
     for (const p of [l.a, l.b, l.c]) expect((await refresh(env, p)).status).toBe(200);
