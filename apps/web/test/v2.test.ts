@@ -21,8 +21,10 @@ import {
   verdictDigest,
   WINDOW_EPOCHS,
 } from "@tail/protocol";
-import { makeFixtures, REWRITTEN_CHECKPOINT } from "../scripts/fixture.ts";
+import { forgedFixture, makeFixtures, REWRITTEN_CHECKPOINT } from "../scripts/fixture.ts";
 import { buildMatch, type Match, type MatchEvent, type Snapshot } from "../src/model/match.ts";
+import { markLabel } from "../src/replay/copy.ts";
+import { overall } from "../src/ui/marks.ts";
 import type { ChainState, Expect } from "../src/verify/anchor.ts";
 import { type DecodedBundle, decodeBundle, toB64 } from "../src/verify/bundle.ts";
 import { parseHead } from "../src/verify/chain.ts";
@@ -38,7 +40,8 @@ import {
   presenceParam,
   toPresenceJson,
 } from "../src/verify/presence.ts";
-import { matchProblem } from "../src/verify/report.ts";
+import { matchProblem, summarize, summaryLine, type VerdictStatus } from "../src/verify/report.ts";
+import { settlementOf } from "../src/verify/settle.ts";
 import { decodeLogEntryV1 } from "../src/verify/v1.ts";
 import { chainFor } from "./chain.ts";
 
@@ -543,5 +546,24 @@ describe("the match as a whole", () => {
     expect(matchProblem(r.binding, r.level, r)?.line).toBe("The log was rewritten");
     const t = verifyAll(decodeBundle(through(fx.tampered)), { kind: "absent" }, EXPECT);
     expect(matchProblem(t.binding, t.level, t)?.line).toBe("Verdict history is broken");
+  });
+
+  test("a signed, anchored Tag whose Evidence breaks the lock rule fails its mark and the header", () => {
+    const d = decodeBundle(through(forgedFixture("evidence")));
+    const r = verifyAll(d, chainFor(d), EXPECT);
+    const tag = d.verdicts.findIndex((x) => x.v?.body.kind === "Tag");
+    // Everything NEAR and the signatures can show holds: only the evidence check fails.
+    expect(r.local.every((l) => l.signature && l.inLog && l.rootClaim !== false)).toBe(true);
+    expect(r.anchors.every((a) => a === "match")).toBe(true);
+    expect(r.tags[tag]).toMatchObject({
+      proto: 2,
+      evidence: { kind: "checked", inWindow: false, ok: false },
+    });
+    expect(r.statuses.map((s, i) => (s === "verified" ? -1 : i)).filter((i) => i >= 0)).toEqual([tag]);
+    expect(markLabel(r.statuses[tag] as VerdictStatus, r.anchors[tag])).toBe("Fails a check");
+    const problem = matchProblem(r.binding, r.level, r, settlementOf(d));
+    const sum = summarize(r.statuses);
+    expect(summaryLine(sum, "found", problem)).toBe("1 verdict fails a check");
+    expect(overall(sum, "found", problem)).toBe("mismatch");
   });
 });

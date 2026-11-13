@@ -226,6 +226,32 @@ function lockFromAt(d: DecodedBundle, m: Match, h: number, ev: MatchEvent, start
   return null;
 }
 
+// ── Every tag, once per replay ───────────────────────────────────────────────────────
+
+/** A tag verdict's check against the strike rule: from its Evidence entry (v2), else from the batches (v1). */
+export type TagCheck = { proto: 2; evidence: EvidenceCheck } | { proto: 1; heard: TagEvidence };
+
+/**
+ * true: the tag meets the rule; false: it breaks it (a v2 tag without its Evidence entry too);
+ * null: nothing released to re-check it with (a v1 tag whose strike batch wasn't released).
+ */
+export function tagHolds(c: TagCheck): boolean | null {
+  if (c.proto === 1) return c.heard.kind === "checked" ? c.heard.ok : null;
+  return c.evidence.kind === "checked" ? c.evidence.ok : c.evidence.kind === "missing" ? false : null;
+}
+
+/** Each verdict's tag check by verdict index, null for the verdicts that aren't tags. */
+export function tagChecks(d: DecodedBundle, m: Match, inLog: Set<string>): (TagCheck | null)[] {
+  const out: (TagCheck | null)[] = d.verdicts.map(() => null);
+  for (const ev of m.events)
+    if (ev.kind === "tag")
+      out[ev.index] =
+        d.version === 2
+          ? { proto: 2, evidence: evidenceCheck(d, m, inLog, ev) }
+          : { proto: 1, heard: tagEvidence(d, m, inLog, ev) };
+  return out;
+}
+
 /** An entry's Merkle inclusion path to the first anchored root that covers it. */
 export interface Inclusion {
   index: number;

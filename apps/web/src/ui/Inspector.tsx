@@ -14,7 +14,7 @@ import type { Selection } from "../replay/state.ts";
 import { attestationUrl, isEnclave } from "../verify/attestation.ts";
 import { explorerTx } from "../verify/chain.ts";
 import { checkSalts, enrolments, localOk, ringOk } from "../verify/checks.ts";
-import { tagEvidence } from "../verify/evidence.ts";
+import { type TagCheck, type TagEvidence, tagHolds } from "../verify/evidence.ts";
 import { PINS } from "../verify/pins.ts";
 import { matchProblem, summarize } from "../verify/report.ts";
 import type { Signer } from "../verify/signer.ts";
@@ -380,8 +380,9 @@ function TagStory({ ev }: { ev: MatchEvent }) {
 
 /** The referee's strike rule, re-run over the Contact entries it logged before the tag. */
 function HeardLine({ ev }: { ev: MatchEvent }) {
-  const { match, decoded, batches } = useReplay();
-  const r = tagEvidence(decoded, match, batches.inLog, ev);
+  const { match, tags } = useReplay();
+  const c = tags[ev.index];
+  const r: TagEvidence = c?.proto === 1 ? c.heard : { kind: "no-strike" };
   if (r.kind === "no-strike")
     return (
       <ProofLine
@@ -729,6 +730,31 @@ function saltKeyHolder(signer: Signer | null): string {
   return "The referee is meant to release that key only after the end, so that during play the server couldn't read entries by guessing from its hashes. This page can't see when the key was released.";
 }
 
+/** Every tag's check against the strike rule (the same each tag's own sheet shows), counted. */
+function TagRuleLine() {
+  const { decoded, tags } = useReplay();
+  const all = tags.filter((c): c is TagCheck => c !== null).map(tagHolds);
+  if (all.length === 0) return null;
+  const fit = all.filter((h) => h === true).length;
+  const bad = all.filter((h) => h === false).length;
+  const unchecked = all.length - fit - bad;
+  const v2 = decoded.version === 2;
+  return (
+    <ProofLine
+      check={bad > 0 ? "fail" : unchecked > 0 ? "info" : "pass"}
+      detail={`${fit} of ${all.length} tags meet the rule: ${v2 ? "the Evidence entry logged before each one cites" : "the log holds"} at least ${LOCK_EPOCHS} of the log's contact windows between hunter and target in the ${WINDOW_EPOCHS} up to the strike, one in the strike's window or the one before, and the target was the hunter's.${bad > 0 ? ` ${bad} ${bad === 1 ? "doesn't" : "don't"}: open ${bad === 1 ? "that tag" : "those tags"} to see why.` : ""}${unchecked > 0 ? ` For ${unchecked}, the hunter's strike report wasn't released, so ${unchecked === 1 ? "it wasn't" : "they weren't"} re-checked.` : ""} These are the referee's own entries; the phones' sightings behind them stay sealed.`}
+    >
+      {bad > 0
+        ? `${bad} of ${all.length} tags break the lock rule`
+        : unchecked > 0
+          ? `${fit} of ${all.length} tags re-checked against the lock rule`
+          : v2
+            ? "Every tag's evidence fits the lock rule"
+            : "Every tag fits the lock rule"}
+    </ProofLine>
+  );
+}
+
 function SummaryBody() {
   const { decoded, verify, source, batches, match } = useReplay();
   const statuses = useStore(verify, (s) => s.statuses);
@@ -864,6 +890,7 @@ function SummaryBody() {
               The draw matches its commitment
             </ProofLine>
           )}
+          <TagRuleLine />
           <ProofLine
             check={decoded.batches.length === 0 ? "info" : batches.failed.length === 0 ? "pass" : "fail"}
             detail={

@@ -125,16 +125,18 @@ export function makeFixtures(): Fixtures {
 }
 
 /**
- * A match whose referee signed a verdict that breaks a rule only End's replay can see, everything
- * else as honest. hint-target: End names Bo as the first hint's target (Eli asked it while
+ * A match whose referee signed a verdict that breaks a rule, everything else as honest; End's
+ * replay sees the first two, the tag's evidence check the third. hint-target: End names Bo as the first hint's target (Eli asked it while
  * hunting Ana). tag: the second Tag names Dee as the hunter (Eli made the strike; Dee was hunting
- * Eli). Both are validly signed, chained and anchored.
+ * Eli). evidence: the first Tag's Evidence entry cites a window just outside the lock window in
+ * place of one inside it, so the tag no longer meets the rule. All are validly signed, chained
+ * and anchored.
  */
 export function forgedFixture(forge: Forge): ReplayBundleV2 {
   return generate({ version: 2, forge }).bundle;
 }
 
-type Forge = "hint-target" | "tag";
+type Forge = "hint-target" | "tag" | "evidence";
 
 interface Options {
   version: 1 | 2;
@@ -767,7 +769,11 @@ function generate(opts: Options) {
             target: tg,
             strikeSeq: seq,
             strikeEpoch: e,
-            epochs,
+            // The forged variant cites, for the first Tag, a window just outside the lock window.
+            epochs:
+              opts.forge === "evidence" && tagsSigned === 0
+                ? [e - WINDOW_EPOCHS, ...epochs.slice(1)]
+                : epochs,
             salt: nextSalt(),
           });
         tagsSigned++;

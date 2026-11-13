@@ -4,12 +4,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { TooltipProvider } from "../components/ui/tooltip.tsx";
 import { timeOfDay } from "../lib/format.ts";
-import { buildMatch, type Match } from "../model/match.ts";
 import { type Loaded, loadBundle, type Source, sourceFromUrl } from "../replay/load.ts";
 import type { ChainMatch } from "../verify/anchor.ts";
 import { BundleError, type DecodedBundle, decodeBundle } from "../verify/bundle.ts";
 import { nearReader } from "../verify/chain.ts";
-import { type BatchCheck, checkBatches, checkHandler } from "../verify/checks.ts";
+import { type Prepared, prepare } from "../verify/index.ts";
 import { PINS } from "../verify/pins.ts";
 import { DossierPage } from "./Dossier.tsx";
 import { PresencePage } from "./Presence.tsx";
@@ -18,7 +17,7 @@ import { Loading, PageState, ProgressLine, Retry } from "./States.tsx";
 
 type Phase =
   | { kind: "loading" }
-  | { kind: "ready"; decoded: DecodedBundle; match: Match; batches: BatchCheck }
+  | { kind: "ready"; decoded: DecodedBundle; prepared: Prepared }
   | { kind: "private"; players: number | null }
   | { kind: "not-finished"; chain: ChainMatch | null }
   | { kind: "missing" }
@@ -56,10 +55,8 @@ function ReplayApp() {
       if (r.kind === "ok") {
         try {
           const decoded = decodeBundle(r.json);
-          // Trails are drawn only from batches whose hash the log holds.
-          const batches = checkBatches(decoded);
-          const match = buildMatch(decoded, batches.inLog, checkHandler(decoded));
-          setPhase({ kind: "ready", decoded, match, batches });
+          // Trails are drawn only from batches whose hash the log holds; every tag is checked once.
+          setPhase({ kind: "ready", decoded, prepared: prepare(decoded) });
         } catch (e) {
           setPhase({
             kind: "error",
@@ -98,7 +95,7 @@ function ReplayApp() {
         </>
       )}
       {phase.kind === "ready" && (
-        <Stage decoded={phase.decoded} match={phase.match} batches={phase.batches} source={request.source} />
+        <Stage decoded={phase.decoded} prepared={phase.prepared} source={request.source} />
       )}
       {phase.kind === "private" && (
         <PageState title="This match is private">

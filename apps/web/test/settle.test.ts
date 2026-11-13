@@ -88,9 +88,12 @@ describe("a signed match that broke a rule", () => {
     const s = settlementOf(offRing);
     // The second Tag (play event 4) names Dee, who was hunting Eli, as Ana's hunter.
     expect(s).toMatchObject({ kind: "refunded", violation: { check: SettleCheck.TagRing, event: 4 } });
-    expect(verifyAll(offRing, { kind: "absent" }, EXPECT).statuses.every((x) => x === "unanchored")).toBe(
-      true,
-    );
+    // Validly signed throughout; the Tag's own mark fails too, as its Evidence names Eli, not Dee.
+    const r = verifyAll(offRing, { kind: "absent" }, EXPECT);
+    expect(r.local.every((l) => l.signature && l.inLog)).toBe(true);
+    const tag = offRing.verdicts.filter((x) => x.v?.body.kind === "Tag")[1]?.index as number;
+    expect(r.tags[tag]).toMatchObject({ proto: 2, evidence: { sameTag: false, ok: false } });
+    expect(r.statuses.map((x, i) => (x === "unanchored" ? -1 : i)).filter((i) => i >= 0)).toEqual([tag]);
   });
 
   test("NEAR refunding for the same rule matches; paying out, or another reason, doesn't", () => {

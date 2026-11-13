@@ -22,7 +22,7 @@ import { decodeBundle } from "../src/verify/bundle.ts";
 import type { ChainReader } from "../src/verify/chain.ts";
 import { checkBatches, checkHandler, personalSignSigner } from "../src/verify/checks.ts";
 import { tagEvidence } from "../src/verify/evidence.ts";
-import { verifyAll } from "../src/verify/index.ts";
+import { prepare, verifyAll } from "../src/verify/index.ts";
 import type { Pins } from "../src/verify/pins.ts";
 import { matchProblem, summarize, summaryLine } from "../src/verify/report.ts";
 import { signerOf } from "../src/verify/signer.ts";
@@ -101,7 +101,14 @@ describe("the chain anchor comes from the page, not the bundle", () => {
       verifyInclusion: () => Promise.resolve({ kind: "no-view" }),
     };
     const store = createVerifyStore(d.verdicts.length, { symbol: "USDC", decimals: 6 });
-    const stop = runVerification(d, store, reader, { kind: "relay", matchId: MATCH_ID, url: "x" }, PINS);
+    const stop = runVerification(
+      d,
+      prepare(d),
+      store,
+      reader,
+      { kind: "relay", matchId: MATCH_ID, url: "x" },
+      PINS,
+    );
     stop();
     expect(asked).toEqual([[PINS.contract, MATCH_ID]]);
     expect(store.get().binding.ok).toBe(false);

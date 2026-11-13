@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "../components/ui/button.tsx";
 import { useStore } from "../lib/store.ts";
-import { type Match, snapshotAt } from "../model/match.ts";
+import { snapshotAt } from "../model/match.ts";
 import { runFilm } from "../replay/film.ts";
 import type { Source } from "../replay/load.ts";
 import { createPlayStore, createVerifyStore, type Selection } from "../replay/state.ts";
@@ -15,7 +15,7 @@ import { Scene3D } from "../scene/Scene3D.tsx";
 import { canUse3D, type Insets, type SceneHandle } from "../scene/scene.ts";
 import type { DecodedBundle } from "../verify/bundle.ts";
 import { nearReader } from "../verify/chain.ts";
-import type { BatchCheck } from "../verify/checks.ts";
+import type { Prepared } from "../verify/index.ts";
 import { PINS } from "../verify/pins.ts";
 import { Caption } from "./Caption.tsx";
 import { type Replay, ReplayProvider, useMedia } from "./context.tsx";
@@ -30,8 +30,9 @@ import { Timeline } from "./Timeline.tsx";
 
 const USDC_GUESS = { symbol: "USDC", decimals: 6 };
 
-export function Stage(props: { decoded: DecodedBundle; match: Match; batches: BatchCheck; source: Source }) {
-  const { decoded, match, batches, source } = props;
+export function Stage(props: { decoded: DecodedBundle; prepared: Prepared; source: Source }) {
+  const { decoded, prepared, source } = props;
+  const { match, batches, tags } = prepared;
   const reduced = useMedia("(prefers-reduced-motion: reduce)");
   const compact = !useMedia("(min-width: 768px)");
   // `?t=<seconds>` opens the film at a moment (for linking a scene while reviewing).
@@ -56,8 +57,8 @@ export function Stage(props: { decoded: DecodedBundle; match: Match; batches: Ba
 
   // The network is the pinned one: the bundle's own `network` is only compared, never followed.
   useEffect(
-    () => runVerification(decoded, verify, nearReader(PINS.network), source),
-    [decoded, verify, source],
+    () => runVerification(decoded, prepared, verify, nearReader(PINS.network), source),
+    [decoded, prepared, verify, source],
   );
   useEffect(() => runFilm(match, play, () => scene.current), [match, play]);
 
@@ -127,7 +128,7 @@ export function Stage(props: { decoded: DecodedBundle; match: Match; batches: Ba
   const onFail = useCallback(() => setThree(false), []);
   const onPick = useCallback((sel: Selection) => select(sel), [select]);
 
-  const ctx: Replay = { match, decoded, batches, play, verify, source, reduced, seek, select, toggle };
+  const ctx: Replay = { match, decoded, batches, tags, play, verify, source, reduced, seek, select, toggle };
   const SceneView = three ? Scene3D : Scene2D;
 
   return (

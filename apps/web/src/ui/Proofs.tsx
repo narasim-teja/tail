@@ -9,7 +9,7 @@ import { useStore } from "../lib/store.ts";
 import type { MatchEvent } from "../model/match.ts";
 import { toB64 } from "../verify/bundle.ts";
 import { type InclusionAnswer, nearReader } from "../verify/chain.ts";
-import { evidenceCheck, inclusionOf } from "../verify/evidence.ts";
+import { type EvidenceCheck, inclusionOf } from "../verify/evidence.ts";
 import { PINS } from "../verify/pins.ts";
 import { presenceFor, presenceParam, toPresenceJson } from "../verify/presence.ts";
 import { useReplay } from "./context.tsx";
@@ -19,10 +19,16 @@ const span = (e: number) => `${clock(e * EPOCH_MS)} to ${clock((e + 1) * EPOCH_M
 
 // ── Tag evidence ──────────────────────────────────────────────────────────────────
 
+/** This v2 Tag's Evidence check, as prepared once for the replay (a v2 tag always has one). */
+function useEvidence(ev: MatchEvent): EvidenceCheck {
+  const c = useReplay().tags[ev.index];
+  return c?.proto === 2 ? c.evidence : { kind: "missing" };
+}
+
 /** The Evidence entry the referee logged before this Tag, re-checked against the strike rule. */
 export function EvidenceLines({ ev }: { ev: MatchEvent }) {
-  const { match, decoded, batches } = useReplay();
-  const r = evidenceCheck(decoded, match, batches.inLog, ev);
+  const { match } = useReplay();
+  const r = useEvidence(ev);
   const h = match.players[ev.a ?? 0]?.name;
   const t = match.players[ev.b ?? 0]?.name;
   if (r.kind !== "checked")
@@ -76,8 +82,7 @@ export function EvidenceLines({ ev }: { ev: MatchEvent }) {
 
 /** Each contact the Tag's evidence cites, with its Merkle path. */
 export function EvidenceContacts({ ev }: { ev: MatchEvent }) {
-  const { match, decoded, batches } = useReplay();
-  const r = evidenceCheck(decoded, match, batches.inLog, ev);
+  const r = useEvidence(ev);
   if (r.kind !== "checked") return null;
   return (
     <Section label="Contacts behind the tag">

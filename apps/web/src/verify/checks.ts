@@ -91,6 +91,11 @@ export interface LocalVerdictCheck {
   rootClaim: boolean | null;
   /** Start: players hash; End: ring commit, VRF signature, alpha seed, rebuilt ring. */
   ring: RingCheck | null;
+  /**
+   * Tag: the tag check against the strike rule (evidence.ts, tagHolds) holds (true) or breaks it
+   * (false); null for other verdicts, and for a tag the released data can't re-check.
+   */
+  tag: boolean | null;
 }
 
 /** true: held; false: failed; null: nothing to compare (counts as neither). */
@@ -111,7 +116,8 @@ export const localOk = (c: LocalVerdictCheck) =>
   c.order &&
   c.inLog &&
   c.rootClaim !== false &&
-  (c.ring === null || ringOk(c.ring));
+  (c.ring === null || ringOk(c.ring)) &&
+  c.tag !== false;
 
 /** Index of each Verdict{seq} entry in the log, by seq. */
 export function verdictEntries(
@@ -131,9 +137,15 @@ export interface LocalContext {
   start: AnySignedVerdict | null;
   /** The first position where the bundle's leaf hash disagrees with its entry, or Infinity. */
   firstConflict: number;
+  /** By verdict index, each tag's tagHolds outcome (evidence.ts tagChecks), null elsewhere. */
+  tags: readonly (boolean | null)[];
 }
 
-export function localContext(d: DecodedBundle): LocalContext {
+/**
+ * `tags` is each tag check's outcome, by verdict index. It is computed from the match model, once
+ * per replay (verify/index.ts prepare), and passed in so a tag that breaks the rule fails here.
+ */
+export function localContext(d: DecodedBundle, tags: readonly (boolean | null)[]): LocalContext {
   const sizes: number[] = [];
   for (const x of d.verdicts) {
     const b = x.v?.body;
@@ -144,6 +156,7 @@ export function localContext(d: DecodedBundle): LocalContext {
     roots: prefixRoots(d.leaves, sizes),
     start: d.verdicts.find((x) => x.v?.body.kind === "Start")?.v ?? null,
     firstConflict: d.leafConflicts[0] ?? Number.POSITIVE_INFINITY,
+    tags,
   };
 }
 
@@ -162,6 +175,7 @@ export function checkVerdict(d: DecodedBundle, ctx: LocalContext, index: number)
     inLog: false,
     rootClaim: null,
     ring: null,
+    tag: null,
   };
   if (!v || !digest || !equal(v.matchId, d.matchId)) return base;
   const entry = ctx.entries.get(v.seq);
@@ -173,6 +187,7 @@ export function checkVerdict(d: DecodedBundle, ctx: LocalContext, index: number)
     order: v.seq === index + 1,
     logIndex: entry?.index ?? null,
     inLog: !!entry && equal(entry.digest, digest),
+    tag: ctx.tags[index] ?? null,
   };
   const b = v.body;
   if (b.kind === "Checkpoint" || b.kind === "End") {

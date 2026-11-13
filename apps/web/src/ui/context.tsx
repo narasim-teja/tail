@@ -4,11 +4,14 @@ import type { Source } from "../replay/load.ts";
 import type { PlayStore, Selection, VerifyStore } from "../replay/state.ts";
 import type { DecodedBundle } from "../verify/bundle.ts";
 import type { BatchCheck } from "../verify/checks.ts";
+import type { TagCheck } from "../verify/evidence.ts";
 
 export interface Replay {
   match: Match;
   decoded: DecodedBundle;
   batches: BatchCheck;
+  /** Each tag's check against the strike rule, by verdict index (verify/index.ts prepare). */
+  tags: readonly (TagCheck | null)[];
   play: PlayStore;
   verify: VerifyStore;
   source: Source;

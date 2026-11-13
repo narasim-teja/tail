@@ -12,9 +12,9 @@ import { bindingOf, type ChainState, type Expect } from "../verify/anchor.ts";
 import { type Attestation, fetchAttestation } from "../verify/attestation.ts";
 import type { DecodedBundle } from "../verify/bundle.ts";
 import type { ChainReader } from "../verify/chain.ts";
-import { checkVerdict, type LocalVerdictCheck, localContext } from "../verify/checks.ts";
+import { checkVerdict, type LocalVerdictCheck } from "../verify/checks.ts";
 import { anchoredRoots } from "../verify/history.ts";
-import { anchorsFor, historyFor, levelFor } from "../verify/index.ts";
+import { anchorsFor, contextFor, historyFor, levelFor, type Prepared } from "../verify/index.ts";
 import { PINS, type Pins } from "../verify/pins.ts";
 import { statusOf } from "../verify/report.ts";
 import { signerOf } from "../verify/signer.ts";
@@ -30,6 +30,8 @@ export const expectFor = (source: Source, pins: Pins = PINS): Expect => ({
 
 export function runVerification(
   d: DecodedBundle,
+  /** prepare(d), the same the page draws and the sheets read, so a tag is judged once. */
+  prepared: Prepared,
   store: VerifyStore,
   reader: ChainReader,
   source: Source,
@@ -40,7 +42,7 @@ export function runVerification(
   const n = d.verdicts.length;
   const expect = expectFor(source, pins);
   const binding = bindingOf(d, expect);
-  const ctx = localContext(d);
+  const ctx = contextFor(d, prepared);
   const local: LocalVerdictCheck[] = [];
   let chain: ChainState | null = null;
   let anchored = 0;
