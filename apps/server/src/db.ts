@@ -8,23 +8,26 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Circle } from "./referee.ts";
 
+/** The devices table. The receipt columns are nullable: see DeviceRow. */
+const DEVICE_COLUMNS = `
+  account_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('phone', 'ghost')),
+  app_attest_pk BLOB NOT NULL,
+  player_box_pk BLOB NOT NULL,
+  near_pk BLOB NOT NULL,
+  receipt BLOB,
+  receipt_sig BLOB,
+  enroll_call_id TEXT,
+  created_ms INTEGER NOT NULL
+`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS challenges (
   challenge BLOB PRIMARY KEY,
   account_id TEXT NOT NULL,
   expires_ms INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS devices (
-  account_id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN ('phone', 'ghost')),
-  app_attest_pk BLOB NOT NULL,
-  player_box_pk BLOB NOT NULL,
-  near_pk BLOB NOT NULL,
-  receipt BLOB NOT NULL,
-  receipt_sig BLOB NOT NULL,
-  enroll_call_id TEXT NOT NULL,
-  created_ms INTEGER NOT NULL
-);
+CREATE TABLE IF NOT EXISTS devices (${DEVICE_COLUMNS});
 CREATE TABLE IF NOT EXISTS matches (
   match_id TEXT PRIMARY KEY,
   host TEXT NOT NULL,
@@ -117,16 +120,30 @@ CREATE TABLE IF NOT EXISTS seen_requests (
 
 export type Phase = "lobby" | "starting" | "running" | "ending" | "ended" | "failed";
 
+/**
+ * A device the relay enrolled. The referee's receipt (and its call id) arrive later than the row:
+ * enrolment answers the phone once the NEAR account exists, and the device is registered with
+ * the referee in the background (enroll.ts). Null until then; a match cannot start with a
+ * player whose receipt is still null.
+ */
 export interface DeviceRow {
   account_id: string;
   kind: "phone" | "ghost";
   app_attest_pk: Uint8Array;
   player_box_pk: Uint8Array;
   near_pk: Uint8Array;
+  receipt: Uint8Array | null;
+  receipt_sig: Uint8Array | null;
+  enroll_call_id: string | null;
+  created_ms: number;
+}
+
+/** What the referee's `enroll` returns, stored on the device row. */
+export interface RefereeReceipt {
+  app_attest_pk: Uint8Array;
   receipt: Uint8Array;
   receipt_sig: Uint8Array;
   enroll_call_id: string;
-  created_ms: number;
 }
 
 export interface Zone {
@@ -228,6 +245,22 @@ export class Store {
     const cols = this.db.query<{ name: string }, []>("PRAGMA table_info(matches)").all();
     if (!cols.some((c) => c.name === "code")) this.db.run("ALTER TABLE matches ADD COLUMN code TEXT");
     this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS matches_code ON matches (code)");
+    this.relaxDeviceReceipts();
+  }
+
+  /**
+   * Relays created before background referee enrolment have NOT NULL receipt columns. SQLite
+   * cannot drop a constraint in place, so the table is rebuilt once, rows and all.
+   */
+  private relaxDeviceReceipts() {
+    const cols = this.db.query<{ name: string; notnull: number }, []>("PRAGMA table_info(devices)").all();
+    if (!cols.some((c) => c.name === "receipt" && c.notnull === 1)) return;
+    this.tx(() => {
+      this.db.run(`CREATE TABLE devices_relaxed (${DEVICE_COLUMNS})`);
+      this.db.run("INSERT INTO devices_relaxed SELECT * FROM devices");
+      this.db.run("DROP TABLE devices");
+      this.db.run("ALTER TABLE devices_relaxed RENAME TO devices");
+    });
   }
 
   close() {
@@ -287,9 +320,28 @@ export class Store {
       app_attest_pk: u8(r.app_attest_pk),
       player_box_pk: u8(r.player_box_pk),
       near_pk: u8(r.near_pk),
-      receipt: u8(r.receipt),
-      receipt_sig: u8(r.receipt_sig),
+      receipt: r.receipt ? u8(r.receipt) : null,
+      receipt_sig: r.receipt_sig ? u8(r.receipt_sig) : null,
     };
+  }
+
+  /** The referee answered for this device: keep its receipt and its normalised App Attest key. */
+  setDeviceReceipt(accountId: string, r: RefereeReceipt) {
+    this.db
+      .query(
+        "UPDATE devices SET app_attest_pk = ?, receipt = ?, receipt_sig = ?, enroll_call_id = ? WHERE account_id = ?",
+      )
+      .run(r.app_attest_pk, r.receipt, r.receipt_sig, r.enroll_call_id, accountId);
+  }
+
+  /** Devices the referee has not registered yet, oldest first. */
+  devicesAwaitingReferee(): string[] {
+    return this.db
+      .query<{ account_id: string }, []>(
+        "SELECT account_id FROM devices WHERE receipt IS NULL ORDER BY created_ms",
+      )
+      .all()
+      .map((r) => r.account_id);
   }
 
   // ── Matches ──────────────────────────────────────────────────────────────────────

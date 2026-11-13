@@ -31,10 +31,10 @@ strings in the token's smallest unit. Errors are `{error: "<short message>"}` wi
 
 | Method, path                     | Auth                                        | Request                                                                                                                                                       | Response                                                                                                                                           |
 | -------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /health`                    | –                                           | –                                                                                                                                                             | `{ok: true}`                                                                                                                                       |
+| `GET /health`                    | –                                           | –                                                                                                                                                             | `{ok: true, referee: {kind: "outlayer"\|"local", status: "unknown"\|"up"\|"down", last_ok_ms, last_error}}`                                        |
 | `GET /referee`                   | –                                           | –                                                                                                                                                             | `{referee_pk, referee_box_pk, box_pk_sig, vrf_pk}` (base64, from the referee's `pubkeys`, cached)                                                  |
 | `POST /enroll/challenge`         | –                                           | `{handle}`                                                                                                                                                    | `{challenge (32 B), account_id, expires_ms}`                                                                                                       |
-| `POST /enroll`                   | attestation                                 | `{challenge, key_id (32 B), attestation (CBOR), player_box_pk (32 B), near_pk (32 B ed25519)}`                                                                | `{account_id, app_attest_pk (65 B), enroll_call_id, receipt, receipt_sig}`                                                                         |
+| `POST /enroll`                   | attestation                                 | `{challenge, key_id (32 B), attestation (CBOR), player_box_pk (32 B), near_pk (32 B ed25519)}`                                                                | `{account_id}`; the referee gets the device in the background (below)                                                                              |
 | `POST /matches`                  | signed (host)                               | `{stake, duration_ms, zone: {lat_e7, lon_e7, radius_m}, safehouses?: [circle], public_replay, min_players, max_players, start_by_ms, invites?: [account_id]}` | `{match_id, zone_hash (hex), code}` (`code`: the short lobby code, e.g. `K7M-4QX`)                                                                 |
 | `GET /matches/:id`               | –                                           | –                                                                                                                                                             | `{match_id, code, host, phase, error, start_ms, end_ms, tick_no, last_seq, players, keys: [{player, account_id, sealed}], zone, chain: get_match}` |
 | `GET /join/:code`                | –                                           | –                                                                                                                                                             | `{match_id}`; any case, dash optional; 404 unless the lobby is still open (not started here, not called off on chain)                              |
@@ -100,7 +100,9 @@ with `sig` = ed25519 by the NEAR key over
    `POST /enroll`. The relay creates `<handle>.<relay account>` holding only the phone's key
    (function-call, contract `TAIL_CONTRACT`, methods `join_match`, `leave_lobby`, `withdraw`,
    0.5 NEAR allowance), funds it with 0.1 NEAR, registers it on the token (`storage_deposit`)
-   and in the contract (`register_for`, payout = the account itself).
+   and in the contract (`register_for`, payout = the account itself), then answers. It registers
+   the device with the referee in the background (retrying at 0, 5, 15, 30, 60, 120 and 300 s,
+   and again on restart), because a referee call can take minutes when OutLayer is slow.
 2. **Join** the lobby on chain with its own key: `join_match({match_id})`, 30 Tgas (`withdraw`
    needs 50 Tgas). The stake is
    debited from its internal balance (the host tops players up; on testnet `POST /dev/topup`).
@@ -144,8 +146,9 @@ on one sealed state would fork it. Each step:
    → store the reveal and the trails for the replay. Each of these retries on the next step if
    it fails; the match counts as ended only when both are stored.
 
-Start: the relay reads the lobby from the chain, checks every player is enrolled, calls
-`lock_lobby` (joins frozen), then referee `start` with `start_ms` = now (the contract wants it
+Start: the relay reads the lobby from the chain, checks every player is enrolled, registers any
+device the referee does not have yet (if it cannot, the lobby stays open and the host can press
+Start again), calls `lock_lobby` (joins frozen), then referee `start` with `start_ms` = now (the contract wants it
 within 5 min of block time), stores the result and applies Start at once. Before the referee
 answers, a failed start can be retried; after, it cannot (the enclave starts a match id once),
 and the lobby refunds through `leave_lobby`/`abort`.
@@ -180,6 +183,37 @@ What a ghost cannot do is produce Apple's attestation. Ghost enrolment
   (attestation checked by the relay, not the enclave) already allows a dishonest relay; the
   door only makes it explicit for testing.
 
+## When the referee is slow or down
+
+Every request is logged with its method, path, status and time. The referee sits behind a guard
+(`GuardedReferee` in `src/referee.ts`): two transport failures in a row mark it down, after which
+calls fail at once with "The referee isn't answering right now" (HTTP 503) instead of each waiting
+60 s, and one call every 30 s goes through to see whether it is back. A refusal counts as an
+answer. `GET /health` reports the state.
+
+### The local test referee
+
+`REFEREE_MODE=local` runs the same referee code natively on the relay's machine
+(`crates/referee-wasi`, "Local test referee"), one process per command, with its keys in
+`.keys/local-referee`. It is for testing while OutLayer is unavailable. It is not an enclave and
+nothing attests the code that signed, so:
+
+- it plays against its own contract, `LOCAL_TAIL_CONTRACT`, which pins the local keys; the relay
+  refuses to start if the contract pins other keys, and refuses `LOCAL_TAIL_CONTRACT` equal to
+  `TAIL_CONTRACT`;
+- it keeps its own database (`data/relay-local.db`);
+- every replay bundle it serves says `referee.kind: "local"`, and the replay page labels the
+  signatures as the test referee's;
+- the Handler answers with its template lines (no model call).
+
+```sh
+cargo build --release --manifest-path crates/referee-wasi/Cargo.toml --bin tail-referee
+cd contracts/tail/e2e && bun run deploy.ts --local     # tail-local.<relay account>, pinned to the local keys
+REFEREE_MODE=local bun apps/server/src/main.ts
+```
+
+Phones then set Settings > Contract to `LOCAL_TAIL_CONTRACT`.
+
 ## Run
 
 ```sh
@@ -193,7 +227,8 @@ Environment (placeholders in `.env.example`): `NEAR_NETWORK` (testnet only), `NE
 `NEAR_RELAY_PRIVATE_KEY`, `TAIL_CONTRACT`, `OUTLAYER_API`, `OUTLAYER_OWNER`, `REFEREE_PROJECT`,
 `REFEREE_PAYMENT_KEY` (or `OUTLAYER_PAYMENT_KEY`), `REFEREE_VERSION` (optional pin), `APPLE_TEAM_ID`,
 `IOS_BUNDLE_ID`, `APP_ATTEST_ENV`, `TAIL_TOKEN`, `NEAR_RPC_URL`, `RELAY_PORT`, `RELAY_DB`,
-`ALLOW_GHOSTS`. A missing value or a leftover placeholder stops the relay at startup.
+`ALLOW_GHOSTS`, `REFEREE_MODE` (`outlayer` or `local`), and for local mode `LOCAL_TAIL_CONTRACT`,
+`LOCAL_REFEREE_BIN`, `LOCAL_REFEREE_DIR`. A missing value or a leftover placeholder stops the relay at startup.
 
 `scripts/ghost-match.ts` runs the relay in-process with a fresh database, enrols three ghosts,
 opens a 5-minute lobby, tops them up, has them join, starts, and plays `CLEAN_TAG`: the hunter

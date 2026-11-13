@@ -9,6 +9,7 @@ import { createRelay, type RelayDeps } from "../src/app.ts";
 import { hudDigest, replayDigest, signRequestHeaders } from "../src/auth.ts";
 import { Store, type Zone } from "../src/db.ts";
 import { zoneHash } from "../src/matches.ts";
+import { GuardedReferee } from "../src/referee.ts";
 import { FakeChain, FakeReferee, quietLog, seedDevice, until } from "./fakes.ts";
 
 const PARENT = "relay.testnet";
@@ -35,6 +36,7 @@ function setup(over: Partial<RelayDeps> = {}) {
       network: "testnet",
       refereeProject: "relay.testnet/tail-referee",
       outlayerApi: "https://testnet-api.outlayer.ai",
+      refereeKind: "outlayer",
     },
     testnet: true,
     allowGhosts: false,
@@ -42,7 +44,12 @@ function setup(over: Partial<RelayDeps> = {}) {
     verifyAttestation: async () => new Uint8Array(65).fill(4),
     ...over,
   });
-  relays.push({ stop: () => relay.matches.stop() });
+  relays.push({
+    stop: () => {
+      relay.matches.stop();
+      relay.enrolment.stop();
+    },
+  });
   return { store, chain, referee, ...relay };
 }
 
@@ -124,6 +131,11 @@ describe("enrolment", () => {
         return new Uint8Array(65).fill(4);
       },
     });
+    const out = await attemptIn(env);
+    return { ...out, seenHash };
+  }
+
+  async function attemptIn(env: Env) {
     const ch = await req(env, "POST", "/enroll/challenge", { handle: "dana" });
     expect(ch.status).toBe(200);
     const challenge = new Uint8Array(Buffer.from(String(ch.json["challenge"]), "base64"));
@@ -143,7 +155,6 @@ describe("enrolment", () => {
       ch,
       body,
       near,
-      seenHash,
       expected: enrollClientDataHash(challenge, `dana.${PARENT}`, box, near),
     };
   }
@@ -155,7 +166,19 @@ describe("enrolment", () => {
     expect(seenHash && equal(seenHash, expected)).toBe(true);
     expect(env.chain.accounts.get(`dana.${PARENT}`)).toEqual(near);
     expect(env.store.device(`dana.${PARENT}`)?.kind).toBe("phone");
+    // The referee gets the device just after the phone's answer, not before it.
+    await until(() => env.store.device(`dana.${PARENT}`)?.receipt, "the referee's receipt");
     expect(env.referee.calls).toContain("enroll");
+  });
+
+  test("enrolment answers while the referee is down, and the device reaches the referee once it is back", async () => {
+    const env = setup({ refereeRetryMs: [0, 10] });
+    env.referee.failEnrolls = 1;
+    const { r } = await attemptIn(env);
+    expect(r.status).toBe(200);
+    await until(() => env.store.device(`dana.${PARENT}`)?.receipt, "the retried receipt");
+    expect(env.referee.calls.filter((c) => c === "enroll").length).toBe(2);
+    expect(env.store.devicesAwaitingReferee()).toEqual([]);
   });
 
   test("an enrolment whose attestation does not verify is refused and creates nothing", async () => {
@@ -343,6 +366,44 @@ describe("starting a match", () => {
     expect(ok.json["players"]).toEqual([`ana.${PARENT}`, `bo.${PARENT}`, `cy.${PARENT}`]);
     expect((ok.json["keys"] as unknown[]).length).toBe(3);
     expect(appliedSeqs(env)[0]).toBe(1);
+  });
+
+  test("start registers any device the referee does not have yet; while it cannot, the lobby stays open", async () => {
+    const env = setup({ refereeRetryMs: [] });
+    const [a, b] = [player(env, "ana"), player(env, "bo")];
+    const cy = `cy.${PARENT}`;
+    seedDevice(env.store, cy, ed25519.getPublicKey(ed25519.utils.randomSecretKey()), "phone", false);
+    const r = await req(env, "POST", "/matches", { ...MATCH, start_by_ms: Date.now() + 600_000 }, a);
+    const id = String(r.json["match_id"]);
+    for (const acc of [a.account, b.account, cy]) env.chain.join(id, acc);
+
+    env.referee.failEnrolls = 1;
+    const down = await req(env, "POST", `/matches/${id}/start`, {}, a);
+    expect(down.status).toBe(502);
+    expect(String(down.json["error"])).toBe("The referee didn't answer. Try again.");
+    expect(env.store.match(id)?.phase).toBe("lobby");
+    expect(env.chain.locked).toEqual([]);
+
+    const ok = await req(env, "POST", `/matches/${id}/start`, {}, a);
+    expect(ok.status).toBe(200);
+    expect(env.store.device(cy)?.receipt).not.toBeNull();
+  });
+});
+
+describe("health", () => {
+  test("reports which referee is behind the relay and whether it is answering", async () => {
+    const referee = new GuardedReferee(new FakeReferee(), "local");
+    const env = setup({ referee, refereeHealth: () => referee.health() });
+    const before = await req(env, "GET", "/health");
+    expect(before.json["referee"]).toEqual({
+      kind: "local",
+      status: "unknown",
+      last_ok_ms: null,
+      last_error: null,
+    });
+    await referee.pubkeys();
+    const after = await req(env, "GET", "/health");
+    expect((after.json["referee"] as Record<string, unknown>)["status"]).toBe("up");
   });
 });
 

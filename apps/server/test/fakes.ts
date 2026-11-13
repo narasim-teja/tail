@@ -166,6 +166,8 @@ export class FakeReferee implements Referee {
   calls: string[] = [];
   /** Throw a transport error on the next N tick calls. */
   failTicks = 0;
+  /** Throw a transport error on the next N enroll calls (the referee not answering). */
+  failEnrolls = 0;
   /** Corrupt the next tick's reported log root. */
   lieAboutLog = false;
   tickDelayMs = 0;
@@ -209,6 +211,10 @@ export class FakeReferee implements Referee {
   }
   async enroll(i: EnrollInput): Promise<EnrollResult> {
     this.calls.push("enroll");
+    if (this.failEnrolls > 0) {
+      this.failEnrolls--;
+      throw new RefereeError("enroll", "request failed: The operation timed out.", false);
+    }
     return {
       callId: "call-enroll",
       appAttestPk: i.appAttestPk,
@@ -375,6 +381,8 @@ export function seedDevice(
   accountId: string,
   nearPk: Uint8Array,
   kind: "phone" | "ghost" = "phone",
+  /** False: enrolled here, not yet registered with the referee. */
+  withReferee = true,
 ) {
   store.putDevice({
     account_id: accountId,
@@ -382,9 +390,9 @@ export function seedDevice(
     app_attest_pk: new Uint8Array(65),
     player_box_pk: new Uint8Array(32),
     near_pk: nearPk,
-    receipt: new Uint8Array(1),
-    receipt_sig: new Uint8Array(64),
-    enroll_call_id: "c",
+    receipt: withReferee ? new Uint8Array(1) : null,
+    receipt_sig: withReferee ? new Uint8Array(64) : null,
+    enroll_call_id: withReferee ? "c" : null,
     created_ms: 0,
   });
 }

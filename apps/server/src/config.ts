@@ -29,6 +29,14 @@ export interface Config {
   dbPath: string;
   /** True only when NEAR_NETWORK=testnet and ALLOW_GHOSTS=1 (the testing door, README). */
   allowGhosts: boolean;
+  /**
+   * `outlayer` (default): the referee in OutLayer's enclave. `local`: the same referee code run
+   * natively on this machine, a test referee for when OutLayer is unavailable. Local mode plays
+   * against LOCAL_TAIL_CONTRACT, which pins the local referee's keys, never against the main one.
+   */
+  refereeMode: "outlayer" | "local";
+  /** Set in local mode: the native referee binary and the directory holding its keys. */
+  localReferee: { bin: string; dir: string } | null;
 }
 
 export class ConfigError extends Error {
@@ -62,8 +70,17 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   const relayPrivateKey = need("NEAR_RELAY_PRIVATE_KEY");
   if (!relayPrivateKey.startsWith("ed25519:"))
     throw new ConfigError("NEAR_RELAY_PRIVATE_KEY must be ed25519:…");
-  const contract = need("TAIL_CONTRACT");
-  if (!contract.endsWith(".testnet")) throw new ConfigError("TAIL_CONTRACT must be a .testnet account");
+  const mode = opt("REFEREE_MODE", "outlayer");
+  if (mode !== "outlayer" && mode !== "local")
+    throw new ConfigError("REFEREE_MODE must be outlayer or local");
+  // The local referee signs with keys from a file, so it plays against its own contract: the
+  // main one pins the enclave's keys and would refuse every verdict anyway.
+  const contractVar = mode === "local" ? "LOCAL_TAIL_CONTRACT" : "TAIL_CONTRACT";
+  const contract = need(contractVar);
+  if (!contract.endsWith(".testnet")) throw new ConfigError(`${contractVar} must be a .testnet account`);
+  if (mode === "local" && contract === env["TAIL_CONTRACT"]?.trim()) {
+    throw new ConfigError("LOCAL_TAIL_CONTRACT must not be the main TAIL_CONTRACT");
+  }
 
   const ghosts = env["ALLOW_GHOSTS"]?.trim();
   if (ghosts !== undefined && ghosts !== "" && ghosts !== "0" && ghosts !== "1") {
@@ -101,8 +118,24 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     appId: `${need("APPLE_TEAM_ID")}.${need("IOS_BUNDLE_ID")}`,
     appAttestEnvironment: environment,
     port,
-    dbPath: opt("RELAY_DB", new URL("../data/relay.db", import.meta.url).pathname),
+    // Each referee plays on its own contract, so each keeps its own devices and matches.
+    dbPath: opt(
+      "RELAY_DB",
+      new URL(mode === "local" ? "../data/relay-local.db" : "../data/relay.db", import.meta.url).pathname,
+    ),
     allowGhosts: network === "testnet" && ghosts === "1",
+    refereeMode: mode,
+    localReferee:
+      mode === "local"
+        ? {
+            bin: opt(
+              "LOCAL_REFEREE_BIN",
+              new URL("../../../crates/referee-wasi/target/release/tail-referee", import.meta.url).pathname,
+            ),
+            // Private keys: under the repo's ignored .keys/, never next to the relay's data.
+            dir: opt("LOCAL_REFEREE_DIR", new URL("../../../.keys/local-referee", import.meta.url).pathname),
+          }
+        : null,
   };
 }
 
@@ -114,7 +147,10 @@ export function describeConfig(c: Config) {
     relayKey: `present, ${c.relayPrivateKey.length} chars`,
     contract: c.contract,
     token: c.token,
-    referee: `${c.outlayerOwner}/${c.refereeProject}${c.refereeVersion ? `@${c.refereeVersion.slice(0, 12)}` : ""}`,
+    referee:
+      c.refereeMode === "local"
+        ? "local test referee (not an enclave)"
+        : `${c.outlayerOwner}/${c.refereeProject}${c.refereeVersion ? `@${c.refereeVersion.slice(0, 12)}` : ""}`,
     refereePaymentKey: `present, ${c.refereePaymentKey.length} chars`,
     appId: c.appId,
     port: c.port,

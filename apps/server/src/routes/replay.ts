@@ -21,6 +21,8 @@ export interface ReplayMeta {
   /** OutLayer project `owner/name`. */
   refereeProject: string;
   outlayerApi: string;
+  /** Which referee judged: OutLayer's enclave, or the local test referee (REFEREE_MODE=local). */
+  refereeKind: "outlayer" | "local";
 }
 
 const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
@@ -97,6 +99,7 @@ export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: R
         api: d.meta.outlayerApi,
         refereePk: chain.referee_pk,
         vrfPk: chain.vrf_pk,
+        kind: d.meta.refereeKind,
       },
       verdicts: d.store.verdicts(id).map((v) => ({ signed: b64(v.raw), txHash: v.tx_hash })),
       log: d.store.log(id).map(b64),

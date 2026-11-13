@@ -11,7 +11,7 @@ import { HttpError } from "./errors.ts";
 import { HudHub } from "./hub.ts";
 import { Matches } from "./matches.ts";
 import type { Chain } from "./near.ts";
-import { type Referee, RefereeError } from "./referee.ts";
+import { type Referee, RefereeError, type RefereeHealth, RefereeUnavailableError } from "./referee.ts";
 import { batchRoutes } from "./routes/batch.ts";
 import { ghostRoutes, topupRoutes } from "./routes/dev.ts";
 import { enrollRoutes } from "./routes/enroll.ts";
@@ -35,6 +35,10 @@ export interface RelayDeps {
   /** NEAR_NETWORK=testnet and ALLOW_GHOSTS=1 (config.ts): mounts POST /dev/ghosts/enroll. */
   allowGhosts: boolean;
   verifyAttestation?: VerifyAttestation;
+  /** Whether the referee is answering (referee.ts GuardedReferee); /health reports it. */
+  refereeHealth?: () => RefereeHealth;
+  /** Background referee registration schedule (enroll.ts); tests pass []. */
+  refereeRetryMs?: readonly number[];
   now?: () => number;
   tickMs?: number;
 }
@@ -42,17 +46,6 @@ export interface RelayDeps {
 export function createRelay(d: RelayDeps) {
   if (d.allowGhosts && !d.testnet) throw new Error("ghosts are testnet only");
   const hub = new HudHub();
-  const matches = new Matches({
-    store: d.store,
-    chain: d.chain,
-    referee: d.referee,
-    hub,
-    log: d.log,
-    appId: d.appId,
-    token: d.token,
-    ...(d.now ? { now: d.now } : {}),
-    ...(d.tickMs !== undefined ? { tickMs: d.tickMs } : {}),
-  });
   const enrolment = new Enrolment({
     store: d.store,
     chain: d.chain,
@@ -62,22 +55,65 @@ export function createRelay(d: RelayDeps) {
     appId: d.appId,
     environment: d.environment,
     verifyAttestation: d.verifyAttestation ?? appleVerify,
+    ...(d.refereeRetryMs ? { refereeRetryMs: d.refereeRetryMs } : {}),
     ...(d.now ? { now: d.now } : {}),
+  });
+  const matches = new Matches({
+    store: d.store,
+    chain: d.chain,
+    referee: d.referee,
+    hub,
+    log: d.log,
+    appId: d.appId,
+    token: d.token,
+    ensureWithReferee: (accounts) => enrolment.ensureWithReferee(accounts),
+    ...(d.now ? { now: d.now } : {}),
+    ...(d.tickMs !== undefined ? { tickMs: d.tickMs } : {}),
   });
   const { upgradeWebSocket, websocket } = createBunWebSocket();
 
   const app = new Hono();
+  // One line per request: what was asked, how it ended, how long it took. The phone's errors
+  // are short by design, so this is where a failure is read.
+  app.use("*", async (c, next) => {
+    const t0 = performance.now();
+    await next();
+    const line = {
+      method: c.req.method,
+      path: c.req.path,
+      status: c.res.status,
+      ms: Math.round(performance.now() - t0),
+    };
+    if (c.req.path === "/health") d.log.debug(line, "request");
+    else d.log.info(line, "request");
+  });
   app.onError((e, c) => {
     if (e instanceof HttpError) return c.json({ error: e.message }, e.status);
+    // Plain sentences: the phone shows these as they are.
+    if (e instanceof RefereeUnavailableError) {
+      return c.json({ error: "The referee isn't answering right now. Try again in a minute." }, 503);
+    }
     if (e instanceof RefereeError) {
       d.log.error({ err: e.message }, "referee call failed");
-      return c.json({ error: "the referee did not answer; try again" }, 502);
+      return c.json(
+        { error: e.refused ? `The referee refused: ${e.message}` : "The referee didn't answer. Try again." },
+        502,
+      );
     }
     d.log.error({ err: e.message, path: c.req.path }, "request failed");
     return c.json({ error: "something went wrong on the relay" }, 500);
   });
   app.notFound((c) => c.json({ error: "not found" }, 404));
-  app.get("/health", (c) => c.json({ ok: true }));
+  // The relay is up; `referee` says whether the referee behind it is answering, and which one.
+  app.get("/health", (c) => {
+    const r = d.refereeHealth?.();
+    return c.json({
+      ok: true,
+      ...(r
+        ? { referee: { kind: r.kind, status: r.status, last_ok_ms: r.lastOkMs, last_error: r.lastError } }
+        : {}),
+    });
+  });
   // The referee's public keys. Phones seal batches to referee_box_pk after checking box_pk_sig
   // against the referee_pk the contract pins (get_config), so the relay cannot swap the box key.
   let pubkeys: Promise<Record<string, string>> | undefined;

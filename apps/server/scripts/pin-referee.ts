@@ -1,5 +1,6 @@
-// Pins the deployed referee's keys in the contract (testnet only): its `verdicts` signing key as
-// referee_pk and OutLayer's testnet VRF key as vrf_pk, both read from the referee's `pubkeys`.
+// Pins the referee's keys in the contract (testnet only): its `verdicts` signing key as
+// referee_pk and its VRF key as vrf_pk, both read from the referee's `pubkeys`. With
+// REFEREE_MODE=local that is the local test referee and LOCAL_TAIL_CONTRACT.
 // Signed by NEAR_RELAY_ACCOUNT, the contract owner, with 1 yocto each. Matches created afterwards
 // pin these keys; running ones keep theirs. Does nothing when the keys already match.
 //
@@ -9,19 +10,13 @@ import { createLogger } from "@tail/log";
 import { toHex } from "@tail/protocol";
 import { loadConfig, loadRepoEnv } from "../src/config.ts";
 import { NearChain } from "../src/near.ts";
-import { OutLayerReferee } from "../src/referee.ts";
+import { makeReferee } from "../src/referee.ts";
 
 loadRepoEnv();
 const config = loadConfig(process.env);
 const log = createLogger("pin-referee");
 const chain = new NearChain(config, log);
-const referee = new OutLayerReferee({
-  api: config.outlayerApi,
-  owner: config.outlayerOwner,
-  project: config.refereeProject,
-  paymentKey: config.refereePaymentKey,
-  version: config.refereeVersion,
-});
+const referee = makeReferee(config);
 
 const keys = await referee.pubkeys();
 const want = { referee_pk: toHex(keys.refereePk), vrf_pk: toHex(keys.vrfPk) };

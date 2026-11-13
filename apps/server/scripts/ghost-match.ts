@@ -1,10 +1,12 @@
-// A full 3-ghost match on NEAR testnet and hosted OutLayer, end to end through the relay:
+// A full 3-ghost match on NEAR testnet and the configured referee (hosted OutLayer, or the local
+// test referee with REFEREE_MODE=local), end to end through the relay:
 // enrol (testing door) → create the lobby → top up → join with each ghost's own key → start →
 // real-time ticks with sealed batches, a hint and a tag → End → declassify. After each step it
 // checks the contract (get_match, get_heads, get_roots, balances) and at the end the relay's
 // copy of the log against the anchored root. Runs the relay in-process with a fresh database.
 //
 //   ALLOW_GHOSTS=1 bun apps/server/scripts/ghost-match.ts      (testnet only; ~0.5 NEAR, ~$0.05)
+//   REFEREE_MODE=local ALLOW_GHOSTS=1 RELAY_PORT=8788 bun apps/server/scripts/ghost-match.ts
 
 import { createLogger } from "@tail/log";
 import {
@@ -89,7 +91,12 @@ try {
     invites: ghosts.map((g) => g.accountId),
   });
   const matchId = created.match_id;
+  // The RPC view can trail the create transaction by a block or two: wait for the lobby to show.
   let m = await relay.chain.getMatch(matchId);
+  for (let i = 0; i < 10 && !m; i++) {
+    await Bun.sleep(1_000);
+    m = await relay.chain.getMatch(matchId);
+  }
   check(
     "create_match opened a lobby hosted by the relay",
     m?.phase === "lobby" && m.host === config.relayAccount,
@@ -272,9 +279,9 @@ try {
   console.log(`verdicts: ${verdicts.map((v) => `${v.seq}:${v.kind}`).join(" ")}`);
   console.log(`ticks: ${ticks.length}, wall p50 ${pct(0.5)} ms, p95 ${pct(0.95)} ms, max ${walls.at(-1)} ms`);
   const byCmd = new Map<string, number>();
-  for (const c of relay.referee.calls) byCmd.set(c.cmd, (byCmd.get(c.cmd) ?? 0) + 1);
+  for (const c of relay.refereeClient.calls) byCmd.set(c.cmd, (byCmd.get(c.cmd) ?? 0) + 1);
   console.log(
-    `OutLayer: ${relay.referee.calls.length} calls (${[...byCmd].map(([k, v]) => `${k} ${v}`).join(", ")}), $${relay.referee.spendUsd().toFixed(4)}`,
+    `${config.refereeMode === "local" ? "Local test referee" : "OutLayer"}: ${relay.refereeClient.calls.length} calls (${[...byCmd].map(([k, v]) => `${k} ${v}`).join(", ")}), $${relay.refereeClient.spendUsd().toFixed(4)}`,
   );
   console.log(`NEAR spent by the relay: ${(Number(nearBefore - nearAfter) / 1e24).toFixed(4)}`);
 } finally {

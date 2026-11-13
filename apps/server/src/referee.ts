@@ -5,6 +5,7 @@
 // change in the referee fails loudly in this file instead of deep inside the tick loop.
 
 import { decodeSignedVerdict, type SignedVerdict } from "@tail/protocol";
+import type { Config } from "./config.ts";
 
 export interface Circle {
   latE7: number;
@@ -221,7 +222,117 @@ const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
 const b64d = (s: string) => new Uint8Array(Buffer.from(s, "base64"));
 const circle = (c: Circle) => ({ lat_e7: c.latE7, lon_e7: c.lonE7, radius_m: c.radiusM });
 
-// ── HTTPS client ───────────────────────────────────────────────────────────────────
+// ── Transports ───────────────────────────────────────────────────────────────────
+
+/** What one referee command came back with: the referee's own `{ok, result | error}` answer. */
+export interface RefereeAnswer {
+  answer: unknown;
+  /** The OutLayer call id (or the local referee's), for the attestation link and the log. */
+  callId: string;
+  /** OutLayer compute_cost in micro-USD; 0 for the local referee. */
+  cost: number;
+}
+
+/** Sends one command. Throws a non-refused RefereeError when no answer came back. */
+export type RefereeTransport = (cmd: string, input: Obj) => Promise<RefereeAnswer>;
+
+/** OutLayer over HTTPS: `POST {api}/call/{owner}/{project}` with `{input: {cmd, …}}`. */
+export function outLayerTransport(o: RefereeClientOptions): RefereeTransport {
+  const url = `${o.api}/call/${o.owner}/${o.project}`;
+  const doFetch = o.fetch ?? fetch;
+  return async (cmd, input) => {
+    const body = JSON.stringify(
+      o.version ? { input: { cmd, ...input }, version_key: o.version } : { input: { cmd, ...input } },
+    );
+    let res: Response;
+    try {
+      res = await doFetch(url, {
+        method: "POST",
+        headers: { "X-Payment-Key": o.paymentKey, "Content-Type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(o.timeoutMs ?? 60_000),
+      });
+    } catch (e) {
+      throw new RefereeError(cmd, `request failed: ${(e as Error).message}`, false);
+    }
+    const text = await res.text();
+    let j: Obj;
+    try {
+      j = JSON.parse(text) as Obj;
+    } catch {
+      // Cloudflare's 524 page lands here when OutLayer's workers do not answer in time.
+      const title = /<title>([^<]*)<\/title>/i.exec(text)?.[1];
+      throw new RefereeError(
+        cmd,
+        `HTTP ${res.status}, not JSON${title ? ` (${title})` : `: ${text.slice(0, 200)}`}`,
+        false,
+      );
+    }
+    const out = j["output"];
+    if (!res.ok || typeof out !== "object" || out === null) {
+      throw new RefereeError(cmd, `HTTP ${res.status}: ${text.slice(0, 200)}`, false);
+    }
+    const cost = Number(j["compute_cost"] ?? 0);
+    return {
+      answer: out,
+      callId: typeof j["call_id"] === "string" ? j["call_id"] : "",
+      cost: Number.isFinite(cost) ? cost : 0,
+    };
+  };
+}
+
+export interface LocalRefereeOptions {
+  /** The native build of crates/referee-wasi (`tail-referee`). */
+  bin: string;
+  /** Where the local referee keeps its keys and storage (TAIL_LOCAL_REFEREE_DIR). */
+  dir: string;
+  /** The account the VRF alpha names as sender, as OutLayer names the project owner. */
+  owner: string;
+  timeoutMs?: number;
+}
+
+/**
+ * The local test referee: the same referee code built natively, one process per command, JSON
+ * in on stdin and out on stdout (crates/referee-wasi README, "Local test referee"). Not an
+ * enclave: its keys are files on this machine. Only for testing while OutLayer is unavailable,
+ * against a contract that pins this referee's keys, and every replay it judges says so.
+ */
+export function localTransport(o: LocalRefereeOptions): RefereeTransport {
+  return async (cmd, input) => {
+    const proc = Bun.spawn([o.bin], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        TAIL_LOCAL_REFEREE_DIR: o.dir,
+        TAIL_LOCAL_REFEREE_OWNER: o.owner,
+      },
+    });
+    proc.stdin.write(JSON.stringify({ cmd, ...input }));
+    await proc.stdin.end();
+    const timer = setTimeout(() => proc.kill(), o.timeoutMs ?? 30_000);
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]).finally(() => clearTimeout(timer));
+    let answer: unknown;
+    try {
+      answer = JSON.parse(out);
+    } catch {
+      throw new RefereeError(cmd, `local referee exited ${code} without JSON: ${err.slice(0, 200)}`, false);
+    }
+    const result = (answer as Obj)["result"];
+    const callId =
+      typeof result === "object" && result !== null && typeof (result as Obj)["call_id"] === "string"
+        ? ((result as Obj)["call_id"] as string)
+        : "";
+    return { answer, callId, cost: 0 };
+  };
+}
+
+// ── Client ───────────────────────────────────────────────────────────────────────
 
 export interface RefereeClientOptions {
   api: string;
@@ -243,16 +354,11 @@ export interface CallStat {
   cost: number;
 }
 
-/** The referee over OutLayer HTTPS. Keeps a record of every call for timings and spend. */
-export class OutLayerReferee implements Referee {
+/** The referee's commands over a transport. Keeps a record of every call for timings and spend. */
+export class RefereeClient implements Referee {
   readonly calls: CallStat[] = [];
-  private readonly url: string;
-  private readonly fetch: typeof fetch;
 
-  constructor(private readonly o: RefereeClientOptions) {
-    this.url = `${o.api}/call/${o.owner}/${o.project}`;
-    this.fetch = o.fetch ?? fetch;
-  }
+  constructor(private readonly send: RefereeTransport) {}
 
   /** Total spend so far, from OutLayer's compute_cost (micro-USD). */
   spendUsd(): number {
@@ -261,35 +367,11 @@ export class OutLayerReferee implements Referee {
 
   private async call(cmd: string, args: Obj): Promise<Obj> {
     const t0 = performance.now();
-    const body = JSON.stringify(
-      this.o.version ? { input: { cmd, ...args }, version_key: this.o.version } : { input: { cmd, ...args } },
-    );
-    let res: Response;
-    try {
-      res = await this.fetch(this.url, {
-        method: "POST",
-        headers: { "X-Payment-Key": this.o.paymentKey, "Content-Type": "application/json" },
-        body,
-        signal: AbortSignal.timeout(this.o.timeoutMs ?? 60_000),
-      });
-    } catch (e) {
-      throw new RefereeError(cmd, `request failed: ${(e as Error).message}`, false);
-    }
-    const text = await res.text();
-    let j: Obj;
-    try {
-      j = JSON.parse(text) as Obj;
-    } catch {
-      throw new RefereeError(cmd, `HTTP ${res.status}, not JSON: ${text.slice(0, 200)}`, false);
-    }
-    const cost = Number(j["compute_cost"] ?? 0);
-    const callId = typeof j["call_id"] === "string" ? j["call_id"] : "";
-    this.calls.push({ cmd, callId, wallMs: performance.now() - t0, cost: Number.isFinite(cost) ? cost : 0 });
-    const out = j["output"];
-    if (!res.ok || typeof out !== "object" || out === null) {
-      throw new RefereeError(cmd, `HTTP ${res.status}: ${text.slice(0, 200)}`, false);
-    }
-    const o = out as Obj;
+    const { answer, callId, cost } = await this.send(cmd, args);
+    this.calls.push({ cmd, callId, wallMs: performance.now() - t0, cost });
+    if (typeof answer !== "object" || answer === null)
+      throw new RefereeError(cmd, "answer is not an object", false);
+    const o = answer as Obj;
     if (o["ok"] === false) throw new RefereeError(cmd, String(o["error"]), true);
     if (o["ok"] !== true) throw new RefereeError(cmd, "answer has no ok field", false);
     return shape(cmd).obj(o["result"], "result");
@@ -447,5 +529,141 @@ export class OutLayerReferee implements Referee {
       batches: s.bytesList(r, "batches"),
       refused: s.arr(r, "refused").map((x, k) => s.obj(x, `refused[${k}]`)),
     };
+  }
+}
+
+/** The referee on OutLayer (the enclave): the default, and the only one a real match should use. */
+export class OutLayerReferee extends RefereeClient {
+  constructor(o: RefereeClientOptions) {
+    super(outLayerTransport(o));
+  }
+}
+
+/** The local test referee (see localTransport). */
+export class LocalReferee extends RefereeClient {
+  constructor(o: LocalRefereeOptions) {
+    super(localTransport(o));
+  }
+}
+
+/** The referee this config asks for: OutLayer's enclave by default, the local test referee in local mode. */
+export function makeReferee(c: Config): RefereeClient {
+  if (c.refereeMode === "local" && c.localReferee) {
+    return new LocalReferee({ ...c.localReferee, owner: c.relayAccount });
+  }
+  return new OutLayerReferee({
+    api: c.outlayerApi,
+    owner: c.outlayerOwner,
+    project: c.refereeProject,
+    paymentKey: c.refereePaymentKey,
+    version: c.refereeVersion,
+  });
+}
+
+// ── Health ───────────────────────────────────────────────────────────────────────
+
+export type RefereeKind = "outlayer" | "local";
+
+export interface RefereeHealth {
+  kind: RefereeKind;
+  /** unknown until the first answer; down after DOWN_AFTER transport failures in a row. */
+  status: "unknown" | "up" | "down";
+  lastOkMs: number | null;
+  lastError: string | null;
+}
+
+/** Thrown without calling the referee while it is known to be down. */
+export class RefereeUnavailableError extends RefereeError {
+  override name = "RefereeUnavailableError";
+}
+
+/** Transport failures in a row that mark the referee down. */
+const DOWN_AFTER = 2;
+/** While down, one call is let through this often to see whether it is back. */
+export const PROBE_MS = 30_000;
+
+/**
+ * Wraps a referee so the relay knows whether it is answering. While it is down, calls fail at
+ * once instead of each waiting out the transport's deadline, and one call every PROBE_MS goes
+ * through to find out when it is back. A refusal is an answer: it counts as up.
+ */
+export class GuardedReferee implements Referee {
+  private status: RefereeHealth["status"] = "unknown";
+  private failures = 0;
+  private lastOkMs: number | null = null;
+  private lastError: string | null = null;
+  private lastAttemptMs = 0;
+  private probing = false;
+  private readonly now: () => number;
+
+  constructor(
+    private readonly inner: Referee,
+    readonly kind: RefereeKind,
+    now?: () => number,
+  ) {
+    this.now = now ?? Date.now;
+  }
+
+  health(): RefereeHealth {
+    return { kind: this.kind, status: this.status, lastOkMs: this.lastOkMs, lastError: this.lastError };
+  }
+
+  private async run<T>(cmd: string, f: () => Promise<T>): Promise<T> {
+    const now = this.now();
+    let probe = false;
+    if (this.status === "down") {
+      if (this.probing || now - this.lastAttemptMs < PROBE_MS) {
+        throw new RefereeUnavailableError(cmd, `not answering (${this.lastError ?? "no answer"})`, false);
+      }
+      probe = true;
+      this.probing = true;
+    }
+    this.lastAttemptMs = now;
+    try {
+      const r = await f();
+      this.answered();
+      return r;
+    } catch (e) {
+      if (e instanceof RefereeError && e.refused) this.answered();
+      else {
+        this.failures += 1;
+        this.lastError = (e as Error).message;
+        if (this.failures >= DOWN_AFTER) this.status = "down";
+      }
+      throw e;
+    } finally {
+      if (probe) this.probing = false;
+    }
+  }
+
+  private answered() {
+    this.status = "up";
+    this.failures = 0;
+    this.lastOkMs = this.now();
+  }
+
+  pubkeys() {
+    return this.run("pubkeys", () => this.inner.pubkeys());
+  }
+  enroll(i: EnrollInput) {
+    return this.run("enroll", () => this.inner.enroll(i));
+  }
+  start(i: StartInput) {
+    return this.run("start", () => this.inner.start(i));
+  }
+  tick(i: TickInput) {
+    return this.run("tick", () => this.inner.tick(i));
+  }
+  voice(i: VoiceInput) {
+    return this.run("voice", () => this.inner.voice(i));
+  }
+  end(i: EndInput) {
+    return this.run("end", () => this.inner.end(i));
+  }
+  declassify(matchId: Uint8Array) {
+    return this.run("declassify", () => this.inner.declassify(matchId));
+  }
+  declassifyBatches(i: DeclassifyBatchesInput) {
+    return this.run("declassify_batches", () => this.inner.declassifyBatches(i));
   }
 }

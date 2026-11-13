@@ -55,6 +55,11 @@ export interface MatchDeps {
   log: Logger;
   appId: string;
   token: string;
+  /**
+   * Makes sure the referee holds each player's device key before the match starts (enroll.ts
+   * registers devices in the background; this waits for any still missing).
+   */
+  ensureWithReferee: (accountIds: string[]) => Promise<void>;
   now?: () => number;
   /** Defaults to TICK_MS; tests shorten it. */
   tickMs?: number;
@@ -162,6 +167,9 @@ export class Matches {
       const missing = chain.players.filter((p) => !this.d.store.device(p.account_id));
       if (missing.length)
         throw new HttpError(409, `not enrolled here: ${missing.map((p) => p.account_id).join(", ")}`);
+      // Before the lock: if the referee cannot take a device now, the lobby stays open and the
+      // host can simply press Start again.
+      await this.d.ensureWithReferee(chain.players.map((p) => p.account_id));
       await this.d.chain.lockLobby(matchId);
       chain = await this.d.chain.getMatch(matchId);
       if (!chain) throw new HttpError(404, "match is not on chain");
