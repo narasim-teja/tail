@@ -22,18 +22,20 @@ import {
   REQUEST_SKEW_MS,
   replayDigest,
   requestDigest,
+  verifyEd25519,
 } from "@tail/protocol";
 
-export { AuthDomain, challengeDigest, hudDigest, REQUEST_SKEW_MS, replayDigest, requestDigest };
-
-export function verifyEd25519(publicKey: Uint8Array, digest: Uint8Array, sig: Uint8Array): boolean {
-  if (publicKey.length !== 32 || sig.length !== 64) return false;
-  try {
-    return ed25519.verify(sig, digest, publicKey);
-  } catch {
-    return false;
-  }
-}
+// The protocol's strict check (RFC 8032, as the referee's verify_strict), not noble's default
+// ZIP 215 rules, which accept a small-order key with a signature that holds for any message.
+export {
+  AuthDomain,
+  challengeDigest,
+  hudDigest,
+  REQUEST_SKEW_MS,
+  replayDigest,
+  requestDigest,
+  verifyEd25519,
+};
 
 /** A signed request as the phone sends it, directly or inside a mesh carry envelope. */
 export interface SignedRequest {

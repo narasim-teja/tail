@@ -47,6 +47,28 @@ import {
 
 // ── Enrolment ──────────────────────────────────────────────────────────────────────
 
+describe("signed requests", () => {
+  test("a signature only ZIP 215 accepts is refused: the small-order key that verifies anything", async () => {
+    const env = setup();
+    // The identity point as the account's key, and R = identity, S = 0: every message verifies
+    // under the cofactored ZIP 215 rules, none under the strict ones.
+    const identity = new Uint8Array(32);
+    identity[0] = 1;
+    seedDevice(env.store, `zed.${PARENT}`, identity, "phone", env.referee);
+    const sig = new Uint8Array(64);
+    sig[0] = 1;
+    const res = await env.app.request("/enroll/status", {
+      headers: {
+        "x-tail-account": `zed.${PARENT}`,
+        "x-tail-time": String(Date.now()),
+        "x-tail-sig": Buffer.from(sig).toString("base64"),
+      },
+    });
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as Record<string, unknown>)["error"]).toBe("bad request signature");
+  });
+});
+
 describe("enrolment", () => {
   async function attempt(verdict: boolean) {
     let seenHash: Uint8Array | undefined;
