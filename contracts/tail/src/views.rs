@@ -101,6 +101,9 @@ pub struct MatchView {
     /// The VRF reveal from `End`, so anyone can rebuild the ring.
     pub alpha: Option<String>,
     pub vrf_signature: Option<String>,
+    /// The `sender` this match's VRF alpha must name, pinned at creation. `None` for a match
+    /// created before the upgrade that added it (such a match settles by `abort`).
+    pub vrf_sender: Option<AccountId>,
 }
 
 #[near(serializers = [json])]
@@ -110,6 +113,14 @@ pub struct ConfigView {
     /// The key new matches pin; running matches keep the key they were created with.
     pub referee_pk: String,
     pub vrf_pk: String,
+    /// The `sender` field new matches require in the VRF alpha (the referee's OutLayer caller).
+    pub vrf_sender: AccountId,
+    /// Least prepaid gas `withdraw` accepts, in Tgas.
+    pub withdraw_min_gas: u64,
+    /// Tag, Hint and Forfeit are refused once block time passes `end_ms` by more than this.
+    pub verdict_grace_ms: u64,
+    /// The k-th checkpoint needs k times this much match time since `start_ms`.
+    pub checkpoint_spacing_ms: u64,
     pub allowed_tokens: Vec<AccountId>,
     /// Exact yoctoNEAR deposit `create_match` needs.
     pub match_storage_deposit: U128,

@@ -6,15 +6,17 @@
 //
 // Covers: registration paid by the parent, top-ups, an invite-only lobby with a named sponsor,
 // three players joining with function-call keys, the host locking the lobby, referee-signed
-// Start/Hint/Tag/Checkpoint/End, settlement, withdraw (paid and refunded). The verdict key and the
-// VRF key are local test keys in .keys/ standing in for the enclave's `verdicts` key and
-// OutLayer's VRF key.
+// Start/Hint/Tag/Checkpoint/End with the Tag following the ring End rebuilds, settlement, withdraw
+// (a player naming its wallet once, paid, and refunded). The verdict key and the VRF key are local
+// test keys in .keys/ standing in for the enclave's `verdicts` key and OutLayer's VRF key; the
+// parent stands in for the referee's OutLayer caller (the VRF alpha's sender).
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { Account, actions, KeyPair, type KeyPairString, nearToYocto, teraToGas } from "near-api-js";
 import {
+  buildRing,
   encodeSignedVerdict,
   playersHash,
   ringCommit,
@@ -38,7 +40,11 @@ import {
 
 const STAKE = 100_000n; // 0.1 USDC (6 decimals)
 const SPONSOR = 11n; // odd on purpose: two survivors split it 6 / 5
-const DURATION_MS = 600_000;
+// Start is dated 4.5 min back (the contract allows 5) so this 4-minute match is already past
+// end_ms when End lands: an End with two survivors is only accepted from end_ms on, and Tag and
+// Hint still land within the 5-minute grace after it.
+const DURATION_MS = 240_000;
+const START_BACKDATE_MS = 270_000;
 const runId = Date.now().toString(36);
 const contractId = `tail-e2e-${runId}.${parentId}`;
 
@@ -60,6 +66,7 @@ await createContract(contractId, {
   owner: parentId,
   referee_pk: refereePk,
   vrf_pk: vrfPk,
+  vrf_sender: parentId,
   allowed_tokens: ALLOWED_TOKENS,
 });
 let failure: unknown;
@@ -82,9 +89,13 @@ async function run() {
   const config = await view<Config>("get_config", {});
   record(
     "throwaway contract deployed with the test keys pinned",
-    config.owner === parentId && config.referee_pk === refereePk && config.vrf_pk === vrfPk,
+    config.owner === parentId &&
+      config.referee_pk === refereePk &&
+      config.vrf_pk === vrfPk &&
+      config.vrf_sender === parentId,
     `${contractId}; match deposit ${config.match_storage_deposit}, registration ${config.registration_deposit} yocto`,
   );
+  const withdrawGas = config.withdraw_min_gas;
   const registration = BigInt(config.registration_deposit);
 
   // ---------- token: registration and mint ----------
@@ -128,7 +139,9 @@ async function run() {
   type Player = (typeof players)[number];
   const byIndex = sorted.map((id) => players.find((p) => p.id === id) as Player);
   const [p0, p1, p2] = byIndex as [Player, Player, Player];
-  // p2's payout account is not registered on the token, so its withdraw must fail and refund.
+  // p0 and p1 are registered with themselves as payout, as the relay does; p0 names a wallet on
+  // its first withdraw. p2's payout account is not registered on the token, so its withdraw must
+  // fail and refund.
   const unregisteredPayout = `nobody-${runId}.${parentId}`;
   const unregistered = await fails(() =>
     callAs(players[0]?.acct as Account, "join_match", { match_id: "00".repeat(16) }),
@@ -210,7 +223,7 @@ async function run() {
   const id = unhex(matchId);
   const alpha = `vrf:1:${parentId}:${matchId}`; // OutLayer's alpha shape, seed = match id hex
   const vrfSignature = ed25519.sign(new TextEncoder().encode(alpha), vrfSk);
-  const startMs = BigInt(Date.now());
+  const startMs = BigInt(Date.now() - START_BACKDATE_MS);
   const start: Verdict = {
     kind: "Start",
     playersHash: playersHash(ids),
@@ -251,15 +264,20 @@ async function run() {
   const replay = await fails(() => applyVerdicts([hint]));
   record("the same verdict replayed is refused", replay.includes("verdict out of order"), replay);
 
-  await applyOne("Tag", signVerdict(id, 3, { kind: "Tag", hunter: 2, target: 1 }));
-  const tagged = `${STAKE - hintAmount},0,${2n * STAKE + hintAmount}`;
+  // The ring End rebuilds from the VRF reveal: ring[k] hunts ring[k+1]. Player 1 is tagged by
+  // whoever hunts it, so players 0 and 2 survive either way.
+  const ring = buildRing(ids, vrfSignature).map((a) => sorted.indexOf(a));
+  const hunter = ring[(ring.indexOf(1) + ring.length - 1) % ring.length] as number;
+  await applyOne("Tag", signVerdict(id, 3, { kind: "Tag", hunter, target: 1 }));
+  const afterTag = [STAKE - hintAmount, 0n, STAKE];
+  afterTag[hunter] = (afterTag[hunter] as bigint) + STAKE + hintAmount;
   m = await eventually(
     () => getMatch(matchId),
-    (v) => heads(v) === tagged,
+    (v) => heads(v) === afterTag.join(),
   );
   record(
-    "Tag moves player 1's whole head to player 2 and marks them out",
-    heads(m) === `${STAKE - hintAmount},0,${2n * STAKE + hintAmount}` && m.players[1]?.out === true,
+    `Tag by the ring's hunter (player ${hunter}) takes player 1's whole head and marks them out`,
+    heads(m) === afterTag.join() && m.players[1]?.out === true,
     heads(m),
   );
 
@@ -286,7 +304,7 @@ async function run() {
       roots.checkpoints[0]?.root === hex(checkpointRoot) &&
       roots.final_root?.root === hex(finalRoot),
   );
-  const expected = [STAKE - hintAmount + 6n, 0n, 2n * STAKE + hintAmount + 5n];
+  const expected = [(afterTag[0] as bigint) + 6n, 0n, (afterTag[2] as bigint) + 5n];
   const settled = await eventually(
     () => Promise.all(byIndex.map((p) => balance(p.id))),
     (b) => b.join() === expected.join(),
@@ -297,34 +315,48 @@ async function run() {
     settled.join(", "),
   );
 
-  // ---------- withdraw with function-call keys (50 Tgas: 20 go to ft_transfer, 5 to the callback) ----------
-  const ftBefore = await ftBalance(p0.id);
+  // ---------- withdraw with function-call keys (withdraw_min_gas: 20 go to ft_transfer, 10 to the callback) ----------
+  const noTo = await fails(() => callAs(p0.acct, "withdraw", { token: TOKEN, amount: "1" }, 0n, withdrawGas));
+  record("a player whose payout is itself must name a wallet to withdraw", noTo.includes("pass `to`"), noTo);
+  // The parent stands in for the player's wallet: it is registered on the token.
+  const ftBefore = await ftBalance(parentId);
   const paid = await callAs<boolean>(
     p0.acct,
     "withdraw",
-    { token: TOKEN, amount: settled[0]?.toString() },
+    { token: TOKEN, amount: settled[0]?.toString(), to: parentId },
     0n,
-    50,
+    withdrawGas,
   );
   const ftAfter = await eventually(
-    () => ftBalance(p0.id),
+    () => ftBalance(parentId),
     (b) => b - ftBefore === settled[0],
   );
   record(
-    "player 0 withdraws everything to its payout account",
-    paid === true && ftAfter - ftBefore === settled[0] && (await balance(p0.id)) === 0n,
+    "player 0 withdraws everything to the wallet it named, which becomes its payout for good",
+    paid === true &&
+      ftAfter - ftBefore === settled[0] &&
+      (await balance(p0.id)) === 0n &&
+      (await view<string | null>("get_payout", { account_id: p0.id })) === parentId,
     `${ftBefore} -> ${ftAfter}`,
   );
-  const again = await fails(() => callAs(p0.acct, "withdraw", { token: TOKEN, amount: "1" }, 0n, 50));
+  const other = await fails(() =>
+    callAs(p0.acct, "withdraw", { token: TOKEN, amount: "1", to: p1.id }, 0n, withdrawGas),
+  );
+  record("a second wallet cannot be named", other.includes("must be absent or the payout"), other);
+  const again = await fails(() =>
+    callAs(p0.acct, "withdraw", { token: TOKEN, amount: "1" }, 0n, withdrawGas),
+  );
   record("a second withdraw beyond the balance is refused", again.includes("balance too small"), again);
-  const out = await fails(() => callAs(p1.acct, "withdraw", { token: TOKEN, amount: "1" }, 0n, 50));
+  const out = await fails(() =>
+    callAs(p1.acct, "withdraw", { token: TOKEN, amount: "1", to: parentId }, 0n, withdrawGas),
+  );
   record("the tagged player has nothing to withdraw", out.includes("balance too small"), out);
 
   const res = await p2.acct.callFunctionRaw({
     contractId,
     methodName: "withdraw",
     args: { token: TOKEN, amount: settled[2]?.toString() },
-    gas: teraToGas(50),
+    gas: teraToGas(withdrawGas),
   });
   const status = res.status as { SuccessValue?: string };
   const refunded = JSON.parse(Buffer.from(status.SuccessValue ?? "", "base64").toString() || "null");
@@ -352,6 +384,8 @@ interface Config {
   owner: string;
   referee_pk: string;
   vrf_pk: string;
+  vrf_sender: string;
+  withdraw_min_gas: number;
   match_storage_deposit: string;
   registration_deposit: string;
 }

@@ -3,7 +3,9 @@
 //! Money enters only through NEP-141 `ft_transfer_call` (into an internal balance or a match's
 //! sponsor pot) and leaves only through `withdraw` to the account's payout account. Inside a match,
 //! heads move only when `apply` accepts a verdict signed by the referee key the match pinned at
-//! creation. `abort` is the refund path when the referee goes silent.
+//! creation. `abort` is the refund path when the referee goes silent. At `End` the contract
+//! rebuilds the ring from the revealed VRF output and refuses the match unless every Tag and
+//! Forfeit it applied followed that ring.
 //!
 //! Storage is always paid for up front: `register_for` pays for an account's payout record and one
 //! balance per allowed token, and `create_match` pays for the largest a match can grow. Nothing
@@ -18,9 +20,10 @@ use near_sdk::{
     assert_one_yocto, env, near, require, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError,
 };
 use tail_protocol::digest::verdict_digest;
-use tail_protocol::ring::{players_hash, ring_commit};
+use tail_protocol::ring::{build_ring, players_hash, ring_commit};
 use tail_protocol::{Hash, MatchId, SignedVerdict, Verdict, CHECKPOINT_MS, REFEREE_TIMEOUT_MS};
 
+mod migrate;
 mod views;
 pub use views::*;
 
@@ -31,9 +34,14 @@ pub const MIN_PLAYERS: u8 = 3;
 pub const MAX_PLAYERS: u8 = 12;
 /// Matches are 30 to 60 minutes (IDEA.md); the cap bounds the checkpoint list.
 pub const MAX_DURATION_MS: u64 = 3_600_000;
-/// Twice the referee's cadence (one per `CHECKPOINT_MS`) over the longest match. A checkpoint past
-/// this is refused, which stalls the match into `abort`: storage stays bounded and paid for.
-pub const MAX_CHECKPOINTS: usize = 2 * (MAX_DURATION_MS / CHECKPOINT_MS) as usize;
+/// The k-th checkpoint of a match lands only once `k × CHECKPOINT_SPACING_MS` of match time has
+/// passed (block time since `start_ms`, counted no further than `end_ms`). Half the referee's
+/// cadence (one per `CHECKPOINT_MS`) leaves room for clock skew between the referee and the chain
+/// and lets a backlog land in one batch after a relay outage, while the count stays bounded by rule.
+pub const CHECKPOINT_SPACING_MS: u64 = CHECKPOINT_MS / 2;
+/// The most checkpoints the spacing rule admits over the longest match; `create_match` pays for
+/// this many.
+pub const MAX_CHECKPOINTS: usize = (MAX_DURATION_MS / CHECKPOINT_SPACING_MS) as usize;
 /// Sponsors are named by the host at creation (a DAO in Commons mode), so strangers cannot fill
 /// the list with dust and lock the real sponsor out.
 pub const MAX_SPONSORS: usize = 4;
@@ -50,10 +58,17 @@ pub const LOCK_MS: u64 = 600_000;
 /// `Start.start_ms` must be this close to the block time it lands in, so `end_ms` (and with it
 /// the overdue abort) means real time.
 pub const START_SKEW_MS: u64 = 300_000;
-/// Upper bound on what one match ever stores (the match record at its largest plus a full checkpoint
-/// list, with NEAR's 40-byte per-record overhead). `create_match` charges it up front. A unit test
-/// checks the bound against a maximal match.
-pub const MATCH_STORAGE_BYTES: u128 = 8_000;
+/// Tag, Hint and Forfeit verdicts are refused once block time passes `end_ms` by more than this.
+/// The referee's last tick runs up to `TICK_MS` after `end_ms` (dark forfeits are counted to
+/// `end_ms` on it), its OutLayer call takes seconds and the relay retries a failed submit; five
+/// minutes covers that with room, the same delay `START_SKEW_MS` already allows between the
+/// referee signing and a verdict landing. It stays well under `REFEREE_TIMEOUT_MS`, so no head
+/// can move once the overdue abort is open.
+pub const VERDICT_GRACE_MS: u64 = 300_000;
+/// Upper bound on what one match ever stores (the match record at its largest, a full checkpoint
+/// list and a full ring record, with NEAR's 40-byte per-record overhead). `create_match` charges
+/// it up front. A unit test checks the bound against a maximal match.
+pub const MATCH_STORAGE_BYTES: u128 = 8_200;
 /// One payout record with 64-character account ids, including the 40-byte record overhead.
 pub const PAYOUT_RECORD_BYTES: u128 = 180;
 /// One (account, token) balance record with 64-character ids, including the record overhead.
@@ -65,7 +80,11 @@ const FT_TRANSFER_GAS: Gas = Gas::from_tgas(20);
 const ON_WITHDRAW_GAS: Gas = Gas::from_tgas(10);
 /// What `withdraw` must be called with: its own execution, the 20 + 10 Tgas it attaches, and the
 /// receipt costs. Less could leave the callback without the gas to restore a failed transfer.
+/// `get_config().withdraw_min_gas` reports it in Tgas so clients do not hard-code it.
 pub const WITHDRAW_MIN_GAS: Gas = Gas::from_tgas(50);
+
+// The spacing rule alone keeps every match within the checkpoint storage it paid for.
+const _: () = assert!(MAX_DURATION_MS / CHECKPOINT_SPACING_MS <= MAX_CHECKPOINTS as u64);
 
 #[near(serializers = [borsh, json])]
 #[serde(rename_all = "snake_case")]
@@ -147,6 +166,44 @@ impl Match {
     fn is_locked(&self, now: u64) -> bool {
         self.locked_until_ms.is_some_and(|t| now < t)
     }
+
+    /// `(start_ms, end_ms)`. `Start` sets both, and every other verdict needs a running match.
+    fn window(&self) -> (u64, u64) {
+        self.start_ms
+            .zip(self.end_ms)
+            .unwrap_or_else(|| env::panic_str("match not running"))
+    }
+}
+
+/// A Tag or Forfeit as it was applied, kept so `End` can replay them against the revealed ring.
+#[near(serializers = [borsh])]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Elimination {
+    Tag { hunter: u16, target: u16 },
+    Forfeit { player: u16, to: u16 },
+}
+
+impl Elimination {
+    /// `(winner, loser)`: the player who took the head and the player who went out.
+    fn winner_loser(self) -> (u16, u16) {
+        match self {
+            Self::Tag { hunter, target } => (hunter, target),
+            Self::Forfeit { player, to } => (to, player),
+        }
+    }
+}
+
+/// What `End` needs to check the ring, kept apart from `Match` so the match records of an earlier
+/// deployment stay readable after an in-place upgrade. Written by `create_match`; a match created
+/// before the upgrade has none and can only settle by `abort`.
+#[near(serializers = [borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RingRecord {
+    /// The OutLayer caller the VRF alpha must name, copied from the contract at creation.
+    pub vrf_sender: AccountId,
+    /// Every applied Tag and Forfeit in order; at most `MAX_PLAYERS - 1`, since each needs two
+    /// players still in and puts one out.
+    pub eliminations: Vec<Elimination>,
 }
 
 /// `ft_transfer_call` message: `{"credit":"<account>"}` or `{"sponsor":"<match id hex>"}`.
@@ -177,6 +234,10 @@ pub struct Tail {
     /// Kept apart from `matches` so Hint and Tag verdicts do not rewrite the checkpoint list.
     checkpoints: LookupMap<MatchId, Vec<Root>>,
     match_nonce: u64,
+    /// The account OutLayer names as `sender` in the VRF alpha: the referee's OutLayer caller.
+    /// New matches pin it; running matches keep theirs. Appended by `migrate` (v1 → v2).
+    vrf_sender: AccountId,
+    rings: LookupMap<MatchId, RingRecord>,
 }
 
 // near-sdk deserialises every JSON argument into an owned value, so methods take them by value.
@@ -187,7 +248,13 @@ impl Tail {
     /// (so nobody can initialise it in between), and there the predecessor is the parent.
     /// `#[init]` refuses a second call once state exists.
     #[init]
-    pub fn new(owner: AccountId, referee_pk: String, vrf_pk: String, allowed_tokens: Vec<AccountId>) -> Self {
+    pub fn new(
+        owner: AccountId,
+        referee_pk: String,
+        vrf_pk: String,
+        vrf_sender: AccountId,
+        allowed_tokens: Vec<AccountId>,
+    ) -> Self {
         require!(!allowed_tokens.is_empty(), "allowed_tokens is empty");
         Self {
             owner,
@@ -200,7 +267,19 @@ impl Tail {
             matches: LookupMap::new(b"m"),
             checkpoints: LookupMap::new(b"c"),
             match_nonce: 0,
+            vrf_sender: check_vrf_sender(vrf_sender),
+            rings: LookupMap::new(migrate::RINGS_PREFIX),
         }
+    }
+
+    /// In-place upgrade from the first state layout (before `vrf_sender` and the ring records).
+    /// Deploy the new code and call this in the same transaction, signed by the contract account
+    /// itself, or have the owner call it right after the deploy. It reads the old state, so a
+    /// second call (on the new layout) fails. Balances, payouts, matches and checkpoints keep
+    /// their records; matches created before it have no ring record and settle by `abort`.
+    #[init(ignore_state)]
+    pub fn migrate(vrf_sender: AccountId) -> Self {
+        migrate::from_v1(vrf_sender)
     }
 
     // ── Owner ────────────────────────────────────────────────────────────────────────────────
@@ -217,6 +296,14 @@ impl Tail {
     pub fn set_vrf_pk(&mut self, vrf_pk: String) {
         self.assert_owner();
         self.vrf_pk = parse_key(&vrf_pk, "vrf_pk");
+    }
+
+    /// Repins the VRF alpha's `sender` (the referee's OutLayer caller) for matches created from
+    /// now on.
+    #[payable]
+    pub fn set_vrf_sender(&mut self, vrf_sender: AccountId) {
+        self.assert_owner();
+        self.vrf_sender = check_vrf_sender(vrf_sender);
     }
 
     // ── Accounts ─────────────────────────────────────────────────────────────────────────────
@@ -252,8 +339,9 @@ impl Tail {
 
     /// Repoints `account_id`'s payout. Either the account itself or its current payout account
     /// may, with exactly 1 yocto attached. Function-call keys cannot attach a deposit, so a stolen
-    /// player key cannot redirect winnings, while the account's owner (full-access key) can always
-    /// undo a payout its parent set at registration.
+    /// player key cannot redirect winnings. Player accounts the relay creates hold only a
+    /// function-call key, so they cannot call this at all: they name their wallet once through
+    /// `withdraw`'s `to`, and from then on that wallet (a full-access account) can repoint it.
     #[payable]
     pub fn set_payout(&mut self, account_id: AccountId, payout_account: AccountId) {
         assert_one_yocto();
@@ -289,19 +377,43 @@ impl Tail {
     /// Pays `amount` of `token` from the caller's internal balance to their payout account. The
     /// balance is debited first and restored by `on_withdraw` if the transfer fails. The contract
     /// attaches the 1 yocto `ft_transfer` needs, because function-call keys cannot (F18). Call it
-    /// with at least 50 Tgas: 20 go to `ft_transfer` and 10 to the callback.
-    pub fn withdraw(&mut self, token: AccountId, amount: U128) -> Promise {
+    /// with at least `get_config().withdraw_min_gas` Tgas: 20 go to `ft_transfer` and 10 to the
+    /// callback.
+    ///
+    /// A payout that is the caller itself would strand the tokens on a player account that holds
+    /// only a function-call key. Then `to` is required: it becomes the payout, once and for good
+    /// (from then on only `set_payout` changes it), and this withdraw goes there.
+    /// It must be registered on the token, or the transfer fails and the balance comes back.
+    /// Otherwise `to` must be absent or equal the payout.
+    pub fn withdraw(&mut self, token: AccountId, amount: U128, to: Option<AccountId>) -> Promise {
         require!(
             env::prepaid_gas() >= WITHDRAW_MIN_GAS,
             "withdraw needs at least 50 Tgas"
         );
         let who = env::predecessor_account_id();
-        let payout = self
+        let current = self
             .payouts
             .get(&who)
             .cloned()
             .unwrap_or_else(|| env::panic_str("account not registered"));
         require!(amount.0 > 0, "amount must be positive");
+        let payout = if current == who {
+            let to = to.unwrap_or_else(|| {
+                env::panic_str("the payout account is this account itself; pass `to` to name a wallet")
+            });
+            require!(to != who, "`to` must be another account");
+            check_payout(&to);
+            // Overwrites the record registration paid for (sized for a 64-character id).
+            self.payouts.insert(who.clone(), to.clone());
+            env::log_str(&format!("payout of {who} set to {to}"));
+            to
+        } else {
+            require!(
+                to.as_ref().is_none_or(|to| *to == current),
+                "`to` must be absent or the payout account"
+            );
+            current
+        };
         debit(&mut self.balances, &who, &token, amount.0);
         Promise::new(token.clone())
             .function_call(
@@ -402,6 +514,13 @@ impl Tail {
             reveal: None,
         };
         self.matches.insert(id, m);
+        self.rings.insert(
+            id,
+            RingRecord {
+                vrf_sender: self.vrf_sender.clone(),
+                eliminations: Vec::new(),
+            },
+        );
         hex::encode(id)
     }
 
@@ -550,6 +669,10 @@ impl Tail {
             owner: self.owner.clone(),
             referee_pk: hex::encode(self.referee_pk),
             vrf_pk: hex::encode(self.vrf_pk),
+            vrf_sender: self.vrf_sender.clone(),
+            withdraw_min_gas: WITHDRAW_MIN_GAS.as_tgas(),
+            verdict_grace_ms: VERDICT_GRACE_MS,
+            checkpoint_spacing_ms: CHECKPOINT_SPACING_MS,
             allowed_tokens: self.allowed_tokens.clone(),
             match_storage_deposit: U128(match_storage_deposit().as_yoctonear()),
             registration_deposit: U128(self.registration_deposit().as_yoctonear()),
@@ -568,7 +691,8 @@ impl Tail {
 
     pub fn get_match(&self, match_id: String) -> Option<MatchView> {
         let id = parse_hex(&match_id, "match_id");
-        self.matches.get(&id).map(|m| match_view(&id, m))
+        let ring = self.rings.get(&id);
+        self.matches.get(&id).map(|m| match_view(&id, m, ring))
     }
 
     /// Heads in player-index order.
@@ -668,7 +792,8 @@ impl Tail {
     }
 
     fn apply_one(&mut self, sv: SignedVerdict, now: u64) {
-        let m = self.matches.get_mut(&sv.match_id).unwrap_or_else(no_match);
+        let id = sv.match_id;
+        let m = self.matches.get_mut(&id).unwrap_or_else(no_match);
         require!(sv.seq == m.seq + 1, "verdict out of order");
         require!(
             env::ed25519_verify(&sv.sig, verdict_digest(&sv.payload()), &m.referee_pk),
@@ -677,40 +802,22 @@ impl Tail {
         if !matches!(sv.body, Verdict::Start { .. }) {
             require!(m.phase == Phase::Running, "match not running");
         }
+        if matches!(
+            sv.body,
+            Verdict::Hint { .. } | Verdict::Tag { .. } | Verdict::Forfeit { .. }
+        ) {
+            require!(
+                now <= m.window().1.saturating_add(VERDICT_GRACE_MS),
+                "the match is over: no heads move after end_ms + grace"
+            );
+        }
         match sv.body {
             Verdict::Start {
                 players_hash: ph,
                 ring_commit: rc,
                 start_ms,
                 end_ms,
-            } => {
-                require!(m.phase == Phase::Lobby, "match already started");
-                require!(now <= m.start_by_ms, "start deadline passed");
-                // The lock is what keeps the player list equal to the one the referee signed.
-                require!(m.is_locked(now), "lobby is not locked");
-                let n = m.players.len();
-                require!(
-                    usize::from(m.min_players) <= n && n <= usize::from(m.max_players),
-                    "player count out of range"
-                );
-                let ids: Vec<&str> = m.players.iter().map(|p| p.account_id.as_str()).collect();
-                require!(
-                    ph == players_hash(&ids),
-                    "players_hash does not match the joined players"
-                );
-                require!(
-                    now.abs_diff(start_ms) <= START_SKEW_MS,
-                    "start_ms is too far from block time"
-                );
-                require!(
-                    end_ms > start_ms && end_ms - start_ms == m.duration_ms,
-                    "end_ms - start_ms must equal duration_ms"
-                );
-                m.phase = Phase::Running;
-                m.ring_commit = Some(rc);
-                m.start_ms = Some(start_ms);
-                m.end_ms = Some(end_ms);
-            }
+            } => start(m, ph, rc, start_ms, end_ms, now),
             Verdict::Hint { from, to, amount, .. } => {
                 let (f, t) = live_pair(m, from, to);
                 require!(
@@ -720,23 +827,17 @@ impl Tail {
                 m.players[f].head -= amount;
                 m.players[t].head += amount;
             }
-            Verdict::Tag {
-                hunter: winner,
-                target: loser,
+            Verdict::Tag { hunter, target } => {
+                let ring = self.rings.get_mut(&id).unwrap_or_else(no_ring);
+                eliminate(m, ring, Elimination::Tag { hunter, target });
             }
-            | Verdict::Forfeit {
-                player: loser,
-                to: winner,
-            } => {
-                let (l, w) = live_pair(m, loser, winner);
-                let head = std::mem::take(&mut m.players[l].head);
-                m.players[l].out = true;
-                m.players[w].head += head;
+            Verdict::Forfeit { player, to } => {
+                let ring = self.rings.get_mut(&id).unwrap_or_else(no_ring);
+                eliminate(m, ring, Elimination::Forfeit { player, to });
             }
             Verdict::Checkpoint { log_size, root } => {
-                let list = self.checkpoints.entry(sv.match_id).or_default();
-                require!(list.len() < MAX_CHECKPOINTS, "checkpoint limit reached");
-                list.push(Root { log_size, root });
+                let list = self.checkpoints.entry(id).or_default();
+                push_checkpoint(list, m, Root { log_size, root }, now);
             }
             Verdict::End {
                 alpha,
@@ -749,16 +850,27 @@ impl Tail {
                     "vrf_signature does not match ring_commit"
                 );
                 require!(alpha.len() <= MAX_ALPHA_LEN, "alpha too long");
-                // The ring seed is this match's id (TECHNICAL 4.8), so a VRF output drawn for
-                // anything else cannot be passed off as this match's shuffle.
-                require!(
-                    alpha.rsplit_once(':').map(|(_, seed)| seed) == Some(hex::encode(sv.match_id).as_str()),
-                    "alpha seed is not this match id"
-                );
+                let ring = self.rings.get(&id).unwrap_or_else(no_ring);
+                check_alpha(&alpha, &id, &ring.vrf_sender);
                 require!(
                     env::ed25519_verify(&vrf_signature, alpha.as_bytes(), &m.vrf_pk),
                     "bad VRF signature"
                 );
+                let survivors = m.players.iter().filter(|p| !p.out).count();
+                require!(
+                    now >= m.window().1 || survivors == 1,
+                    "End before end_ms needs exactly one survivor"
+                );
+                let last_checkpoint = self
+                    .checkpoints
+                    .get(&id)
+                    .and_then(|list| list.last())
+                    .map_or(0, |r| r.log_size);
+                require!(
+                    log_size >= last_checkpoint,
+                    "End log_size is below the last checkpoint's"
+                );
+                check_ring(m, &vrf_signature, &ring.eliminations);
                 settle_end(m, &mut self.balances);
                 m.reveal = Some(Reveal {
                     alpha,
@@ -769,6 +881,124 @@ impl Tail {
         }
         m.seq = sv.seq;
         m.last_verdict_ms = now;
+    }
+}
+
+fn start(m: &mut Match, ph: Hash, rc: Hash, start_ms: u64, end_ms: u64, now: u64) {
+    require!(m.phase == Phase::Lobby, "match already started");
+    require!(now <= m.start_by_ms, "start deadline passed");
+    // The lock is what keeps the player list equal to the one the referee signed.
+    require!(m.is_locked(now), "lobby is not locked");
+    let n = m.players.len();
+    require!(
+        usize::from(m.min_players) <= n && n <= usize::from(m.max_players),
+        "player count out of range"
+    );
+    let ids: Vec<&str> = m.players.iter().map(|p| p.account_id.as_str()).collect();
+    require!(
+        ph == players_hash(&ids),
+        "players_hash does not match the joined players"
+    );
+    require!(
+        now.abs_diff(start_ms) <= START_SKEW_MS,
+        "start_ms is too far from block time"
+    );
+    require!(
+        end_ms > start_ms && end_ms - start_ms == m.duration_ms,
+        "end_ms - start_ms must equal duration_ms"
+    );
+    m.phase = Phase::Running;
+    m.ring_commit = Some(rc);
+    m.start_ms = Some(start_ms);
+    m.end_ms = Some(end_ms);
+}
+
+/// The k-th checkpoint needs k spacings of match time, and each one commits to a longer log than
+/// the one before (the referee logs every verdict, its checkpoints included, so the log always
+/// grows between two of them).
+fn push_checkpoint(list: &mut Vec<Root>, m: &Match, cp: Root, now: u64) {
+    let (start_ms, end_ms) = m.window();
+    let nth = list.len() as u64 + 1;
+    require!(
+        nth * CHECKPOINT_SPACING_MS <= now.min(end_ms).saturating_sub(start_ms),
+        "checkpoint too early: at most one per checkpoint_spacing_ms of match time"
+    );
+    require!(
+        list.last().is_none_or(|last| cp.log_size > last.log_size),
+        "checkpoint log_size must grow"
+    );
+    list.push(cp);
+}
+
+/// `create_match` writes a ring record for every match since the upgrade that introduced them.
+fn no_ring<T>() -> T {
+    env::panic_str("match has no ring record (created before the upgrade); it settles by abort")
+}
+
+/// Tag and Forfeit: the loser's whole head goes to the winner, the loser is out, and the pair is
+/// recorded for the ring check at `End`.
+fn eliminate(m: &mut Match, ring: &mut RingRecord, e: Elimination) {
+    let (winner, loser) = e.winner_loser();
+    let (w, l) = live_pair(m, winner, loser);
+    let head = std::mem::take(&mut m.players[l].head);
+    m.players[l].out = true;
+    m.players[w].head += head;
+    // Each one puts a live player out, so there are at most MAX_PLAYERS - 1 (storage paid for).
+    ring.eliminations.push(e);
+}
+
+/// OutLayer's alpha is `vrf:{request_id}:{sender}:{seed}` (TECHNICAL 4.8). The seed must be this
+/// match's id, so a VRF output drawn for anything else cannot pass as this match's shuffle, and the
+/// sender must be the pinned referee caller, so nobody else's request for the same seed counts.
+fn check_alpha(alpha: &str, id: &MatchId, vrf_sender: &AccountId) {
+    let mut fields = alpha.split(':');
+    let (Some(prefix), Some(request_id), Some(sender), Some(seed), None) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) else {
+        env::panic_str("alpha must be vrf:{request_id}:{sender}:{seed}")
+    };
+    require!(prefix == "vrf", "alpha must start with vrf:");
+    require!(!request_id.is_empty(), "alpha has no request id");
+    require!(seed == hex::encode(id), "alpha seed is not this match id");
+    require!(
+        sender == vrf_sender.as_str(),
+        "alpha sender is not the pinned vrf_sender"
+    );
+}
+
+/// Rebuilds the ring from the revealed VRF signature (`ring[k]` hunts `ring[k+1 mod n]`) and
+/// replays the recorded eliminations: each winner must be hunting the loser at that point (a Tag
+/// by the hunter of its current target, a Forfeit paid to the forfeiter's hunter), and the winner
+/// then hunts the loser's target. This makes "tags follow the ring" checked, not trusted.
+fn check_ring(m: &Match, vrf_signature: &[u8; 64], eliminations: &[Elimination]) {
+    let ids: Vec<&str> = m.players.iter().map(|p| p.account_id.as_str()).collect();
+    // `players` is sorted by account id, the order `build_ring` starts from, so a position in it
+    // is the player index.
+    let index = |account: &str| {
+        ids.binary_search(&account)
+            .unwrap_or_else(|_| env::panic_str("ring names an account outside the match"))
+    };
+    let ring = build_ring(&ids, vrf_signature);
+    let n = ring.len();
+    let mut target: Vec<Option<usize>> = vec![None; n];
+    for (k, hunter) in ring.iter().enumerate() {
+        target[index(hunter)] = Some(index(&ring[(k + 1) % n]));
+    }
+    for e in eliminations {
+        let (winner, loser) = e.winner_loser();
+        let (w, l) = (usize::from(winner), usize::from(loser));
+        require!(
+            target[w] == Some(l),
+            match e {
+                Elimination::Tag { .. } => "a Tag did not follow the ring",
+                Elimination::Forfeit { .. } => "a Forfeit did not pay the forfeiter's hunter",
+            }
+        );
+        target[w] = target[l].take().filter(|&t| t != w);
     }
 }
 
@@ -842,6 +1072,16 @@ fn debit(
     *bal -= amount;
 }
 
+/// The alpha is split on ':', so a sender containing one could never match. NEAR account ids
+/// cannot contain ':' anyway; the check keeps that assumption explicit.
+fn check_vrf_sender(vrf_sender: AccountId) -> AccountId {
+    require!(
+        !vrf_sender.as_str().contains(':'),
+        "vrf_sender may not contain ':'"
+    );
+    vrf_sender
+}
+
 fn check_payout(payout: &AccountId) {
     // A plain ft_transfer to this contract would land outside every internal balance.
     require!(
@@ -897,7 +1137,7 @@ fn root_view(r: &Root) -> RootView {
     }
 }
 
-fn match_view(id: &MatchId, m: &Match) -> MatchView {
+fn match_view(id: &MatchId, m: &Match, ring: Option<&RingRecord>) -> MatchView {
     MatchView {
         match_id: hex::encode(id),
         host: m.host.clone(),
@@ -941,5 +1181,6 @@ fn match_view(id: &MatchId, m: &Match) -> MatchView {
         end_ms: m.end_ms,
         alpha: m.reveal.as_ref().map(|r| r.alpha.clone()),
         vrf_signature: m.reveal.as_ref().map(|r| hex::encode(r.vrf_signature)),
+        vrf_sender: ring.map(|r| r.vrf_sender.clone()),
     }
 }

@@ -36,6 +36,10 @@ fn referee() -> SigningKey {
 fn vrf() -> SigningKey {
     key(3)
 }
+/// The VRF `sender` the test contract pins; `alpha_for` names it.
+fn vrf_sender() -> AccountId {
+    acc("relay.testnet")
+}
 fn pk_hex(k: &SigningKey) -> String {
     hex::encode(k.verifying_key().to_bytes())
 }
@@ -115,7 +119,13 @@ fn deploy_with_seed(seed: [u8; 32]) -> Tail {
         .block_timestamp(T0 * 1_000_000)
         .random_seed(seed)
         .build());
-    Tail::new(owner(), pk_hex(&referee()), pk_hex(&vrf()), vec![usdc(), usdt()])
+    Tail::new(
+        owner(),
+        pk_hex(&referee()),
+        pk_hex(&vrf()),
+        vrf_sender(),
+        vec![usdc(), usdt()],
+    )
 }
 
 fn cfg(token: AccountId, stake: u128) -> MatchConfig {
@@ -131,6 +141,16 @@ fn cfg(token: AccountId, stake: u128) -> MatchConfig {
         invites: vec![],
         sponsors: vec![acc("dao.testnet")],
     }
+}
+
+/// Player indices in ring order for the VRF output `alpha_for(id)` commits to: `ring[k]` hunts
+/// `ring[k+1 mod n]`.
+fn ring_of(v: &MatchView, id: MatchId) -> Vec<u16> {
+    let ids: Vec<&str> = v.players.iter().map(|p| p.account_id.as_str()).collect();
+    build_ring(&ids, &vrf_sig(&alpha_for(id)))
+        .iter()
+        .map(|a| ids.iter().position(|i| i == a).unwrap() as u16)
+        .collect()
 }
 
 /// A contract with alice, bob and carol registered and topped up, and one lobby they joined.
@@ -249,6 +269,24 @@ impl Fx {
             log_size: 77,
             root: [0xee; 32],
         }
+    }
+
+    /// Moves the clock to `end_ms` (if it is not there yet) and applies the committed reveal.
+    fn end(&mut self) {
+        self.now = self.now.max(self.view().end_ms.unwrap());
+        let body = self.end_body();
+        self.verdict(body);
+    }
+
+    fn ring(&self) -> Vec<u16> {
+        ring_of(&self.view(), self.id)
+    }
+
+    /// Who hunts player `i` at the start of the match.
+    fn hunter_of(&self, i: u16) -> u16 {
+        let ring = self.ring();
+        let k = ring.iter().position(|&p| p == i).unwrap();
+        ring[(k + ring.len() - 1) % ring.len()]
     }
 
     /// Signs `body` with the referee key at the next seq and applies it.
@@ -479,7 +517,7 @@ fn withdraw_pays_the_registered_payout_account_with_one_yocto_attached() {
     fx.register_with_payout("alice.testnet", "alice-cold.testnet");
     fx.top_up("alice.testnet", &usdc(), 900);
     fx.as_("alice.testnet");
-    let _ = fx.c.withdraw(usdc(), U128(400));
+    let _ = fx.c.withdraw(usdc(), U128(400), None);
     let (receiver, args, deposit, gas) = ft_transfer_receipt();
     assert_eq!(gas, Gas::from_tgas(20));
     assert_eq!(receiver, usdc());
@@ -496,10 +534,11 @@ fn a_second_withdraw_beyond_the_balance_is_refused() {
     fx.register("alice.testnet");
     fx.top_up("alice.testnet", &usdc(), 900);
     fx.as_("alice.testnet");
-    let _ = fx.c.withdraw(usdc(), U128(900));
+    let _ =
+        fx.c.withdraw(usdc(), U128(900), Some(acc("alice-wallet.testnet")));
     assert_eq!(fx.bal("alice.testnet"), 0);
     fx.as_("alice.testnet");
-    let _ = fx.c.withdraw(usdc(), U128(900));
+    let _ = fx.c.withdraw(usdc(), U128(900), None);
 }
 
 #[test]
@@ -507,7 +546,7 @@ fn a_second_withdraw_beyond_the_balance_is_refused() {
 fn a_withdraw_by_an_unregistered_account_is_refused() {
     let mut fx = Fx::empty();
     fx.as_("alice.testnet");
-    let _ = fx.c.withdraw(usdc(), U128(1));
+    let _ = fx.c.withdraw(usdc(), U128(1), None);
 }
 
 #[test]
@@ -516,7 +555,8 @@ fn a_failed_ft_transfer_restores_the_balance() {
     fx.register("alice.testnet");
     fx.top_up("alice.testnet", &usdc(), 900);
     fx.as_("alice.testnet");
-    let _ = fx.c.withdraw(usdc(), U128(900));
+    let _ =
+        fx.c.withdraw(usdc(), U128(900), Some(acc("alice-wallet.testnet")));
     ctx_with_result(fx.now, PromiseResult::Failed);
     assert!(!fx.c.on_withdraw(acc("alice.testnet"), usdc(), U128(900)));
     assert_eq!(fx.bal("alice.testnet"), 900);
@@ -528,7 +568,8 @@ fn a_successful_ft_transfer_keeps_the_balance_debited() {
     fx.register("alice.testnet");
     fx.top_up("alice.testnet", &usdc(), 900);
     fx.as_("alice.testnet");
-    let _ = fx.c.withdraw(usdc(), U128(900));
+    let _ =
+        fx.c.withdraw(usdc(), U128(900), Some(acc("alice-wallet.testnet")));
     ctx_with_result(fx.now, PromiseResult::Successful(vec![]));
     assert!(fx.c.on_withdraw(acc("alice.testnet"), usdc(), U128(900)));
     assert_eq!(fx.bal("alice.testnet"), 0);
@@ -1015,10 +1056,16 @@ fn a_forfeit_to_an_out_player_is_refused() {
 
 // ── Checkpoints ─────────────────────────────────────────────────────────────────────────────
 
+/// Puts the clock where the `nth` checkpoint (1-based) is first allowed.
+fn at_checkpoint(fx: &mut Fx, nth: u64) {
+    fx.now = fx.view().start_ms.unwrap() + nth * CHECKPOINT_SPACING_MS;
+}
+
 #[test]
 fn every_checkpoint_up_to_the_limit_is_kept_for_the_replay() {
     let mut fx = Fx::running();
     for i in 0..MAX_CHECKPOINTS as u64 {
+        at_checkpoint(&mut fx, i + 1);
         fx.verdict(Verdict::Checkpoint {
             log_size: i + 1,
             root: [i as u8; 32],
@@ -1036,16 +1083,132 @@ fn every_checkpoint_up_to_the_limit_is_kept_for_the_replay() {
     assert_eq!(roots.final_root, None);
 }
 
+/// The spacing rule is what bounds the list: after the longest match's worth, no amount of
+/// waiting past `end_ms` admits one more.
 #[test]
-#[should_panic(expected = "checkpoint limit reached")]
-fn a_checkpoint_past_the_limit_is_refused() {
+#[should_panic(expected = "checkpoint too early")]
+fn a_checkpoint_past_the_limit_is_refused_by_the_spacing_rule() {
     let mut fx = Fx::running();
-    for i in 0..=MAX_CHECKPOINTS as u64 {
+    for i in 0..MAX_CHECKPOINTS as u64 {
+        at_checkpoint(&mut fx, i + 1);
         fx.verdict(Verdict::Checkpoint {
             log_size: i + 1,
             root: [0; 32],
         });
     }
+    fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS;
+    fx.verdict(Verdict::Checkpoint {
+        log_size: MAX_CHECKPOINTS as u64 + 1,
+        root: [0; 32],
+    });
+}
+
+#[test]
+#[should_panic(expected = "checkpoint too early")]
+fn a_checkpoint_before_its_spacing_is_refused() {
+    let mut fx = Fx::running();
+    at_checkpoint(&mut fx, 1);
+    fx.now -= 1;
+    fx.verdict(Verdict::Checkpoint {
+        log_size: 1,
+        root: [0; 32],
+    });
+}
+
+#[test]
+fn checkpoints_at_their_spacing_land_even_in_one_batch() {
+    let mut fx = Fx::running();
+    at_checkpoint(&mut fx, 3);
+    let batch = (1..=3)
+        .map(|i| {
+            sign(
+                &referee(),
+                fx.id,
+                1 + i,
+                Verdict::Checkpoint {
+                    log_size: u64::from(i),
+                    root: [0; 32],
+                },
+            )
+        })
+        .collect();
+    fx.apply(batch);
+    assert_eq!(fx.c.get_roots(hex::encode(fx.id)).unwrap().checkpoints.len(), 3);
+}
+
+#[test]
+#[should_panic(expected = "checkpoint log_size must grow")]
+fn a_checkpoint_whose_log_size_does_not_grow_is_refused() {
+    let mut fx = Fx::running();
+    at_checkpoint(&mut fx, 1);
+    fx.verdict(Verdict::Checkpoint {
+        log_size: 5,
+        root: [0; 32],
+    });
+    at_checkpoint(&mut fx, 2);
+    fx.verdict(Verdict::Checkpoint {
+        log_size: 5,
+        root: [1; 32],
+    });
+}
+
+#[test]
+fn a_checkpoint_whose_log_size_grows_by_one_is_kept() {
+    let mut fx = Fx::running();
+    at_checkpoint(&mut fx, 1);
+    fx.verdict(Verdict::Checkpoint {
+        log_size: 5,
+        root: [0; 32],
+    });
+    at_checkpoint(&mut fx, 2);
+    fx.verdict(Verdict::Checkpoint {
+        log_size: 6,
+        root: [1; 32],
+    });
+    assert_eq!(fx.c.get_roots(hex::encode(fx.id)).unwrap().checkpoints.len(), 2);
+}
+
+fn end_with_log_size(fx: &mut Fx, log_size: u64) {
+    let Verdict::End {
+        alpha,
+        vrf_signature,
+        root,
+        ..
+    } = fx.end_body()
+    else {
+        unreachable!()
+    };
+    fx.now = fx.view().end_ms.unwrap();
+    fx.verdict(Verdict::End {
+        alpha,
+        vrf_signature,
+        log_size,
+        root,
+    });
+}
+
+#[test]
+#[should_panic(expected = "End log_size is below the last checkpoint's")]
+fn an_end_whose_log_size_is_below_the_last_checkpoint_is_refused() {
+    let mut fx = Fx::running();
+    at_checkpoint(&mut fx, 1);
+    fx.verdict(Verdict::Checkpoint {
+        log_size: 50,
+        root: [0; 32],
+    });
+    end_with_log_size(&mut fx, 49);
+}
+
+#[test]
+fn an_end_at_the_last_checkpoints_log_size_settles() {
+    let mut fx = Fx::running();
+    at_checkpoint(&mut fx, 1);
+    fx.verdict(Verdict::Checkpoint {
+        log_size: 50,
+        root: [0; 32],
+    });
+    end_with_log_size(&mut fx, 50);
+    assert_eq!(fx.view().phase, Phase::Ended);
 }
 
 // ── End ─────────────────────────────────────────────────────────────────────────────────────
@@ -1053,6 +1216,7 @@ fn a_checkpoint_past_the_limit_is_refused() {
 #[test]
 fn end_with_the_committed_vrf_reveal_credits_every_survivor_their_head() {
     let mut fx = Fx::running();
+    at_checkpoint(&mut fx, 1);
     fx.verdict(Verdict::Checkpoint {
         log_size: 10,
         root: [1; 32],
@@ -1063,17 +1227,20 @@ fn end_with_the_committed_vrf_reveal_credits_every_survivor_their_head() {
         amount: 30,
         hint_id: 1,
     });
-    fx.verdict(Verdict::Tag { hunter: 2, target: 1 });
-    let body = fx.end_body();
-    fx.verdict(body);
+    let hunter = fx.hunter_of(1);
+    fx.verdict(Verdict::Tag { hunter, target: 1 });
+    fx.end();
     let v = fx.view();
     assert_eq!(v.phase, Phase::Ended);
     assert_eq!(fx.heads(), vec![0, 0, 0]);
     let paid: Vec<u128> = v.players.iter().map(|p| p.paid.0).collect();
-    assert_eq!(paid, vec![STAKE - 30, 0, 2 * STAKE + 30]);
-    assert_eq!(fx.bal("alice.testnet"), 2 * STAKE - 30);
-    assert_eq!(fx.bal("bob.testnet"), STAKE);
-    assert_eq!(fx.bal("carol.testnet"), 3 * STAKE + 30);
+    let mut want = vec![STAKE - 30, 0, STAKE];
+    want[usize::from(hunter)] += STAKE + 30;
+    assert_eq!(paid, want);
+    for (i, p) in PLAYERS.iter().enumerate() {
+        // Each started with 2 stakes and put one in.
+        assert_eq!(fx.bal(p), STAKE + want[i]);
+    }
     assert_eq!(v.alpha, Some(alpha_for(fx.id)));
     let roots = fx.c.get_roots(hex::encode(fx.id)).unwrap();
     assert_eq!(roots.checkpoints.len(), 1);
@@ -1161,8 +1328,7 @@ fn end_with_a_vrf_drawn_for_another_seed_is_refused() {
 #[should_panic(expected = "match not running")]
 fn a_verdict_after_end_is_refused() {
     let mut fx = Fx::running();
-    let body = fx.end_body();
-    fx.verdict(body);
+    fx.end();
     fx.verdict(Verdict::Tag { hunter: 0, target: 1 });
 }
 
@@ -1174,8 +1340,7 @@ fn end_splits_the_sponsor_pot_equally_and_gives_the_remainder_to_the_first_survi
     assert_eq!(fx.transfer(&usdc(), "dao.testnet", 11, &msg), 0);
     let body = fx.start_body();
     fx.verdict(body);
-    let body = fx.end_body();
-    fx.verdict(body);
+    fx.end();
     // 11 over 3 survivors: 3 each, and the remainder 2 goes to players 0 and 1.
     let paid: Vec<u128> = fx.view().players.iter().map(|p| p.paid.0).collect();
     assert_eq!(paid, vec![STAKE + 4, STAKE + 4, STAKE + 3]);
@@ -1190,12 +1355,14 @@ fn end_gives_the_pot_only_to_survivors() {
     assert_eq!(fx.transfer(&usdc(), "dao.testnet", 11, &msg), 0);
     let body = fx.start_body();
     fx.verdict(body);
-    fx.verdict(Verdict::Tag { hunter: 1, target: 0 });
-    let body = fx.end_body();
-    fx.verdict(body);
+    let hunter = fx.hunter_of(0);
+    fx.verdict(Verdict::Tag { hunter, target: 0 });
+    fx.end();
     // Survivors are players 1 and 2: 5 each, the remainder 1 to player 1.
     let paid: Vec<u128> = fx.view().players.iter().map(|p| p.paid.0).collect();
-    assert_eq!(paid, vec![0, 2 * STAKE + 6, STAKE + 5]);
+    let mut want = vec![0, STAKE + 6, STAKE + 5];
+    want[usize::from(hunter)] += STAKE;
+    assert_eq!(paid, want);
 }
 
 // ── Abort ───────────────────────────────────────────────────────────────────────────────────
@@ -1218,7 +1385,7 @@ fn a_running_match_aborted_after_the_referee_timeout_refunds_current_heads() {
 #[should_panic(expected = "referee has not timed out")]
 fn a_running_match_cannot_be_aborted_before_the_referee_timeout() {
     let mut fx = Fx::running();
-    fx.now += 10_000;
+    at_checkpoint(&mut fx, 1);
     fx.verdict(Verdict::Checkpoint {
         log_size: 1,
         root: [0; 32],
@@ -1275,8 +1442,7 @@ fn a_running_match_keeps_the_vrf_key_it_was_created_with() {
     let mut fx = Fx::running();
     ctx(&owner(), fx.now, NearToken::from_yoctonear(1));
     fx.c.set_vrf_pk(pk_hex(&key(4)));
-    let body = fx.end_body();
-    fx.verdict(body);
+    fx.end();
     assert_eq!(fx.view().phase, Phase::Ended);
     assert_eq!(fx.c.get_config().vrf_pk, pk_hex(&key(4)));
 }
@@ -1308,8 +1474,7 @@ fn a_lobby_cannot_be_aborted_before_its_start_deadline() {
 #[should_panic(expected = "match already settled")]
 fn an_ended_match_cannot_be_aborted() {
     let mut fx = Fx::running();
-    let body = fx.end_body();
-    fx.verdict(body);
+    fx.end();
     fx.now += REFEREE_TIMEOUT_MS;
     fx.abort();
 }
@@ -1359,7 +1524,11 @@ fn vector_match() -> (Fx, near_sdk::serde_json::Value) {
     m.end_ms = Some(end_ms);
     fx.c.matches.remove(&fx.id);
     fx.c.matches.insert(id, m);
+    let ring = fx.c.rings.remove(&fx.id).unwrap();
+    fx.c.rings.insert(id, ring);
     fx.id = id;
+    // Late enough for the vector's checkpoint (the first) to land.
+    fx.now = start_ms + CHECKPOINT_SPACING_MS;
     (fx, v)
 }
 
@@ -1464,11 +1633,22 @@ fn a_maximal_match_fits_in_the_storage_its_deposit_paid_for() {
         };
         MAX_CHECKPOINTS
     ];
+    let ring = RingRecord {
+        vrf_sender: long("vrf"),
+        eliminations: (1..MAX_PLAYERS)
+            .map(|i| Elimination::Tag {
+                hunter: 0,
+                target: u16::from(i),
+            })
+            .collect(),
+    };
     let before = env::storage_usage();
     fx.c.matches.insert([9; 16], m);
     fx.c.matches.flush();
     fx.c.checkpoints.insert([9; 16], checkpoints);
     fx.c.checkpoints.flush();
+    fx.c.rings.insert([9; 16], ring);
+    fx.c.rings.flush();
     let used = u128::from(env::storage_usage() - before);
     assert!(used <= MATCH_STORAGE_BYTES, "a maximal match uses {used} bytes");
     // The bound is not wildly loose either: the deposit is for this, not a guess.
@@ -1538,6 +1718,7 @@ fn deploying_with_a_small_order_vrf_key_is_refused() {
         owner(),
         pk_hex(&referee()),
         hex::encode(torsion_encodings()[3]),
+        vrf_sender(),
         vec![usdc()],
     );
 }
@@ -1802,7 +1983,9 @@ fn storage_delta(c: &mut Tail, f: impl FnOnce(&mut Tail)) -> i64 {
 #[test]
 fn credits_withdraws_and_failed_withdraw_refunds_never_grow_storage() {
     let mut fx = Fx::empty();
-    fx.register("alice.testnet");
+    // A payout other than the account itself, so the withdraw does not also set one (that
+    // rewrite stays within the 64-character record registration paid for).
+    fx.register_with_payout("alice.testnet", "alice-cold.testnet");
     fx.c.payouts.flush();
     fx.c.balances.flush();
     let credit = |amount: u128| {
@@ -1819,7 +2002,7 @@ fn credits_withdraws_and_failed_withdraw_refunds_never_grow_storage() {
     );
     fx.as_("alice.testnet");
     let withdraw = |c: &mut Tail| {
-        let _ = c.withdraw(usdc(), U128(900));
+        let _ = c.withdraw(usdc(), U128(900), None);
     };
     assert_eq!(
         storage_delta(&mut fx.c, withdraw),
@@ -1869,12 +2052,12 @@ fn the_account_itself_can_override_a_payout_its_parent_set() {
     ctx(&acc("relay.testnet"), fx.now, fx.registration_deposit());
     fx.c.register_for(acc("victim.relay.testnet"), acc("thief.testnet"));
     as_with_one_yocto(&fx, "victim.relay.testnet");
-    fx.c.set_payout(acc("victim.relay.testnet"), acc("victim.relay.testnet"));
+    fx.c.set_payout(acc("victim.relay.testnet"), acc("victim-wallet.testnet"));
     fx.top_up("victim.relay.testnet", &usdc(), 5);
     fx.as_("victim.relay.testnet");
-    let _ = fx.c.withdraw(usdc(), U128(5));
+    let _ = fx.c.withdraw(usdc(), U128(5), None);
     let (_, args, _, _) = ft_transfer_receipt();
-    assert_eq!(args["receiver_id"], "victim.relay.testnet");
+    assert_eq!(args["receiver_id"], "victim-wallet.testnet");
 }
 
 /// A function-call key cannot attach the 1 yocto, so a stolen player key cannot redirect winnings.
@@ -1977,13 +2160,20 @@ fn running_with_alpha(alpha: &str) -> Fx {
     fx
 }
 
+/// A well-formed alpha for `id` padded to `len` bytes with a long request id.
+fn long_alpha(id: MatchId, len: usize) -> String {
+    let rest = format!(":{}:{}", vrf_sender(), hex::encode(id));
+    let alpha = format!("vrf:{}{rest}", "9".repeat(len - 4 - rest.len()));
+    assert_eq!(alpha.len(), len);
+    alpha
+}
+
 /// Re-review: the alpha cap bounds the stored reveal, so it must hold.
 #[test]
 #[should_panic(expected = "alpha too long")]
 fn end_with_an_alpha_one_byte_over_the_limit_is_refused() {
     let id = Fx::locked().id;
-    let alpha = format!("{}:{}", "v".repeat(MAX_ALPHA_LEN - 32), hex::encode(id));
-    assert_eq!(alpha.len(), MAX_ALPHA_LEN + 1);
+    let alpha = long_alpha(id, MAX_ALPHA_LEN + 1);
     let mut fx = running_with_alpha(&alpha);
     fx.verdict(Verdict::End {
         vrf_signature: vrf_sig(&alpha),
@@ -1996,9 +2186,9 @@ fn end_with_an_alpha_one_byte_over_the_limit_is_refused() {
 #[test]
 fn end_with_an_alpha_exactly_at_the_limit_settles() {
     let id = Fx::locked().id;
-    let alpha = format!("{}:{}", "v".repeat(MAX_ALPHA_LEN - 33), hex::encode(id));
-    assert_eq!(alpha.len(), MAX_ALPHA_LEN);
+    let alpha = long_alpha(id, MAX_ALPHA_LEN);
     let mut fx = running_with_alpha(&alpha);
+    fx.now = fx.view().end_ms.unwrap();
     fx.verdict(Verdict::End {
         vrf_signature: vrf_sig(&alpha),
         alpha,
@@ -2072,7 +2262,8 @@ fn a_withdraw_with_less_than_fifty_tgas_is_refused() {
     fx.register("alice.testnet");
     fx.top_up("alice.testnet", &usdc(), 900);
     as_with_gas(&fx, "alice.testnet", Gas::from_tgas(49));
-    let _ = fx.c.withdraw(usdc(), U128(900));
+    let _ =
+        fx.c.withdraw(usdc(), U128(900), Some(acc("alice-wallet.testnet")));
 }
 
 #[test]
@@ -2081,7 +2272,8 @@ fn a_withdraw_with_fifty_tgas_gives_the_refund_callback_ten() {
     fx.register("alice.testnet");
     fx.top_up("alice.testnet", &usdc(), 900);
     as_with_gas(&fx, "alice.testnet", WITHDRAW_MIN_GAS);
-    let _ = fx.c.withdraw(usdc(), U128(900));
+    let _ =
+        fx.c.withdraw(usdc(), U128(900), Some(acc("alice-wallet.testnet")));
     let callback = get_created_receipts()
         .into_iter()
         .nth(1)
@@ -2118,9 +2310,44 @@ fn stored_bytes() -> u128 {
     n
 }
 
+/// Start, 11 tags (the first hunter in the ring takes everyone else, the longest elimination
+/// record), 120 checkpoints and End with a maximal alpha.
+fn play_a_maximal_match(fx: &mut Fx, players: &[AccountId]) {
+    let alpha = long_alpha(fx.id, MAX_ALPHA_LEN);
+    let ids: Vec<&str> = players.iter().map(|a| a.as_str()).collect();
+    let start_ms = fx.now;
+    fx.verdict(Verdict::Start {
+        players_hash: players_hash(&ids),
+        ring_commit: ring_commit(&vrf_sig(&alpha)),
+        start_ms,
+        end_ms: start_ms + DURATION,
+    });
+    let order = build_ring(&ids, &vrf_sig(&alpha));
+    let index = |a: &String| ids.iter().position(|i| i == a).unwrap() as u16;
+    for target in &order[1..] {
+        fx.verdict(Verdict::Tag {
+            hunter: index(&order[0]),
+            target: index(target),
+        });
+    }
+    for i in 0..MAX_CHECKPOINTS as u64 {
+        fx.now = start_ms + (i + 1) * CHECKPOINT_SPACING_MS;
+        fx.verdict(Verdict::Checkpoint {
+            log_size: u64::MAX - MAX_CHECKPOINTS as u64 + i,
+            root: [9; 32],
+        });
+    }
+    fx.verdict(Verdict::End {
+        vrf_signature: vrf_sig(&alpha),
+        alpha,
+        log_size: u64::MAX,
+        root: [1; 32],
+    });
+}
+
 /// Re-review port: through the real methods with every id at 64 characters (one token too),
-/// registrations with repointed payouts, one full match (invites, sponsors, 120 checkpoints, a
-/// maximal alpha, End) and one aborted, and withdraws refunded: storage stays within what the
+/// registrations with repointed payouts, one full match (invites, sponsors, 11 tags, 120
+/// checkpoints, a maximal alpha, End) and one aborted, and withdraws refunded: storage stays within what the
 /// deposits paid for.
 #[test]
 fn storage_never_exceeds_the_deposits_with_maximal_ids() {
@@ -2132,6 +2359,7 @@ fn storage_never_exceeds_the_deposits_with_maximal_ids() {
         owner(),
         pk_hex(&referee()),
         pk_hex(&vrf()),
+        vrf_sender(),
         vec![usdc(), tok.clone()],
     );
     let mut fx = Fx {
@@ -2180,32 +2408,13 @@ fn storage_never_exceeds_the_deposits_with_maximal_ids() {
             fx.now += LOCK_MS;
             fx.abort();
         } else {
-            let alpha = format!("{}:{}", "v".repeat(MAX_ALPHA_LEN - 33), id_hex);
-            let ids: Vec<&str> = players.iter().map(|a| a.as_str()).collect();
-            fx.verdict(Verdict::Start {
-                players_hash: players_hash(&ids),
-                ring_commit: ring_commit(&vrf_sig(&alpha)),
-                start_ms: fx.now,
-                end_ms: fx.now + DURATION,
-            });
-            for i in 0..MAX_CHECKPOINTS as u64 {
-                fx.verdict(Verdict::Checkpoint {
-                    log_size: u64::MAX - i,
-                    root: [9; 32],
-                });
-            }
-            fx.verdict(Verdict::End {
-                vrf_signature: vrf_sig(&alpha),
-                alpha,
-                log_size: u64::MAX,
-                root: [1; 32],
-            });
+            play_a_maximal_match(&mut fx, &players);
             assert_eq!(fx.view().phase, Phase::Ended);
         }
         for p in &players {
             ctx(p, fx.now, NearToken::from_yoctonear(0));
             let b = fx.c.get_balance(p.clone(), tok.clone()).0;
-            let _ = fx.c.withdraw(tok.clone(), U128(b));
+            let _ = fx.c.withdraw(tok.clone(), U128(b), None);
             ctx_with_result(fx.now, PromiseResult::Failed);
             fx.c.on_withdraw(p.clone(), tok.clone(), U128(b));
         }
@@ -2213,6 +2422,7 @@ fn storage_never_exceeds_the_deposits_with_maximal_ids() {
         fx.c.balances.flush();
         fx.c.matches.flush();
         fx.c.checkpoints.flush();
+        fx.c.rings.flush();
         let used = stored_bytes();
         assert!(
             used <= paid,
@@ -2299,6 +2509,9 @@ struct Model {
     at_start: std::collections::HashMap<MatchId, u128>,
     /// Net tokens held per token: accepted by ft_on_transfer minus paid out by withdraw.
     held: std::collections::HashMap<AccountId, u128>,
+    /// Each running match's current target per player, from the committed ring, so the model
+    /// only generates Tags and Forfeits the ring check at End accepts.
+    targets: std::collections::HashMap<MatchId, Vec<Option<u16>>>,
 }
 
 impl Model {
@@ -2380,8 +2593,11 @@ impl Model {
                     return;
                 }
                 let amount = 1 + u128::from(rng.next()) % bal;
+                // A payout that is the account itself must be given a wallet on the first withdraw.
+                let to =
+                    (self.fx.c.get_payout(acc(&who)) == Some(acc(&who))).then(|| acc(&format!("w-{who}")));
                 self.as_(&who);
-                let _ = self.fx.c.withdraw(token.clone(), U128(amount));
+                let _ = self.fx.c.withdraw(token.clone(), U128(amount), to);
                 *self.held.get_mut(&token).unwrap() -= amount;
                 self.check(); // in flight: debited, not yet resolved
                 let failed = rng.below(2) == 0;
@@ -2401,8 +2617,10 @@ impl Model {
             6 => {
                 let stake = u128::from(rng.below(500_000));
                 let max = 3 + rng.below(4) as u8;
+                // Short matches too, so some end by the clock and not only by elimination.
                 let id = self.fx.create(MatchConfig {
                     max_players: max,
+                    duration_ms: 60_000 * (1 + rng.below(30)),
                     start_by_ms: self.fx.now + 1_800_000,
                     ..cfg(token, stake)
                 });
@@ -2521,11 +2739,15 @@ impl Model {
                 }
             }
             Phase::Running => {
+                let (start_ms, end_ms) = (v.start_ms.unwrap(), v.end_ms.unwrap());
+                let now = self.fx.now;
+                let in_play = now <= end_ms + VERDICT_GRACE_MS;
+                let targets = &self.targets[&id];
                 let a = *rng.pick(&live).unwrap();
                 let others: Vec<u16> = live.iter().copied().filter(|&b| b != a).collect();
-                let Some(&b) = rng.pick(&others) else { return };
                 match rng.below(10) {
-                    0..=3 => {
+                    0..=3 if in_play && !others.is_empty() => {
+                        let b = *rng.pick(&others).unwrap();
                         let head = v.players[usize::from(a)].head.0;
                         let amount = if head == 0 {
                             0
@@ -2539,38 +2761,70 @@ impl Model {
                             hint_id: 0,
                         }
                     }
-                    4 | 5 => Verdict::Tag { hunter: a, target: b },
-                    6 => Verdict::Forfeit { player: a, to: b },
+                    4 | 5 if in_play && !others.is_empty() => Verdict::Tag {
+                        hunter: a,
+                        target: targets[usize::from(a)].unwrap(),
+                    },
+                    6 if in_play && !others.is_empty() => Verdict::Forfeit {
+                        player: a,
+                        to: targets.iter().position(|&t| t == Some(a)).unwrap() as u16,
+                    },
                     7 | 8 => {
-                        let kept = self.fx.c.get_roots(hex::encode(id)).unwrap().checkpoints.len();
-                        if kept == MAX_CHECKPOINTS {
+                        let kept = self.fx.c.get_roots(hex::encode(id)).unwrap().checkpoints.len() as u64;
+                        if (kept + 1) * CHECKPOINT_SPACING_MS > now.min(end_ms).saturating_sub(start_ms) {
                             return;
                         }
                         Verdict::Checkpoint {
-                            log_size: u64::from(v.seq),
+                            log_size: u64::from(v.seq) + 1,
                             root: [1; 32],
                         }
                     }
-                    _ => {
+                    _ if now >= end_ms || live.len() == 1 => {
                         let alpha = alpha_for(id);
                         Verdict::End {
                             vrf_signature: vrf_sig(&alpha),
                             alpha,
-                            log_size: 1,
+                            log_size: u64::from(v.seq) + 1,
                             root: [2; 32],
                         }
                     }
+                    _ => return,
                 }
             }
             Phase::Ended | Phase::Aborted => return,
         };
-        let is_start = matches!(body, Verdict::Start { .. });
-        let signed = sign(&referee(), id, v.seq + 1, body);
+        let signed = sign(&referee(), id, v.seq + 1, body.clone());
         self.fx.apply(vec![signed]);
-        if is_start {
-            let v = self.view(id);
-            let total = v.players.iter().map(|p| p.head.0).sum::<u128>() + v.sponsor_pot.0;
-            self.at_start.insert(id, total);
+        self.track(id, &body);
+    }
+
+    /// Follows an applied verdict in the model: the match total at Start, and every target change.
+    fn track(&mut self, id: MatchId, body: &Verdict) {
+        match *body {
+            Verdict::Start { .. } => {
+                let v = self.view(id);
+                let total = v.players.iter().map(|p| p.head.0).sum::<u128>() + v.sponsor_pot.0;
+                self.at_start.insert(id, total);
+                let order = ring_of(&v, id);
+                let mut targets = vec![None; order.len()];
+                for (k, &h) in order.iter().enumerate() {
+                    targets[usize::from(h)] = Some(order[(k + 1) % order.len()]);
+                }
+                self.targets.insert(id, targets);
+            }
+            Verdict::Tag {
+                hunter: winner,
+                target: loser,
+            }
+            | Verdict::Forfeit {
+                player: loser,
+                to: winner,
+            } => {
+                let t = self.targets.get_mut(&id).unwrap();
+                let next = t[usize::from(loser)].take();
+                t[usize::from(winner)] = next.filter(|&n| n != winner);
+            }
+            _ => {}
         }
     }
 }
@@ -2590,6 +2844,7 @@ fn money_is_conserved_over_random_operation_sequences() {
             matches: Vec::new(),
             at_start: std::collections::HashMap::new(),
             held: std::collections::HashMap::new(),
+            targets: std::collections::HashMap::new(),
         };
         for a in &accounts {
             model.fx.register(a);
@@ -2613,4 +2868,623 @@ fn money_is_conserved_over_random_operation_sequences() {
             "seed {seed}: the run never ended ({ended}) or aborted ({aborted}) a match"
         );
     }
+}
+
+// ── Hardening: payout through withdraw, config, VRF alpha, timing, ring check, migration ──────
+
+/// Audit D2: the relay registers a player with itself as payout, and the player account holds only
+/// a function-call key, so tokens paid there were stranded.
+#[test]
+#[should_panic(expected = "the payout account is this account itself; pass `to`")]
+fn a_withdraw_to_a_self_payout_without_to_is_refused() {
+    let mut fx = Fx::empty();
+    fx.register("alice.testnet");
+    fx.top_up("alice.testnet", &usdc(), 900);
+    fx.as_("alice.testnet");
+    let _ = fx.c.withdraw(usdc(), U128(900), None);
+}
+
+#[test]
+fn a_withdraw_with_to_names_the_payout_for_good_and_pays_it() {
+    let mut fx = Fx::empty();
+    fx.register("alice.testnet");
+    fx.top_up("alice.testnet", &usdc(), 900);
+    fx.as_("alice.testnet");
+    let _ =
+        fx.c.withdraw(usdc(), U128(400), Some(acc("alice-wallet.testnet")));
+    let (_, args, _, _) = ft_transfer_receipt();
+    assert_eq!(args["receiver_id"], "alice-wallet.testnet");
+    assert_eq!(
+        fx.c.get_payout(acc("alice.testnet")),
+        Some(acc("alice-wallet.testnet"))
+    );
+    // From now on `to` may be left out and the wallet is paid.
+    fx.as_("alice.testnet");
+    let _ = fx.c.withdraw(usdc(), U128(500), None);
+    let (_, args, _, _) = ft_transfer_receipt();
+    assert_eq!(args["receiver_id"], "alice-wallet.testnet");
+    assert_eq!(fx.bal("alice.testnet"), 0);
+}
+
+#[test]
+#[should_panic(expected = "`to` must be absent or the payout account")]
+fn a_withdraw_cannot_name_a_second_wallet_once_the_payout_is_set() {
+    let mut fx = Fx::empty();
+    fx.register("alice.testnet");
+    fx.top_up("alice.testnet", &usdc(), 900);
+    fx.as_("alice.testnet");
+    let _ =
+        fx.c.withdraw(usdc(), U128(400), Some(acc("alice-wallet.testnet")));
+    fx.as_("alice.testnet");
+    let _ = fx.c.withdraw(usdc(), U128(1), Some(acc("thief.testnet")));
+}
+
+#[test]
+fn a_withdraw_naming_the_payout_it_already_has_is_accepted() {
+    let mut fx = Fx::empty();
+    fx.register_with_payout("alice.testnet", "alice-cold.testnet");
+    fx.top_up("alice.testnet", &usdc(), 900);
+    fx.as_("alice.testnet");
+    let _ = fx.c.withdraw(usdc(), U128(900), Some(acc("alice-cold.testnet")));
+    let (_, args, _, _) = ft_transfer_receipt();
+    assert_eq!(args["receiver_id"], "alice-cold.testnet");
+}
+
+#[test]
+#[should_panic(expected = "`to` must be absent or the payout account")]
+fn a_withdraw_naming_another_account_than_a_set_payout_is_refused() {
+    let mut fx = Fx::empty();
+    fx.register_with_payout("alice.testnet", "alice-cold.testnet");
+    fx.top_up("alice.testnet", &usdc(), 900);
+    fx.as_("alice.testnet");
+    let _ = fx.c.withdraw(usdc(), U128(900), Some(acc("thief.testnet")));
+}
+
+#[test]
+#[should_panic(expected = "`to` must be another account")]
+fn a_withdraw_naming_the_caller_itself_as_to_is_refused() {
+    let mut fx = Fx::empty();
+    fx.register("alice.testnet");
+    fx.top_up("alice.testnet", &usdc(), 900);
+    fx.as_("alice.testnet");
+    let _ = fx.c.withdraw(usdc(), U128(900), Some(acc("alice.testnet")));
+}
+
+#[test]
+#[should_panic(expected = "payout cannot be this contract")]
+fn a_withdraw_naming_this_contract_as_to_is_refused() {
+    let mut fx = Fx::empty();
+    fx.register("alice.testnet");
+    fx.top_up("alice.testnet", &usdc(), 900);
+    fx.as_("alice.testnet");
+    let _ = fx.c.withdraw(usdc(), U128(900), Some(contract()));
+}
+
+#[test]
+fn the_wallet_a_withdraw_named_can_repoint_the_payout() {
+    let mut fx = Fx::empty();
+    fx.register("alice.testnet");
+    fx.top_up("alice.testnet", &usdc(), 900);
+    fx.as_("alice.testnet");
+    let _ =
+        fx.c.withdraw(usdc(), U128(900), Some(acc("alice-wallet.testnet")));
+    as_with_one_yocto(&fx, "alice-wallet.testnet");
+    fx.c.set_payout(acc("alice.testnet"), acc("alice-new.testnet"));
+    assert_eq!(
+        fx.c.get_payout(acc("alice.testnet")),
+        Some(acc("alice-new.testnet"))
+    );
+}
+
+/// The payout a withdraw names overwrites the record registration paid for at 64 characters.
+#[test]
+fn naming_a_maximal_payout_through_withdraw_stays_within_the_registration() {
+    let mut fx = Fx::empty();
+    let long = |p: &str| acc(&format!("{p}{}", "x".repeat(64 - p.len())));
+    ctx(&long("a"), fx.now, fx.registration_deposit());
+    let before = env::storage_usage();
+    fx.c.register_for(long("a"), long("a"));
+    fx.top_up(long("a").as_str(), &usdc(), 5);
+    ctx(&long("a"), fx.now, NearToken::from_yoctonear(0));
+    let _ = fx.c.withdraw(usdc(), U128(5), Some(long("b")));
+    fx.c.payouts.flush();
+    fx.c.balances.flush();
+    let used = u128::from(env::storage_usage() - before) + 2 * (64 - 12);
+    assert!(
+        used <= PAYOUT_RECORD_BYTES + 2 * BALANCE_RECORD_BYTES,
+        "uses {used} bytes"
+    );
+}
+
+/// Audit D1: clients hard-coded the withdraw gas.
+#[test]
+fn get_config_reports_the_withdraw_gas_the_vrf_sender_and_the_timing_rules() {
+    let fx = Fx::empty();
+    let c = fx.c.get_config();
+    assert_eq!(c.withdraw_min_gas, 50);
+    assert_eq!(Gas::from_tgas(c.withdraw_min_gas), WITHDRAW_MIN_GAS);
+    assert_eq!(c.vrf_sender, vrf_sender());
+    assert_eq!(c.verdict_grace_ms, VERDICT_GRACE_MS);
+    assert_eq!(c.checkpoint_spacing_ms, CHECKPOINT_MS / 2);
+    assert_eq!(c.max_checkpoints, 120);
+}
+
+/// A running match whose Start committed to the VRF signature over `alpha`, at its end.
+fn ending_with_alpha(alpha: &str) -> Fx {
+    let mut fx = running_with_alpha(alpha);
+    fx.now = fx.view().end_ms.unwrap();
+    fx
+}
+
+fn end_with_alpha(fx: &mut Fx, alpha: &str) {
+    fx.verdict(Verdict::End {
+        vrf_signature: vrf_sig(alpha),
+        alpha: alpha.to_owned(),
+        log_size: 1,
+        root: [0; 32],
+    });
+}
+
+/// Audit D4: only the last ':' field of the alpha was checked.
+#[test]
+#[should_panic(expected = "alpha sender is not the pinned vrf_sender")]
+fn end_with_a_vrf_drawn_by_another_sender_is_refused() {
+    let id = Fx::locked().id;
+    let alpha = format!("vrf:42:mallory.testnet:{}", hex::encode(id));
+    let mut fx = ending_with_alpha(&alpha);
+    end_with_alpha(&mut fx, &alpha);
+}
+
+#[test]
+#[should_panic(expected = "alpha must start with vrf:")]
+fn end_with_an_alpha_without_the_vrf_prefix_is_refused() {
+    let id = Fx::locked().id;
+    let alpha = format!("rng:42:relay.testnet:{}", hex::encode(id));
+    let mut fx = ending_with_alpha(&alpha);
+    end_with_alpha(&mut fx, &alpha);
+}
+
+#[test]
+#[should_panic(expected = "alpha must be vrf:{request_id}:{sender}:{seed}")]
+fn end_with_an_alpha_of_three_fields_is_refused() {
+    let id = Fx::locked().id;
+    let alpha = format!("vrf:relay.testnet:{}", hex::encode(id));
+    let mut fx = ending_with_alpha(&alpha);
+    end_with_alpha(&mut fx, &alpha);
+}
+
+#[test]
+#[should_panic(expected = "alpha must be vrf:{request_id}:{sender}:{seed}")]
+fn end_with_an_alpha_of_five_fields_is_refused() {
+    let id = Fx::locked().id;
+    let alpha = format!("vrf:42:x:relay.testnet:{}", hex::encode(id));
+    let mut fx = ending_with_alpha(&alpha);
+    end_with_alpha(&mut fx, &alpha);
+}
+
+#[test]
+#[should_panic(expected = "alpha has no request id")]
+fn end_with_an_alpha_without_a_request_id_is_refused() {
+    let id = Fx::locked().id;
+    let alpha = format!("vrf::relay.testnet:{}", hex::encode(id));
+    let mut fx = ending_with_alpha(&alpha);
+    end_with_alpha(&mut fx, &alpha);
+}
+
+#[test]
+#[should_panic(expected = "alpha seed is not this match id")]
+fn end_with_an_uppercase_seed_is_refused() {
+    let id = Fx::locked().id;
+    let alpha = format!("vrf:42:relay.testnet:{}", hex::encode_upper(id));
+    let mut fx = ending_with_alpha(&alpha);
+    end_with_alpha(&mut fx, &alpha);
+}
+
+#[test]
+fn end_with_a_uuid_request_id_from_the_pinned_sender_settles() {
+    let id = Fx::locked().id;
+    let alpha = format!(
+        "vrf:0a1b2c3d-0000-4000-8000-000000000001:relay.testnet:{}",
+        hex::encode(id)
+    );
+    let mut fx = ending_with_alpha(&alpha);
+    end_with_alpha(&mut fx, &alpha);
+    assert_eq!(fx.view().phase, Phase::Ended);
+}
+
+#[test]
+fn a_match_keeps_the_vrf_sender_it_was_created_with() {
+    let mut fx = Fx::running();
+    ctx(&owner(), fx.now, NearToken::from_yoctonear(1));
+    fx.c.set_vrf_sender(acc("new-referee.testnet"));
+    assert_eq!(fx.c.get_config().vrf_sender, acc("new-referee.testnet"));
+    assert_eq!(fx.view().vrf_sender, Some(vrf_sender()));
+    fx.end();
+    assert_eq!(fx.view().phase, Phase::Ended);
+}
+
+#[test]
+#[should_panic(expected = "alpha sender is not the pinned vrf_sender")]
+fn a_match_created_after_a_vrf_sender_rotation_needs_the_new_sender() {
+    let mut fx = Fx::lobby();
+    ctx(&owner(), fx.now, NearToken::from_yoctonear(1));
+    fx.c.set_vrf_sender(acc("new-referee.testnet"));
+    fx.id = fx.create(cfg(usdc(), 0));
+    for p in PLAYERS {
+        fx.join(p);
+    }
+    fx.lock();
+    let body = fx.start_body();
+    fx.verdict(body);
+    fx.end();
+}
+
+#[test]
+#[should_panic(expected = "owner only")]
+fn rotating_the_vrf_sender_by_anyone_but_the_owner_is_refused() {
+    let mut fx = Fx::empty();
+    ctx(&acc("mallory.testnet"), fx.now, NearToken::from_yoctonear(1));
+    fx.c.set_vrf_sender(acc("mallory.testnet"));
+}
+
+// Timing.
+
+fn hint() -> Verdict {
+    Verdict::Hint {
+        from: 0,
+        to: 1,
+        amount: 1,
+        hint_id: 1,
+    }
+}
+
+#[test]
+fn a_hint_tag_and_forfeit_land_up_to_the_grace_after_end() {
+    let mut fx = Fx::running();
+    fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS;
+    fx.verdict(hint());
+    let ring = fx.ring();
+    fx.verdict(Verdict::Tag {
+        hunter: ring[0],
+        target: ring[1],
+    });
+    fx.verdict(Verdict::Forfeit {
+        player: ring[2],
+        to: ring[0],
+    });
+    assert_eq!(fx.view().players.iter().filter(|p| !p.out).count(), 1);
+}
+
+#[test]
+#[should_panic(expected = "the match is over")]
+fn a_hint_after_the_grace_is_refused() {
+    let mut fx = Fx::running();
+    fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS + 1;
+    fx.verdict(hint());
+}
+
+#[test]
+#[should_panic(expected = "the match is over")]
+fn a_tag_after_the_grace_is_refused() {
+    let mut fx = Fx::running();
+    fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS + 1;
+    let ring = fx.ring();
+    fx.verdict(Verdict::Tag {
+        hunter: ring[0],
+        target: ring[1],
+    });
+}
+
+#[test]
+#[should_panic(expected = "the match is over")]
+fn a_forfeit_after_the_grace_is_refused() {
+    let mut fx = Fx::running();
+    fx.now = fx.view().end_ms.unwrap() + VERDICT_GRACE_MS + 1;
+    let ring = fx.ring();
+    fx.verdict(Verdict::Forfeit {
+        player: ring[1],
+        to: ring[0],
+    });
+}
+
+#[test]
+#[should_panic(expected = "End before end_ms needs exactly one survivor")]
+fn an_early_end_with_two_survivors_is_refused() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    fx.verdict(Verdict::Tag {
+        hunter: ring[0],
+        target: ring[1],
+    });
+    fx.now = fx.view().end_ms.unwrap() - 1;
+    let body = fx.end_body();
+    fx.verdict(body);
+}
+
+#[test]
+fn an_early_end_with_one_survivor_settles_and_pays_it_everything() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    // The winner of the first tag inherits the loser's target and takes it too.
+    fx.verdict(Verdict::Tag {
+        hunter: ring[0],
+        target: ring[1],
+    });
+    fx.verdict(Verdict::Tag {
+        hunter: ring[0],
+        target: ring[2],
+    });
+    let body = fx.end_body();
+    fx.verdict(body);
+    let v = fx.view();
+    assert_eq!(v.phase, Phase::Ended);
+    assert_eq!(v.players[usize::from(ring[0])].paid, U128(3 * STAKE));
+}
+
+// Ring check at End.
+
+/// The referee could tag anyone: the contract only checked that both players were in.
+#[test]
+#[should_panic(expected = "a Tag did not follow the ring")]
+fn a_match_whose_tag_does_not_follow_the_ring_is_refused_at_end() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    // ring[0] hunts ring[1], not ring[2]. The Tag itself applies; End refuses the match.
+    fx.verdict(Verdict::Tag {
+        hunter: ring[0],
+        target: ring[2],
+    });
+    fx.end();
+}
+
+#[test]
+fn a_refused_end_leaves_the_match_to_abort_with_heads_refunded() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    fx.verdict(Verdict::Tag {
+        hunter: ring[0],
+        target: ring[2],
+    });
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fx.end()));
+    assert!(r.is_err());
+    fx.now = fx.view().end_ms.unwrap() + REFEREE_TIMEOUT_MS;
+    fx.abort();
+    assert_eq!(fx.view().phase, Phase::Aborted);
+    let total: u128 = PLAYERS.iter().map(|p| fx.bal(p)).sum();
+    assert_eq!(total, 6 * STAKE, "every unit is back in a balance");
+}
+
+/// A running four-player match (alice, bob, carol, dave).
+fn running_with_four() -> Fx {
+    let mut fx = Fx::lobby();
+    fx.register("dave.testnet");
+    fx.top_up("dave.testnet", &usdc(), 2 * STAKE);
+    fx.join("dave.testnet");
+    fx.lock();
+    let ids: Vec<String> = fx
+        .view()
+        .players
+        .iter()
+        .map(|p| p.account_id.to_string())
+        .collect();
+    let Verdict::Start {
+        ring_commit,
+        start_ms,
+        end_ms,
+        ..
+    } = fx.start_body()
+    else {
+        unreachable!()
+    };
+    fx.verdict(Verdict::Start {
+        players_hash: players_hash(&ids),
+        ring_commit,
+        start_ms,
+        end_ms,
+    });
+    fx
+}
+
+#[test]
+fn each_winner_hunts_the_losers_target_next_and_the_last_one_standing_settles() {
+    let mut fx = running_with_four();
+    let ring = fx.ring();
+    for (hunter, target) in [(0, 1), (0, 2), (3, 0)] {
+        fx.verdict(Verdict::Tag {
+            hunter: ring[hunter],
+            target: ring[target],
+        });
+    }
+    let body = fx.end_body();
+    fx.verdict(body);
+    let v = fx.view();
+    assert_eq!(v.phase, Phase::Ended);
+    assert_eq!(v.players[usize::from(ring[3])].paid, U128(4 * STAKE));
+}
+
+#[test]
+#[should_panic(expected = "a Tag did not follow the ring")]
+fn a_tag_of_someone_elses_inherited_target_is_refused_at_end() {
+    let mut fx = running_with_four();
+    let ring = fx.ring();
+    // ring[0] takes ring[1] and with it ring[2]; ring[3] still hunts ring[0], not ring[2].
+    fx.verdict(Verdict::Tag {
+        hunter: ring[0],
+        target: ring[1],
+    });
+    fx.verdict(Verdict::Tag {
+        hunter: ring[3],
+        target: ring[2],
+    });
+    fx.end();
+}
+
+#[test]
+#[should_panic(expected = "a Forfeit did not pay the forfeiter's hunter")]
+fn a_match_whose_forfeit_paid_someone_other_than_the_hunter_is_refused_at_end() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    // ring[0] hunts ring[1]; a forfeit by ring[1] must go to ring[0].
+    fx.verdict(Verdict::Forfeit {
+        player: ring[1],
+        to: ring[2],
+    });
+    fx.end();
+}
+
+#[test]
+fn a_forfeit_to_the_hunter_then_a_tag_of_the_inherited_target_settles() {
+    let mut fx = Fx::running();
+    let ring = fx.ring();
+    fx.verdict(Verdict::Forfeit {
+        player: ring[1],
+        to: ring[0],
+    });
+    // ring[0] now hunts ring[1]'s target, ring[2].
+    fx.verdict(Verdict::Tag {
+        hunter: ring[0],
+        target: ring[2],
+    });
+    let body = fx.end_body();
+    fx.verdict(body);
+    assert_eq!(fx.view().phase, Phase::Ended);
+}
+
+// Migration.
+
+/// Turns `fx`'s contract into the first state layout, as the live deployment has it: no ring
+/// record for the match, no `vrf_sender`, the old `STATE` record.
+fn downgrade_to_v1(fx: &mut Fx) {
+    fx.c.payouts.flush();
+    fx.c.balances.flush();
+    fx.c.matches.flush();
+    fx.c.checkpoints.flush();
+    fx.c.rings.remove(&fx.id);
+    fx.c.rings.flush();
+    let v1 = migrate::TailV1 {
+        owner: fx.c.owner.clone(),
+        referee_pk: fx.c.referee_pk,
+        vrf_pk: fx.c.vrf_pk,
+        allowed_tokens: fx.c.allowed_tokens.clone(),
+        salt: fx.c.salt,
+        payouts: LookupMap::new(b"p"),
+        balances: LookupMap::new(b"b"),
+        matches: LookupMap::new(b"m"),
+        checkpoints: LookupMap::new(b"c"),
+        match_nonce: fx.c.match_nonce,
+    };
+    env::state_write(&v1);
+}
+
+fn migrated_lobby() -> Fx {
+    let mut fx = Fx::lobby();
+    downgrade_to_v1(&mut fx);
+    ctx(&owner(), fx.now, NearToken::from_yoctonear(0));
+    fx.c = Tail::migrate(acc("referee-caller.testnet"));
+    fx
+}
+
+#[test]
+fn migrate_keeps_balances_payouts_and_matches_and_pins_the_vrf_sender() {
+    let mut fx = migrated_lobby();
+    let c = fx.c.get_config();
+    assert_eq!(c.vrf_sender, acc("referee-caller.testnet"));
+    assert_eq!(c.owner, owner());
+    assert_eq!(c.referee_pk, pk_hex(&referee()));
+    for p in PLAYERS {
+        assert_eq!(fx.bal(p), STAKE);
+        assert_eq!(fx.c.get_payout(acc(p)), Some(acc(p)));
+    }
+    let old = fx.view();
+    assert_eq!(old.players.len(), 3);
+    assert_eq!(old.vrf_sender, None);
+    // The nonce carried over: the next match gets a new id and a ring record.
+    let old_id = fx.id;
+    fx.id = fx.create(cfg(usdc(), 0));
+    assert_ne!(fx.id, old_id);
+    assert_eq!(fx.view().vrf_sender, Some(acc("referee-caller.testnet")));
+}
+
+#[test]
+fn a_match_created_after_migrate_runs_to_end_with_the_ring_checked() {
+    let mut fx = migrated_lobby();
+    ctx(&owner(), fx.now, NearToken::from_yoctonear(1));
+    fx.c.set_vrf_sender(vrf_sender());
+    fx.id = fx.create(cfg(usdc(), STAKE));
+    for p in PLAYERS {
+        fx.join(p);
+    }
+    fx.lock();
+    let body = fx.start_body();
+    fx.verdict(body);
+    let ring = fx.ring();
+    fx.verdict(Verdict::Tag {
+        hunter: ring[2],
+        target: ring[0],
+    });
+    fx.end();
+    assert_eq!(fx.view().phase, Phase::Ended);
+}
+
+/// A match from before the upgrade has no pinned sender or elimination record, so it cannot be
+/// checked at End; the refund path still works.
+#[test]
+fn a_match_from_before_migrate_still_moves_hints_and_aborts_with_a_refund() {
+    let mut fx = migrated_lobby();
+    fx.lock();
+    let body = fx.start_body();
+    fx.verdict(body);
+    fx.verdict(hint());
+    fx.now += REFEREE_TIMEOUT_MS;
+    fx.abort();
+    let total: u128 = PLAYERS.iter().map(|p| fx.bal(p)).sum();
+    assert_eq!(total, 6 * STAKE);
+    assert_eq!(fx.bal("alice.testnet"), 2 * STAKE - 1);
+}
+
+#[test]
+#[should_panic(expected = "no ring record")]
+fn a_tag_in_a_match_from_before_migrate_is_refused() {
+    let mut fx = migrated_lobby();
+    fx.lock();
+    let body = fx.start_body();
+    fx.verdict(body);
+    fx.verdict(Verdict::Tag { hunter: 0, target: 1 });
+}
+
+#[test]
+#[should_panic(expected = "no ring record")]
+fn an_end_in_a_match_from_before_migrate_is_refused() {
+    let mut fx = migrated_lobby();
+    fx.lock();
+    let body = fx.start_body();
+    fx.verdict(body);
+    fx.end();
+}
+
+#[test]
+fn the_contract_account_itself_can_migrate_in_its_deploy_transaction() {
+    let mut fx = Fx::lobby();
+    downgrade_to_v1(&mut fx);
+    ctx(&contract(), fx.now, NearToken::from_yoctonear(0));
+    fx.c = Tail::migrate(vrf_sender());
+    assert_eq!(fx.c.get_config().vrf_sender, vrf_sender());
+}
+
+#[test]
+#[should_panic(expected = "owner only")]
+fn migrate_by_a_stranger_is_refused() {
+    let mut fx = Fx::lobby();
+    downgrade_to_v1(&mut fx);
+    ctx(&acc("mallory.testnet"), fx.now, NearToken::from_yoctonear(0));
+    let _ = Tail::migrate(acc("mallory.testnet"));
+}
+
+#[test]
+#[should_panic(expected = "Cannot deserialize the contract state")]
+fn migrate_on_the_new_layout_is_refused() {
+    let fx = migrated_lobby();
+    env::state_write(&fx.c);
+    ctx(&owner(), fx.now, NearToken::from_yoctonear(0));
+    let _ = Tail::migrate(vrf_sender());
 }

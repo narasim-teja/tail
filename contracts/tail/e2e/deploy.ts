@@ -8,12 +8,19 @@
 //   --upgrade  deploy the new code in place with the account's full-access key from .keys/; state
 //              (balances, matches, pinned keys) is kept, so only use it when the state layout is
 //              unchanged. Checks the on-chain code hash and that the real keys are still pinned.
+//   --upgrade --migrate
+//              the same, for code whose state layout changed: the deploy and the contract's
+//              `migrate(vrf_sender)` go in one transaction signed by the contract account, so no
+//              call ever meets new code over old state, and a failed migration undoes the deploy.
 //   --fresh    delete the account first (NEAR back to the parent), which wipes every balance and
 //              match on it. Never run it while a match is live.
+//
+// The VRF alpha's `sender` (the account OutLayer names in `vrf:{request_id}:{sender}:{seed}`, the
+// referee's OutLayer caller) is pinned too: `--vrf-sender=<account>`, default OUTLAYER_OWNER.
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { Account, type KeyPairString } from "near-api-js";
+import { Account, actions, type KeyPairString, teraToGas } from "near-api-js";
 import {
   ALLOWED_TOKENS,
   createContract,
@@ -32,6 +39,11 @@ const contractId = `tail.${parentId}`;
 if (process.env["TAIL_CONTRACT"] && process.env["TAIL_CONTRACT"] !== contractId) {
   log(`note: TAIL_CONTRACT in .env.local is ${process.env["TAIL_CONTRACT"]}, not ${contractId}`);
 }
+
+const vrfSender =
+  process.argv.find((a) => a.startsWith("--vrf-sender="))?.slice("--vrf-sender=".length) ||
+  must("OUTLAYER_OWNER");
+log(`vrf_sender ${vrfSender}`);
 
 const api = must("OUTLAYER_API");
 const res = await fetch(
@@ -58,7 +70,18 @@ log(`vrf_pk ${vrfPk} (matches OutLayer /vrf/pubkey)`);
 if ((await exists(contractId)) && process.argv.includes("--upgrade")) {
   const key = JSON.parse(readFileSync(`${keysDir}${contractId}.json`, "utf8")).private_key as KeyPairString;
   const code = wasm();
-  await new Account(contractId, provider, key).deployContract(code);
+  const self = new Account(contractId, provider, key);
+  if (process.argv.includes("--migrate")) {
+    await self.signAndSendTransaction({
+      receiverId: contractId,
+      actions: [
+        actions.deployContract(code),
+        actions.functionCall("migrate", { vrf_sender: vrfSender }, teraToGas("100"), 0n),
+      ],
+    });
+  } else {
+    await self.deployContract(code);
+  }
   const local = bs58(createHash("sha256").update(code).digest());
   // The view can trail the deploy by a block or two, so re-read for a few seconds.
   let onChain = { code_hash: "" };
@@ -80,6 +103,7 @@ if ((await exists(contractId)) && process.argv.includes("--upgrade")) {
     owner: parentId,
     referee_pk: refereePk,
     vrf_pk: vrfPk,
+    vrf_sender: vrfSender,
     allowed_tokens: ALLOWED_TOKENS,
   });
   // The contract must be registered on each token before anyone can ft_transfer_call to it.
@@ -90,6 +114,7 @@ const config = (await provider.callFunction({ contractId, method: "get_config", 
   unknown
 >;
 if (config["referee_pk"] !== refereePk || config["vrf_pk"] !== vrfPk) throw new Error("pinned keys differ");
+if (config["vrf_sender"] !== vrfSender) throw new Error(`pinned vrf_sender is ${config["vrf_sender"]}`);
 log(JSON.stringify(config, null, 1));
 
 function bs58(bytes: Uint8Array) {
