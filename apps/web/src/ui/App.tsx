@@ -10,6 +10,7 @@ import type { ChainMatch } from "../verify/anchor.ts";
 import { BundleError, type DecodedBundle, decodeBundle } from "../verify/bundle.ts";
 import { nearReader } from "../verify/chain.ts";
 import { type BatchCheck, checkBatches, checkHandler } from "../verify/checks.ts";
+import { PINS } from "../verify/pins.ts";
 import { Stage } from "./Stage.tsx";
 import { Loading, PageState, ProgressLine, Retry } from "./States.tsx";
 
@@ -20,8 +21,6 @@ type Phase =
   | { kind: "not-finished"; chain: ChainMatch | null }
   | { kind: "missing" }
   | { kind: "error"; message: string };
-
-const CONTRACT = import.meta.env.VITE_TAIL_CONTRACT || "tail.tail-dev-a38d13.testnet";
 
 export function App() {
   const [request, setRequest] = useState<{ source: Source; n: number }>(() => ({
@@ -42,7 +41,7 @@ export function App() {
           const decoded = decodeBundle(r.json);
           // Trails are drawn only from batches whose hash the log holds.
           const batches = checkBatches(decoded);
-          const match = buildMatch(decoded, batches.verified, checkHandler(decoded));
+          const match = buildMatch(decoded, batches.inLog, checkHandler(decoded));
           setPhase({ kind: "ready", decoded, match, batches });
         } catch (e) {
           setPhase({
@@ -57,8 +56,8 @@ export function App() {
       // Private or unfinished: ask NEAR what it knows, to say who can watch and when.
       const chain =
         source.kind === "relay"
-          ? await nearReader("testnet")
-              .read(CONTRACT, source.matchId)
+          ? await nearReader(PINS.network)
+              .read(PINS.contract, source.matchId)
               .then((c) => (c.kind === "found" ? c.match : null))
           : null;
       if (ac.signal.aborted) return;

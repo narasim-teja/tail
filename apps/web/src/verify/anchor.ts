@@ -5,6 +5,10 @@
 // the bundle's log at that size (that root covers the verdict's digest), and the match NEAR
 // knows uses the same referee key, VRF key and players. End is anchored by NEAR's final root and
 // VRF reveal; Start also by its ring commit and times.
+//
+// The anchor itself is pinned (pins.ts): the page reads the contract it was built for and refuses
+// a bundle that names another contract or network, or another match than the link asked for. A
+// relay with its own contract copy therefore cannot earn "Matches NEAR".
 
 import { equal, fromHex, type SignedVerdict, toHex } from "@tail/protocol";
 import type { DecodedBundle } from "./bundle.ts";
@@ -50,9 +54,37 @@ export type ChainState =
 
 export type Anchor = "match" | "mismatch" | "absent" | "unknown";
 
+/** What the page expects the bundle to be about: pinned contract and network, the linked id. */
+export interface Expect {
+  contract: string;
+  network: string;
+  /** The `?match=` id, or null for a fixture (no link to hold it to). */
+  matchId: string | null;
+}
+
+export type Binding =
+  | { ok: true }
+  | { ok: false; why: "contract" | "network" | "match"; named: string; want: string };
+
+export function bindingOf(d: DecodedBundle, expect: Expect): Binding {
+  const m = d.raw.match;
+  if (m.contract !== expect.contract)
+    return { ok: false, why: "contract", named: String(m.contract), want: expect.contract };
+  if (m.network !== expect.network)
+    return { ok: false, why: "network", named: String(m.network), want: expect.network };
+  if (expect.matchId !== null && m.id !== expect.matchId)
+    return { ok: false, why: "match", named: m.id, want: expect.matchId };
+  return { ok: true };
+}
+
 export interface MatchLevel {
   /** Referee key, VRF key, players, token and stake agree with the contract. */
   identity: boolean;
+  /**
+   * The bundle holds every checkpoint NEAR stored and, once the match ended, every verdict NEAR
+   * applied. Without it a bundle cut short would still show only verdicts that match.
+   */
+  complete: boolean;
   /** Expected payouts from replaying the verdicts equal what the contract paid. */
   payouts: boolean | null;
   ended: boolean;
@@ -61,8 +93,12 @@ export interface MatchLevel {
 export function matchLevel(
   d: DecodedBundle,
   chain: ChainMatch,
+  roots: ChainRoots,
   verdicts: (SignedVerdict | null)[],
 ): MatchLevel {
+  const ended = chain.phase === "ended";
+  const checkpoints = verdicts.filter((v) => v?.body.kind === "Checkpoint").length;
+  const complete = checkpoints === roots.checkpoints.length && (!ended || d.verdicts.length === chain.seq);
   const identity =
     chain.referee_pk.toLowerCase() === toHex(d.refereePk) &&
     chain.vrf_pk.toLowerCase() === toHex(d.vrfPk) &&
@@ -70,8 +106,7 @@ export function matchLevel(
     chain.players.every((p, i) => p.account_id === d.players[i]) &&
     chain.token === d.raw.match.token &&
     chain.stake === d.raw.match.stake;
-  const ended = chain.phase === "ended";
-  return { identity, ended, payouts: ended ? payoutsMatch(d, chain, verdicts) : null };
+  return { identity, complete, ended, payouts: ended ? payoutsMatch(d, chain, verdicts) : null };
 }
 
 /** Replays heads like the contract's apply_one and settle_end, and compares with `paid`. */
@@ -121,13 +156,16 @@ export function anchorVerdicts(
   ctx: LocalContext,
   local: { v: SignedVerdict | null; logIndex: number | null }[],
   state: ChainState,
+  binding: Binding,
 ): Anchor[] {
+  if (!binding.ok) return local.map(() => "mismatch");
   if (state.kind === "absent") return local.map(() => "absent");
   if (state.kind === "unreachable") return local.map(() => "unknown");
   const { match, roots } = state;
   const level = matchLevel(
     d,
     match,
+    roots,
     local.map((l) => l.v),
   );
   if (!level.identity) return local.map(() => "mismatch");

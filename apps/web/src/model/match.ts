@@ -1,5 +1,5 @@
 // Turns a decoded bundle into what the film plays: players, events in time, heads and targets
-// after each event, contacts, and per-player tracks from verified batches only.
+// after each event, contacts, and per-player tracks from batches whose hash the log holds.
 //
 // The log has no clock of its own, so event times are reconstructed from its order: batch
 // entries carry their batch's time (when trails were released), contacts their epoch, the k-th
@@ -7,7 +7,7 @@
 
 import { buildRing, EPOCH_MS, type SignedVerdict, WINDOW_EPOCHS } from "@tail/protocol";
 import type { DecodedBundle } from "../verify/bundle.ts";
-import { batchKey } from "../verify/checks.ts";
+import { batchKey, type HandlerCheck } from "../verify/checks.ts";
 
 export interface PlayerInfo {
   index: number;
@@ -33,7 +33,8 @@ export interface MatchEvent {
   hintId?: number;
   hintKind?: number;
   question?: string;
-  handler?: { text: string; model: string; verified: boolean };
+  /** verified: the quote is the line the log committed to; signature: see HandlerCheck. */
+  handler?: { text: string; model: string; verified: boolean; signature: HandlerCheck | null };
   /** forfeit: whether the last fix was outside the zone. */
   leftZone?: boolean;
   callId: Uint8Array;
@@ -126,8 +127,9 @@ const KINDS: Record<SignedVerdict["body"]["kind"], EventKind> = {
 
 export function buildMatch(
   d: DecodedBundle,
-  verifiedBatches: Set<string>,
-  handlerOk: Map<number, boolean>,
+  /** Batches whose hash the log holds (BatchCheck.inLog). */
+  loggedBatches: Set<string>,
+  handlerChecks: Map<number, HandlerCheck>,
 ): Match {
   const m = d.raw.match;
   const startMs = m.startMs;
@@ -141,13 +143,13 @@ export function buildMatch(
     initials: initials[index] as string,
   }));
 
-  // Tracks from verified batches only.
+  // Tracks only from batches whose hash the log holds.
   const fixes: { t: number; lon: number; lat: number }[][] = d.players.map(() => []);
   const batchTime = new Map<string, number>();
   const hintAction = new Map<string, string>(); // "player:nth hint" → question text
   const hintCount = d.players.map(() => 0);
   const sortedBatches = d.batches
-    .filter((x) => x.batch && verifiedBatches.has(batchKey(x.batch.player, x.batch.seq)))
+    .filter((x) => x.batch && loggedBatches.has(batchKey(x.batch.player, x.batch.seq)))
     .map((x) => x.batch as NonNullable<typeof x.batch>)
     .sort((a, b) => a.player - b.player || a.seq - b.seq);
   for (const b of sortedBatches) {
@@ -200,7 +202,7 @@ export function buildMatch(
   }
   const timeAt = logClock(anchorT, durationMs);
 
-  // Hint questions, in order per player, from the verified batches' actions.
+  // Hint questions, in order per player, from the logged batches' actions.
   for (const b of sortedBatches)
     for (const a of b.actions)
       if (a.kind === "Hint") {
@@ -259,8 +261,10 @@ export function buildMatch(
       const q = hintAction.get(`${b.from}:${n}`);
       if (q) ev.question = q;
       const line = d.handler.find((h) => h.hintId === b.hintId);
-      if (line)
-        ev.handler = { text: line.text, model: line.model, verified: handlerOk.get(b.hintId) === true };
+      if (line) {
+        const check = handlerChecks.get(b.hintId) ?? null;
+        ev.handler = { text: line.text, model: line.model, verified: check?.text === true, signature: check };
+      }
       const s = next();
       s.heads[b.from] = (s.heads[b.from] ?? 0n) - b.amount;
       s.heads[b.to] = (s.heads[b.to] ?? 0n) + b.amount;
@@ -351,6 +355,14 @@ export function snapshotAt(m: Match, t: number): Snapshot {
     else break;
   }
   return s;
+}
+
+/** Heads, targets and who is alive just before an event (snapshots advance per hint, tag, forfeit). */
+export function snapshotBefore(m: Match, ev: MatchEvent): Snapshot {
+  const k = m.events.filter(
+    (e) => e.index < ev.index && (e.kind === "hint" || e.kind === "tag" || e.kind === "forfeit"),
+  ).length;
+  return m.snapshots[k] ?? (m.snapshots[0] as Snapshot);
 }
 
 /** Contact epochs between hunter and target in the lock window ending at time t. */

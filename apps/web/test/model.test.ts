@@ -17,7 +17,7 @@ import { checkBatches, checkHandler } from "../src/verify/checks.ts";
 
 const build = (json: unknown) => {
   const d = decodeBundle(json);
-  return buildMatch(d, checkBatches(d).verified, checkHandler(d));
+  return buildMatch(d, checkBatches(d).inLog, checkHandler(d));
 };
 // Built in memory, through JSON as the relay would send them: no generated files needed.
 const fx = makeFixtures();

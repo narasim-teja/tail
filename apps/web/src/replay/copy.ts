@@ -1,10 +1,9 @@
 // Every sentence the replay says about the match. Short, plain, no protocol words.
 
-import type { ReplayBundle } from "@tail/protocol";
 import type { Match, MatchEvent } from "../model/match.ts";
 import { snapshotAt } from "../model/match.ts";
 import type { VerdictStatus } from "../verify/report.ts";
-import type { Source } from "./load.ts";
+import type { Signer } from "../verify/signer.ts";
 
 const name = (m: Match, i: number | undefined) =>
   i === undefined ? "Someone" : (m.players[i]?.name ?? "Someone");
@@ -46,18 +45,11 @@ export const statusLabel: Record<VerdictStatus, string> = {
 };
 
 /**
- * Who signed this match's verdicts: the referee in OutLayer's enclave, the local test referee
- * (the same code run on the relay's machine while OutLayer is unavailable), or the fixture's
- * public test key. Only the first has an enclave record behind it.
+ * Where the target draw's randomness came from, as the end of a sentence. "The enclave" only when
+ * the End verdict, which reveals the draw, has an attestation record for a published build.
  */
-export type Signer = "enclave" | "local" | "fixture";
-
-export function signerOf(source: Source, bundle: ReplayBundle): Signer {
-  if (source.kind === "fixture") return "fixture";
-  return bundle.referee.kind === "local" ? "local" : "enclave";
-}
-
-/** Where the target draw's randomness came from, as the end of a sentence. */
-export function drawSource(s: Signer): string {
-  return s === "enclave" ? "the enclave's random source" : "the test referee's random source";
+export function drawSource(s: Signer, endInEnclave: boolean): string {
+  if (s === "enclave" && endInEnclave) return "the enclave's random source";
+  if (s === "local" || s === "fixture") return "the test referee's random source";
+  return "the referee's random source";
 }

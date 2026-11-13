@@ -4,14 +4,17 @@
 // mirrors the referee's tick order (receipts, batches, contacts, actions, dark rules, checkpoint)
 // so every root and signature checks out in the browser.
 //
-// THE KEYS HERE ARE TEST FIXTURES. The referee and VRF keys are derived from public strings in
-// this file, so anyone can sign with them; they are not, and never were, used on NEAR. The
-// bundles name no transactions, and the page reports them as a fixture that is not on NEAR.
+// THE KEYS HERE ARE TEST FIXTURES. The referee, VRF and Handler-model keys are derived from public
+// strings in this file, so anyone can sign with them; they are not, and never were, used on NEAR
+// or NEAR AI. The bundles name no transactions, and the page reports them as a fixture that is
+// not on NEAR.
 //
 // Pure and deterministic: the same bytes on every call. The tests build their bundles from it in
 // memory; scripts/make-fixture.ts writes them to public/fixtures for the page.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
+import { secp256k1 } from "@noble/curves/secp256k1.js";
+import { keccak_256 } from "@noble/hashes/sha3.js";
 import {
   type Action,
   type Batch,
@@ -19,6 +22,7 @@ import {
   beaconToken,
   buildRing,
   CHECKPOINT_MS,
+  concat,
   DARK_FORFEIT_MS,
   derivePlayerKey,
   deriveTagKey,
@@ -71,6 +75,10 @@ export function makeFixtures(): Fixtures {
 
   const REFEREE_SK = sha256(utf8("TAIL replay fixture referee key. Test only, public, never on NEAR."));
   const VRF_SK = sha256(utf8("TAIL replay fixture VRF key. Test only, public, never on NEAR."));
+  const MODEL_SK = sha256(
+    utf8("TAIL replay fixture Handler model key. Test only, public, never on NEAR AI."),
+  );
+  const MODEL = "fixture (written by hand, not a model)";
   const K_M = sha256(utf8("TAIL replay fixture match key"));
   const MATCH_ID = sha256(utf8("TAIL replay fixture: Boston Common, five players")).slice(0, 16);
   const MATCH_HEX = toHex(MATCH_ID);
@@ -535,6 +543,27 @@ export function makeFixtures(): Fixtures {
   const ingestedTo = new Array<number>(N).fill(0); // latest batch time seen, ms after start
   const contacts = new Set<string>();
   let pendingReceipts: { hintId: number; text: string }[] = [];
+  // Signs a chat the way NEAR AI Cloud does (F2): personal_sign over `model:sha256(req):sha256(resp)`.
+  const modelAddress = `0x${toHex(keccak_256(secp256k1.getPublicKey(MODEL_SK, false).slice(1)).slice(12))}`;
+  const signedTexts = new Map<number, string>();
+  function chatReceipt(r: { hintId: number; text: string }): LogEntry {
+    const chatId = `chatcmpl-fixture-${r.hintId}`;
+    const req = JSON.stringify({ model: MODEL, hint_id: r.hintId });
+    const resp = JSON.stringify({ id: chatId, choices: [{ message: { content: r.text } }] });
+    const signedText = `${MODEL}:${toHex(sha256(utf8(req)))}:${toHex(sha256(utf8(resp)))}`;
+    signedTexts.set(r.hintId, signedText);
+    const msg = utf8(signedText);
+    const digest = keccak_256(concat(utf8(`\x19Ethereum Signed Message:\n${msg.length}`), msg));
+    const rsig = secp256k1.sign(digest, MODEL_SK, { prehash: false, format: "recovered" });
+    return {
+      kind: "HintReceipt",
+      hintId: r.hintId,
+      chatId,
+      textHash: sha256(utf8(r.text)),
+      signature: concat(rsig.slice(1), Uint8Array.of(27 + (rsig[0] as number))),
+      signingAddress: modelAddress,
+    };
+  }
   let nextHintId = 0;
   let nextCheckpoint = CHECKPOINT_MS;
   const hunterOf = (p: number) => target.findIndex((t, h) => alive[h] && t === p);
@@ -550,16 +579,7 @@ export function makeFixtures(): Fixtures {
   for (let k = 1; ; k++) {
     const now = k * TICK_MS + TICK_LATENCY_MS;
     const call = callId();
-    for (const r of pendingReceipts) {
-      log.push({
-        kind: "HintReceipt",
-        hintId: r.hintId,
-        chatId: `chatcmpl-fixture-${r.hintId}`,
-        textHash: sha256(utf8(r.text)),
-        signature: randomBytes(65),
-        signingAddress: `0x${toHex(randomBytes(20))}`,
-      });
-    }
+    for (const r of pendingReceipts) log.push(chatReceipt(r));
     pendingReceipts = [];
     const tickBatches = batches
       .filter((m) => !used.has(m) && m.arrive <= now && alive[m.batch.player])
@@ -619,7 +639,7 @@ export function makeFixtures(): Fixtures {
           hintId,
           text,
           chatId: `chatcmpl-fixture-${hintId}`,
-          model: "fixture (written by hand, not a model)",
+          model: MODEL,
         });
       }
     }
@@ -645,15 +665,7 @@ export function makeFixtures(): Fixtures {
     }
   }
   const endCall = callId();
-  for (const r of pendingReceipts)
-    log.push({
-      kind: "HintReceipt",
-      hintId: r.hintId,
-      chatId: `chatcmpl-fixture-${r.hintId}`,
-      textHash: sha256(utf8(r.text)),
-      signature: randomBytes(65),
-      signingAddress: `0x${toHex(randomBytes(20))}`,
-    });
+  for (const r of pendingReceipts) log.push(chatReceipt(r));
   verdict({ kind: "End", alpha, vrfSignature, logSize: BigInt(log.length), root: root() }, endCall);
 
   // ── Bundle ───────────────────────────────────────────────────────────────────────
@@ -684,7 +696,8 @@ export function makeFixtures(): Fixtures {
     log: log.map((e) => b64(encodeLogEntry(e))),
     batches: batches.filter((m) => used.has(m)).map((m) => b64(encodeBatch(m.batch))),
     reveal: { vrfAlpha: alpha, vrfSignature: toHex(vrfSignature), ring },
-    handler,
+    // The relay's bundle type has no `signedText` yet; the page reads it when present.
+    handler: handler.map((h) => ({ ...h, signedText: signedTexts.get(h.hintId) ?? "" })),
   };
 
   // Tampered: someone rewrote the second tag to credit Dee, keeping the referee's old signature.

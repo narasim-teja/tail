@@ -3,12 +3,13 @@
 // in the browser and under `bun test`.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
+import { secp256k1 } from "@noble/curves/secp256k1.js";
+import { keccak_256 } from "@noble/hashes/sha3.js";
 import {
   buildRing,
   concat,
   equal,
   type LogEntry,
-  merkleLeaf,
   playersHash,
   ringCommit,
   type SignedVerdict,
@@ -55,8 +56,9 @@ export function prefixRoots(log: DecodedBundle["log"], sizes: Iterable<number>):
   if (want.has(0)) out.set(0, f.root());
   for (let i = 0; i < log.length; i++) {
     const e = log[i];
-    // An undecodable entry still has bytes; its leaf is what the referee would have hashed.
-    f.push(e?.entry ? merkleLeaf(e.entry) : sha256(concat(Uint8Array.of(0), e?.bytes ?? new Uint8Array(0))));
+    // The leaf is over the bytes as sent, never a re-encoding: two encodings that decode alike
+    // must not share a root, and an undecodable entry still has bytes the referee hashed.
+    f.push(sha256(concat(Uint8Array.of(0), e?.bytes ?? new Uint8Array(0))));
     if (want.has(i + 1)) out.set(i + 1, f.root());
   }
   return out;
@@ -83,13 +85,17 @@ export interface LocalVerdictCheck {
   ring: RingCheck | null;
 }
 
+/** true: held; false: failed; null: nothing to compare (counts as neither). */
 export interface RingCheck {
   playersHash?: boolean;
   commit?: boolean;
   vrf?: boolean;
   alphaSeed?: boolean;
-  ringRebuilt?: boolean;
+  /** The relay's copy of the order (and of the VRF signature) equals the page's rebuild. */
+  ringRebuilt?: boolean | null;
 }
+
+export const ringOk = (r: RingCheck) => Object.values(r).every((x) => x !== false);
 
 export const localOk = (c: LocalVerdictCheck) =>
   c.decodes &&
@@ -97,7 +103,7 @@ export const localOk = (c: LocalVerdictCheck) =>
   c.order &&
   c.inLog &&
   c.rootClaim !== false &&
-  (c.ring === null || Object.values(c.ring).every(Boolean));
+  (c.ring === null || ringOk(c.ring));
 
 /** Index of each Verdict{seq} entry in the log, by seq. */
 export function verdictEntries(
@@ -186,15 +192,19 @@ function checkEnd(
   }
   const rebuilt = buildRing(d.players, b.vrfSignature);
   const revealed = d.reveal.ring;
+  const sameSig = d.reveal.vrfSignature === null || equal(d.reveal.vrfSignature, b.vrfSignature);
   return {
     commit,
     vrf,
     // The contract requires the VRF seed to be this match's id (TECHNICAL 4.8).
     alphaSeed: b.alpha.split(":").at(-1) === toHex(d.matchId),
-    ringRebuilt:
-      (revealed.length === 0 ||
-        (revealed.length === rebuilt.length && revealed.every((a, i) => a === rebuilt[i]))) &&
-      (d.reveal.vrfSignature === null || equal(d.reveal.vrfSignature, b.vrfSignature)),
+    // The page rebuilds the order from End's signed VRF signature either way; an empty copy from
+    // the relay has nothing to compare, so it is unchecked rather than a pass.
+    ringRebuilt: !sameSig
+      ? false
+      : revealed.length === 0
+        ? null
+        : revealed.length === rebuilt.length && revealed.every((a, i) => a === rebuilt[i]),
   };
 }
 
@@ -203,6 +213,10 @@ function checkEnd(
 export interface BatchCheck {
   /** "player:seq" of every batch whose hash is in the log and whose chain link holds. */
   verified: Set<string>;
+  /** Hash in the log, but the log lacks the predecessor, so the chain link was not checked. */
+  unchecked: Set<string>;
+  /** verified ∪ unchecked: every batch whose hash the log holds (the trails are drawn from these). */
+  inLog: Set<string>;
   failed: {
     key: string;
     why: "not in log" | "hash differs" | "broken chain" | "undecodable" | "other match";
@@ -216,6 +230,7 @@ export function checkBatches(d: DecodedBundle): BatchCheck {
   for (const e of d.log)
     if (e.entry?.kind === "Batch") logged.set(batchKey(e.entry.player, e.entry.seq), e.entry.hash);
   const verified = new Set<string>();
+  const unchecked = new Set<string>();
   const failed: BatchCheck["failed"] = [];
   for (const [i, x] of d.batches.entries()) {
     if (!x.batch || !x.hash) {
@@ -240,24 +255,83 @@ export function checkBatches(d: DecodedBundle): BatchCheck {
     // The link must name the predecessor the log holds; one the log lacks cannot be checked.
     const prev =
       batch.seq === 0 ? new Uint8Array(32) : (logged.get(batchKey(batch.player, batch.seq - 1)) ?? null);
-    if (prev && !equal(prev, batch.prev)) {
+    if (!prev) {
+      unchecked.add(key);
+      continue;
+    }
+    if (!equal(prev, batch.prev)) {
       failed.push({ key, why: "broken chain" });
       continue;
     }
     verified.add(key);
   }
-  return { verified, failed };
+  return { verified, unchecked, inLog: new Set([...verified, ...unchecked]), failed };
 }
 
-// ── Handler lines: the text the page quotes is the text the log committed to ───────────
+// ── Handler lines ───────────────────────────────────────────────────────────────────
 
-export function checkHandler(d: DecodedBundle): Map<number, boolean> {
+/**
+ * text: SHA-256 of the quote equals the HintReceipt's text hash (the log committed to the line).
+ * signature, from the receipt's NEAR AI chat signature:
+ *   signed: it recovers to the logged signing address over the signed text `model:req:resp`;
+ *   bad: it does not, or the signed text is not of that shape or names another model;
+ *   unsigned: the receipt carries no signature (a template line, or the lookup failed);
+ *   unchecked: the bundle does not carry the signed text, so there is nothing to verify against.
+ * A good signature shows that the logged address signed hashes of this chat's request and
+ * response for that model. It does not show the address is a TEE key (NEAR AI's attestation
+ * report does), and the response hash is not matched to the quote here.
+ */
+export interface HandlerCheck {
+  text: boolean;
+  signature: "signed" | "bad" | "unsigned" | "unchecked";
+  signer: string | null;
+  model: string | null;
+}
+
+const SIGNED_TEXT = /^(.+):([0-9a-f]{64}):([0-9a-f]{64})$/;
+
+/** Ethereum address that signed `message` personal_sign style (65-byte r ‖ s ‖ v), or null. */
+export function personalSignSigner(message: string, sig: Uint8Array): string | null {
+  if (sig.length !== 65) return null;
+  const v = sig[64] as number;
+  const rec = v >= 27 ? v - 27 : v;
+  if (rec !== 0 && rec !== 1) return null;
+  const msg = utf8(message);
+  const digest = keccak_256(concat(utf8(`\x19Ethereum Signed Message:\n${msg.length}`), msg));
+  try {
+    const pk = secp256k1.recoverPublicKey(concat(Uint8Array.of(rec), sig.slice(0, 64)), digest, {
+      prehash: false,
+    });
+    const point = secp256k1.Point.fromBytes(pk).toBytes(false);
+    return `0x${toHex(keccak_256(point.slice(1)).slice(12))}`;
+  } catch {
+    return null;
+  }
+}
+
+export function checkHandler(d: DecodedBundle): Map<number, HandlerCheck> {
   const receipts = new Map<number, Extract<LogEntry, { kind: "HintReceipt" }>>();
   for (const e of d.log) if (e.entry?.kind === "HintReceipt") receipts.set(e.entry.hintId, e.entry);
-  const out = new Map<number, boolean>();
+  const out = new Map<number, HandlerCheck>();
   for (const h of d.handler) {
     const r = receipts.get(h.hintId);
-    out.set(h.hintId, !!r && equal(r.textHash, sha256(utf8(h.text))));
+    const text = !!r && equal(r.textHash, sha256(utf8(h.text)));
+    let signature: HandlerCheck["signature"] = "unchecked";
+    let model: string | null = null;
+    if (r && r.signature.length === 0) signature = "unsigned";
+    else if (r && h.signedText !== null) {
+      const m = SIGNED_TEXT.exec(h.signedText);
+      model = m?.[1] ?? null;
+      const signer = m ? personalSignSigner(h.signedText, r.signature) : null;
+      signature =
+        signer !== null && model === h.model && signer === r.signingAddress.toLowerCase() ? "signed" : "bad";
+    }
+    out.set(h.hintId, {
+      text,
+      signature,
+      signer: signature === "signed" && r ? r.signingAddress.toLowerCase() : null,
+      model: signature === "signed" ? model : null,
+    });
   }
   return out;
 }

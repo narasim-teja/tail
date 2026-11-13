@@ -4,7 +4,6 @@
 
 import {
   type Batch,
-  batchHash,
   decodeBatch,
   decodeLogEntry,
   decodeSignedVerdict,
@@ -12,6 +11,7 @@ import {
   type LogEntry,
   type ReplayBundle,
   type SignedVerdict,
+  sha256,
 } from "@tail/protocol";
 
 export class BundleError extends Error {
@@ -33,7 +33,21 @@ export interface DecodedLogEntry {
 export interface DecodedBatch {
   bytes: Uint8Array;
   batch: Batch | null;
+  /** SHA-256 of the bytes as sent (what the log's Batch entry commits to), not a re-encoding. */
   hash: Uint8Array | null;
+}
+
+/**
+ * A Handler line as the bundle quotes it. `signedText` is the NEAR AI signature's message
+ * (`model:sha256(request):sha256(response)`), when the relay passes it on; the receipt in the log
+ * holds the signature and address but not the message.
+ */
+export interface HandlerLine {
+  hintId: number;
+  text: string;
+  chatId: string;
+  model: string;
+  signedText: string | null;
 }
 
 export interface DecodedBundle {
@@ -47,7 +61,7 @@ export interface DecodedBundle {
   log: DecodedLogEntry[];
   batches: DecodedBatch[];
   reveal: { alpha: string; vrfSignature: Uint8Array | null; ring: string[] };
-  handler: ReplayBundle["handler"];
+  handler: HandlerLine[];
 }
 
 export function fromB64(s: string): Uint8Array {
@@ -115,7 +129,7 @@ export function decodeBundle(json: unknown): DecodedBundle {
   const batches = raw.batches.map((s): DecodedBatch => {
     const bytes = attempt(() => fromB64(s)) ?? new Uint8Array(0);
     const batch = attempt(() => decodeBatch(bytes));
-    return { bytes, batch, hash: batch ? batchHash(batch) : null };
+    return { bytes, batch, hash: batch ? sha256(bytes) : null };
   });
   const sig =
     typeof rev["vrfSignature"] === "string" ? attempt(() => hexOrB64(rev["vrfSignature"] as string)) : null;
@@ -135,9 +149,18 @@ export function decodeBundle(json: unknown): DecodedBundle {
       vrfSignature: sig && sig.length === 64 ? sig : null,
       ring: strings(rev["ring"]) ? rev["ring"] : [],
     },
-    handler: raw.handler.filter(
-      (h): h is ReplayBundle["handler"][number] =>
-        isObj(h) && typeof h.hintId === "number" && typeof h.text === "string",
+    handler: (raw.handler as unknown[]).flatMap((h): HandlerLine[] =>
+      isObj(h) && typeof h["hintId"] === "number" && typeof h["text"] === "string"
+        ? [
+            {
+              hintId: h["hintId"],
+              text: h["text"],
+              chatId: typeof h["chatId"] === "string" ? h["chatId"] : "",
+              model: typeof h["model"] === "string" ? h["model"] : "",
+              signedText: typeof h["signedText"] === "string" ? h["signedText"] : null,
+            },
+          ]
+        : [],
     ),
   };
 }

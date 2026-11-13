@@ -2,10 +2,12 @@
 // controls) and the verification results (written as checks finish).
 
 import { createStore } from "../lib/store.ts";
-import type { Anchor, ChainState, MatchLevel } from "../verify/anchor.ts";
+import type { Anchor, Binding, ChainState, MatchLevel } from "../verify/anchor.ts";
+import type { Attestation } from "../verify/attestation.ts";
 import type { TokenMeta } from "../verify/chain.ts";
 import type { LocalVerdictCheck } from "../verify/checks.ts";
 import type { ChainSummary, VerdictStatus } from "../verify/report.ts";
+import type { Signer } from "../verify/signer.ts";
 
 export type Selection =
   | { kind: "event"; index: number }
@@ -52,21 +54,30 @@ export interface VerifyState {
   statuses: VerdictStatus[];
   chain: ChainState | null;
   chainSummary: ChainSummary;
+  /** The bundle names the pinned contract, network and the linked match. */
+  binding: Binding;
   level: MatchLevel | null;
+  /** From NEAR's referee key; null until NEAR answers. */
+  signer: Signer | null;
+  /** Each verdict's OutLayer record, fetched only when the signer is the enclave project. */
+  attestations: (Attestation | undefined)[];
   token: TokenMeta;
   /** 0..1 progress of loading and checking, for the slim line at the top. */
   progress: number;
 }
 
 export const createPlayStore = (t = 0) => createStore<PlayState>(initialPlay(t));
-export const createVerifyStore = (n: number, token: TokenMeta) =>
+export const createVerifyStore = (n: number, token: TokenMeta, binding: Binding = { ok: true }) =>
   createStore<VerifyState>({
     local: new Array(n).fill(undefined),
     anchors: new Array(n).fill(undefined),
     statuses: new Array(n).fill("pending"),
     chain: null,
     chainSummary: "checking",
+    binding,
     level: null,
+    signer: null,
+    attestations: new Array(n).fill(undefined),
     token,
     progress: 0.4,
   });

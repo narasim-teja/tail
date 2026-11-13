@@ -2,7 +2,7 @@
 // "Matches NEAR": nothing else on the page may draw it, so a fixture or an unreachable chain can
 // never look verified. Pinned by test/marks.test.tsx.
 
-import type { Summary, VerdictStatus } from "../verify/report.ts";
+import type { MatchProblem, Summary, VerdictStatus } from "../verify/report.ts";
 
 /**
  * check: the brand's ringed check, "Matches NEAR" only.
@@ -36,9 +36,12 @@ export function proofGlyph(check: Check, comparesWithNear = false): Glyph {
   }
 }
 
-/** The match's overall state, for the header line and the summary sheet. */
-export function overall(s: Summary, chain: string): VerdictStatus {
-  if (s.mismatched > 0) return "mismatch";
+/**
+ * The match's overall state, for the header line and the summary sheet. A problem with the match
+ * as a whole (another contract, verdicts left out, payouts) fails it even if every verdict holds.
+ */
+export function overall(s: Summary, chain: string, problem: MatchProblem | null = null): VerdictStatus {
+  if (problem || s.mismatched > 0) return "mismatch";
   if (s.checked < s.total || chain === "checking") return "pending";
   return s.verified === s.total ? "verified" : "unanchored";
 }

@@ -7,44 +7,76 @@
 const LOCAL_STEP_MS = 110;
 const ANCHOR_STEP_MS = 45;
 
-import type { ChainState } from "../verify/anchor.ts";
-import { matchLevel } from "../verify/anchor.ts";
+import { toHex } from "@tail/protocol";
+import { bindingOf, type ChainState, type Expect } from "../verify/anchor.ts";
+import { type Attestation, fetchAttestation } from "../verify/attestation.ts";
 import type { DecodedBundle } from "../verify/bundle.ts";
 import type { ChainReader } from "../verify/chain.ts";
 import { checkVerdict, type LocalVerdictCheck, localContext } from "../verify/checks.ts";
-import { anchorsFor } from "../verify/index.ts";
+import { anchorsFor, levelFor } from "../verify/index.ts";
+import { PINS, type Pins } from "../verify/pins.ts";
 import { statusOf } from "../verify/report.ts";
+import { signerOf } from "../verify/signer.ts";
+import type { Source } from "./load.ts";
 import type { VerifyStore } from "./state.ts";
 
-export function runVerification(d: DecodedBundle, store: VerifyStore, reader: ChainReader): () => void {
+/** What a replay opened from `source` must be about: the pinned anchor and the linked match. */
+export const expectFor = (source: Source, pins: Pins = PINS): Expect => ({
+  contract: pins.contract,
+  network: pins.network,
+  matchId: source.kind === "relay" ? source.matchId : null,
+});
+
+export function runVerification(
+  d: DecodedBundle,
+  store: VerifyStore,
+  reader: ChainReader,
+  source: Source,
+  pins: Pins = PINS,
+): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const n = d.verdicts.length;
+  const expect = expectFor(source, pins);
+  const binding = bindingOf(d, expect);
   const ctx = localContext(d);
   const local: LocalVerdictCheck[] = [];
   let chain: ChainState | null = null;
   let anchored = 0;
   let anchors: ReturnType<typeof anchorsFor> | null = null;
+  store.set({ binding });
 
-  void reader.read(d.raw.match.contract, d.raw.match.id).then((c) => {
+  // The contract and the match id come from the pins and the link, never from the bundle.
+  void reader.read(expect.contract, expect.matchId ?? d.raw.match.id).then((c) => {
     if (stopped) return;
     chain = c;
-    store.set({
-      chain: c,
-      chainSummary: c.kind,
-      level:
-        c.kind === "found"
-          ? matchLevel(
-              d,
-              c.match,
-              d.verdicts.map((x) => x.v),
-            )
-          : null,
-    });
+    const signer = signerOf(source.kind === "fixture", c, pins);
+    store.set({ chain: c, chainSummary: c.kind, level: levelFor(d, c, binding), signer });
+    if (signer === "enclave" && binding.ok) fetchRecords();
   });
   void reader.token(d.raw.match.token).then((meta) => {
     if (!stopped && meta) store.set({ token: meta });
   });
+
+  // One record per OutLayer call; several verdicts of one tick share it.
+  const fetchRecords = () => {
+    const byCall = new Map<string, number[]>();
+    d.verdicts.forEach((x, i) => {
+      if (!x.v) return;
+      const k = toHex(x.v.callId);
+      byCall.set(k, [...(byCall.get(k) ?? []), i]);
+    });
+    for (const idx of byCall.values()) {
+      const v = d.verdicts[idx[0] as number]?.v;
+      if (!v) continue;
+      void fetchAttestation(pins.outlayerApi, v.callId, pins.refereeWasmSha256).then((a: Attestation) => {
+        if (stopped) return;
+        const list = [...store.get().attestations];
+        for (const i of idx) list[i] = a;
+        store.set({ attestations: list });
+      });
+    }
+  };
 
   const step = () => {
     if (stopped) return;
@@ -59,7 +91,7 @@ export function runVerification(d: DecodedBundle, store: VerifyStore, reader: Ch
       statuses[i] = statusOf(l, undefined) === "mismatch" ? "mismatch" : "pending";
       store.set({ local: loc, statuses, progress: 0.4 + (0.3 * local.length) / n });
     } else if (chain) {
-      anchors ??= anchorsFor(d, ctx, local, chain);
+      anchors ??= anchorsFor(d, ctx, local, chain, binding);
       const i = anchored++;
       const a = [...s.anchors];
       a[i] = anchors[i];

@@ -4,7 +4,7 @@
 import { cn } from "@/lib/utils";
 import { day, minutes, money, timeOfDay } from "../lib/format.ts";
 import { useStore } from "../lib/store.ts";
-import { summarize, summaryLine } from "../verify/report.ts";
+import { matchProblem, summarize, summaryLine } from "../verify/report.ts";
 import { useReplay } from "./context.tsx";
 import { Mark, TrailMark } from "./icons.tsx";
 import { overall } from "./marks.ts";
@@ -15,10 +15,12 @@ export function Header({ place, compact }: { place: string | null | undefined; c
   const localDone = useStore(verify, (s) => s.local.filter(Boolean).length);
   const chain = useStore(verify, (s) => s.chainSummary);
   const level = useStore(verify, (s) => s.level);
+  const binding = useStore(verify, (s) => s.binding);
   const decimals = useStore(verify, (s) => s.token.decimals);
   const sum = summarize(statuses);
-  const line = summaryLine(sum, chain, level, localDone);
-  const status = overall(sum, chain);
+  const problem = matchProblem(binding, level);
+  const line = summaryLine(sum, chain, problem, localDone);
+  const status = overall(sum, chain, problem);
   const title = place === undefined ? null : (place ?? `Match ${match.id.slice(0, 6)}`);
 
   return (

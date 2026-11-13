@@ -16,6 +16,7 @@ import { canUse3D, type Insets, type SceneHandle } from "../scene/scene.ts";
 import type { DecodedBundle } from "../verify/bundle.ts";
 import { nearReader } from "../verify/chain.ts";
 import type { BatchCheck } from "../verify/checks.ts";
+import { PINS } from "../verify/pins.ts";
 import { Caption } from "./Caption.tsx";
 import { type Replay, ReplayProvider, useMedia } from "./context.tsx";
 import { Finale } from "./Finale.tsx";
@@ -53,9 +54,10 @@ export function Stage(props: { decoded: DecodedBundle; match: Match; batches: Ba
   const camera = useStore(play, (s) => s.camera);
   const ended = useStore(play, (s) => s.ended);
 
+  // The network is the pinned one: the bundle's own `network` is only compared, never followed.
   useEffect(
-    () => runVerification(decoded, verify, nearReader(match.network)),
-    [decoded, verify, match.network],
+    () => runVerification(decoded, verify, nearReader(PINS.network), source),
+    [decoded, verify, source],
   );
   useEffect(() => runFilm(match, play, () => scene.current), [match, play]);
 
