@@ -25,6 +25,8 @@ export type Loaded =
   | { kind: "private" }
   /** 409: the match has not ended (or not settled) yet. */
   | { kind: "not-finished" }
+  /** 410: the relay deleted the match's trails after its retention window, so it has no replay. */
+  | { kind: "purged" }
   | { kind: "missing" }
   | { kind: "error"; message: string };
 
@@ -37,6 +39,7 @@ export async function loadBundle(src: Source, signal?: AbortSignal): Promise<Loa
   }
   if (res.status === 403) return { kind: "private" };
   if (res.status === 409) return { kind: "not-finished" };
+  if (res.status === 410) return { kind: "purged" };
   if (res.status === 404) return { kind: "missing" };
   if (!res.ok) return { kind: "error", message: `The server answered ${res.status}.` };
   try {

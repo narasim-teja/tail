@@ -1,8 +1,9 @@
 // Every sentence the replay says about the match. Short, plain, no protocol words.
 
+import { timeOfDay } from "../lib/format.ts";
 import type { Match, MatchEvent } from "../model/match.ts";
 import { snapshotAt } from "../model/match.ts";
-import type { Anchor } from "../verify/anchor.ts";
+import type { Anchor, ChainMatch } from "../verify/anchor.ts";
 import type { VerdictStatus } from "../verify/report.ts";
 import type { Settlement } from "../verify/settle.ts";
 import type { Signer } from "../verify/signer.ts";
@@ -119,4 +120,60 @@ export function refundLine(s: Settlement): string | null {
   return s.kind === "refunded"
     ? `Refunded: rule violation. Replaying the whole match finds that ${s.text.replace(/^event \d+: /, "")}, so every player gets their stake back.`
     : null;
+}
+
+/** A page with no film to play, as the relay and NEAR left it (ui/App.tsx). */
+export type PagePhase =
+  | { kind: "private"; players: number | null }
+  | { kind: "not-finished"; chain: ChainMatch | null }
+  | { kind: "purged" }
+  | { kind: "missing" }
+  | { kind: "error"; message: string };
+
+/** What such a page says, and whether trying again could change it. */
+export function pageState(p: PagePhase): { title: string; body: string; retry: boolean } {
+  switch (p.kind) {
+    case "private":
+      // The relay serves a private replay only to a player who signs its challenge with their
+      // NEAR key, and this page has no wallet: it can't show one to anybody, players included.
+      return {
+        title: "This replay is private",
+        body: `The host kept it for the ${p.players ? `${p.players} ` : ""}players, and this page has no sign-in, so it can't show it here.`,
+        retry: false,
+      };
+    case "not-finished":
+      return p.chain?.phase === "aborted"
+        ? { title: "This match was called off", body: notFinishedLine(p.chain), retry: false }
+        : { title: "This match isn't over yet", body: notFinishedLine(p.chain), retry: true };
+    case "purged":
+      return {
+        title: "This replay is gone",
+        body: "The relay deleted this match's trails after its retention window, so it no longer serves the replay.",
+        retry: false,
+      };
+    case "missing":
+      return {
+        title: "No match here",
+        body: "There's no match with this link. Check that it was copied whole.",
+        retry: false,
+      };
+    case "error":
+      return {
+        title: "This replay didn't load",
+        body: `${p.message} Check your connection and try again.`,
+        retry: true,
+      };
+  }
+}
+
+function notFinishedLine(m: ChainMatch | null): string {
+  if (!m) return "The replay opens a minute or so after the match ends and the referee settles it.";
+  if (m.phase === "lobby") return "Players are still joining. The replay opens after the match ends.";
+  if (m.phase === "running" && m.end_ms)
+    return `It ends at ${timeOfDay(m.end_ms)}. The replay opens a minute or so after that, once the referee settles it.`;
+  if (m.phase === "aborted")
+    return m.settled_as === "refunded_abort"
+      ? "It was called off before it ended and every stake was refunded, so there's nothing to replay."
+      : "It was called off before it ended, so there's nothing to replay.";
+  return "It has just ended. The replay opens once the referee settles it, usually within a minute.";
 }
