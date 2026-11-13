@@ -7,6 +7,7 @@
 // Everything runs on the native driver from one looping value: each dot's position is an
 // interpolation over sampled points of the track, so the JS thread does no per-frame work.
 
+import { type ChaseTrack, chase, chaseGap, chasePoint } from "@tail/brand";
 import { type ReactNode, useMemo, useState } from "react";
 import { Animated, StyleSheet, Text, View } from "react-native";
 import Svg, { Ellipse } from "react-native-svg";
@@ -14,30 +15,8 @@ import { useLoop } from "./motion";
 import { color, font } from "./theme";
 
 type Pt = { x: number; y: number };
-export type Track = "eight" | "loop";
 
 const SAMPLES = 72;
-/** One lap. Slow enough to read as walking, not racing. */
-const LAP_MS = 11_000;
-/** Phase where the hunter closes in; on the figure eight that is the crossing. */
-const TAG_AT = 0.5;
-
-/** A point on the track at phase u (0..1), inside a box of w × h. */
-export function trackPoint(track: Track, u: number, w: number, h: number): Pt {
-  const t = 2 * Math.PI * u;
-  const cx = w / 2;
-  const cy = h / 2;
-  if (track === "eight") {
-    // Lemniscate of Gerono: crosses the centre twice a lap.
-    return { x: cx + w * 0.4 * Math.sin(t), y: cy + h * 0.36 * 2 * Math.sin(t) * Math.cos(t) };
-  }
-  // A wobbly loop, like a park path.
-  const r = 1 + 0.1 * Math.sin(3 * t);
-  return { x: cx + w * 0.38 * r * Math.cos(t), y: cy + h * 0.34 * r * Math.sin(t) };
-}
-
-/** How far the hunter trails the target, as a phase gap: widest away from TAG_AT. */
-export const hunterGap = (u: number) => 0.1 + 0.08 * Math.cos(2 * Math.PI * (u - TAG_AT + 0.5));
 
 const wrap = (u: number) => ((u % 1) + 1) % 1;
 const INPUT = Array.from({ length: SAMPLES + 1 }, (_, i) => i / SAMPLES);
@@ -126,7 +105,7 @@ export function ChaseScene({
   width: number;
   height: number;
   reduceMotion: boolean;
-  track?: Track;
+  track?: ChaseTrack;
   /** Other players drifting on an inner loop. */
   crowd?: number;
   zone?: boolean;
@@ -134,14 +113,14 @@ export function ChaseScene({
   target?: string;
 }) {
   // Still frame: the hunter just behind the target, approaching the crossing.
-  const v = useLoop(LAP_MS, reduceMotion, 0.42);
+  const v = useLoop(chase.lapMs, reduceMotion, 0.42);
   const pt = useMemo(
     () => ({
-      target: (u: number) => trackPoint(track, wrap(u), width, height),
-      hunter: (u: number) => trackPoint(track, wrap(u - hunterGap(wrap(u))), width, height),
+      target: (u: number) => chasePoint(track, wrap(u), width, height),
+      hunter: (u: number) => chasePoint(track, wrap(u - chaseGap(wrap(u))), width, height),
       // The crowd walks a smaller copy of the track the other way round.
       crowd: (k: number) => (u: number) => {
-        const p = trackPoint(
+        const p = chasePoint(
           track === "eight" ? "loop" : "eight",
           wrap(-u + k / crowd + 0.13),
           width,
@@ -152,10 +131,13 @@ export function ChaseScene({
     }),
     [track, width, height, crowd],
   );
-  const tagPt = pt.target(TAG_AT);
+  const tagPt = pt.target(chase.tagAt);
   const big = target ? 30 : 14;
   const ring = 18;
-  const near = { inputRange: [0, TAG_AT - 0.01, TAG_AT, TAG_AT + 0.09, 1], extrapolate: "clamp" as const };
+  const near = {
+    inputRange: [0, chase.tagAt - 0.01, chase.tagAt, chase.tagAt + 0.09, 1],
+    extrapolate: "clamp" as const,
+  };
   return (
     <View
       style={{ width, height }}

@@ -57,6 +57,37 @@ export function markSvg({
 }
 
 /**
+ * The Chase: the Trail mark set moving, TAIL's ambient scene in the app and the replay. You (a
+ * persimmon dot, trail fading behind) tail your target (ink) round a track inside a dotted zone;
+ * once a lap the gap closes at `tagAt` and a ring lands. Both renderers draw from this geometry.
+ */
+export const chase = {
+  /** One lap. Slow enough to read as walking, not racing. */
+  lapMs: 11_000,
+  /** Phase where the hunter closes in; on the figure eight that is the crossing. */
+  tagAt: 0.5,
+} as const;
+
+export type ChaseTrack = "eight" | "loop";
+
+/** A point on the track at phase u (0..1), inside a box of w × h. */
+export function chasePoint(track: ChaseTrack, u: number, w: number, h: number): { x: number; y: number } {
+  const t = 2 * Math.PI * u;
+  const cx = w / 2;
+  const cy = h / 2;
+  if (track === "eight") {
+    // Lemniscate of Gerono: crosses the centre twice a lap.
+    return { x: cx + w * 0.4 * Math.sin(t), y: cy + h * 0.36 * 2 * Math.sin(t) * Math.cos(t) };
+  }
+  // A wobbly loop, like a park path.
+  const r = 1 + 0.1 * Math.sin(3 * t);
+  return { x: cx + w * 0.38 * r * Math.cos(t), y: cy + h * 0.34 * r * Math.sin(t) };
+}
+
+/** How far the hunter trails the target, as a phase gap: narrowest at `chase.tagAt`. */
+export const chaseGap = (u: number) => 0.1 + 0.08 * Math.cos(2 * Math.PI * (u - chase.tagAt + 0.5));
+
+/**
  * The iOS app icon (1024 square, no transparency; iOS applies the corner mask). Warm field
  * with a paper mark by default; `light` puts the persimmon mark on sand.
  */
