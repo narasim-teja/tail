@@ -2,7 +2,7 @@
 // selected (long-press to copy), shared, or opened in the explorer; the balance tops up on
 // testnet and withdraws. Three facts close it: this iPhone, the network, the contract.
 import { type ReactNode, useEffect } from "react";
-import { Linking, Share, StyleSheet, Text, View } from "react-native";
+import { Alert, Linking, Share, StyleSheet, Text, View } from "react-native";
 import { handleOf } from "../game/huntModel";
 import { NEAR_NETWORK, TOP_UP, useApp } from "../state/app";
 import { Icon } from "../ui/brand";
@@ -21,12 +21,15 @@ export interface ProfileModel {
   error: string | null;
   /** The relay's contract when it differs from this app's (ui/contract.tsx). */
   contractMismatch: string | null;
+  /** A test relay: offers starting over with a new handle. */
+  testRelay: boolean;
 }
 
 export interface ProfileActions {
   onTopUp: () => void;
   onWithdraw: () => void;
   onUseRelayContract: () => void;
+  onStartOver: () => void;
   onRefresh?: () => Promise<unknown>;
   onBack: () => void;
 }
@@ -114,6 +117,24 @@ export function ProfileView({ m, actions }: { m: ProfileModel; actions: ProfileA
           {m.contractId || "Not set"}
         </Text>
       </Fact>
+      {m.testRelay ? (
+        <Button
+          kind="quiet"
+          symbol="arrow.counterclockwise"
+          title="Start over with a new handle"
+          hint="Test relay only. This phone keeps its keys; this account stays on NEAR."
+          onPress={() =>
+            Alert.alert(
+              "Start over?",
+              `You'll pick a new handle. ${handleOf(m.accountId)} stays on NEAR with its balance.`,
+              [
+                { text: "Cancel", style: "cancel" },
+                { text: "Start over", style: "destructive", onPress: actions.onStartOver },
+              ],
+            )
+          }
+        />
+      ) : null}
     </Screen>
   );
 }
@@ -142,11 +163,13 @@ export function Profile() {
         busy: app.busy,
         error: app.error,
         contractMismatch: app.contractMismatch,
+        testRelay: app.testPlayers,
       }}
       actions={{
         onTopUp: () => void app.topUp(TOP_UP),
         onWithdraw: () => void app.withdraw(),
         onUseRelayContract: () => app.switchToRelayContract(),
+        onStartOver: () => void app.startOver(),
         onRefresh: () => app.refreshAccount(),
         onBack: () => app.openPage(null),
       }}

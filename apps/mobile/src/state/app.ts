@@ -11,7 +11,7 @@ import { openPlayerKeys } from "../game/hud";
 import { HuntSession } from "../game/session";
 import { checkedZone, type Zone } from "../game/zone";
 import { enrol } from "../identity/enrol";
-import { type Identity, loadIdentity, nearSigner } from "../identity/identity";
+import { forgetAccount, type Identity, loadIdentity, nearSigner } from "../identity/identity";
 import { keychain } from "../identity/keychain";
 import { NearRpc } from "../near/rpc";
 import { PLAYER_GAS } from "../near/tx";
@@ -385,6 +385,16 @@ class AppModel {
     } catch {
       // Unreachable relay: no test players and no mismatch to report; the next call says why.
     }
+  }
+
+  /** Test relays only: play as a new handle on this phone (keys kept; see forgetAccount). */
+  async startOver(): Promise<void> {
+    if (!this.testPlayers || !this.identity) return;
+    await forgetAccount(keychain);
+    this.identity = { ...this.identity, accountId: null };
+    this.wallet = null;
+    this.page = null;
+    this.emit();
   }
 
   /** Pull to refresh on Home and Profile: the balance and what the relay says about itself. */

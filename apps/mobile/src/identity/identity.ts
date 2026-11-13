@@ -60,6 +60,12 @@ export async function loadIdentity(s: SecretStore): Promise<Identity> {
 export const saveAttestKeyId = (s: SecretStore, keyId: string | null) =>
   keyId === null ? s.delete(K.attestKeyId) : s.set(K.attestKeyId, keyId);
 export const saveAccount = (s: SecretStore, accountId: string) => s.set(K.account, accountId);
+/**
+ * Forgets which account this phone plays as, keeping every key: the old account still answers to
+ * the same NEAR key. For test relays, where an account can end up tied to a contract the relay
+ * no longer plays on.
+ */
+export const forgetAccount = (s: SecretStore) => s.delete(K.account);
 
 /** Signs relay requests and HUD challenges with the NEAR key. */
 export function nearSigner(id: Identity): Signer {

@@ -187,9 +187,10 @@ export const STATES: Record<string, () => ReactNode> = {
         contractId: "tail.tail-dev-a38d13.testnet",
         busy: null,
         error: null,
-        contractMismatch: "tail-local.tail-dev-a38d13.testnet",
+        contractMismatch: null,
+        testRelay: true,
       }}
-      actions={{ onTopUp: noop, onWithdraw: noop, onUseRelayContract: noop, onBack: noop }}
+      actions={{ onTopUp: noop, onWithdraw: noop, onUseRelayContract: noop, onStartOver: noop, onBack: noop }}
     />
   ),
   create: () => (
