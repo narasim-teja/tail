@@ -362,11 +362,15 @@ receiver for a forfeit). A HUD without it falls back to "your hunter".
   rides back is opened like any other. There is no relay mesh node. Carriers see only a 4144-byte
   ciphertext and the sender's per-match mesh address: no account, no match id. The mesh link
   itself still tells two phones that some TAIL phone is in Bluetooth range (TECHNICAL.md 7, F14).
-  Tested only with a fake mesh; not run on phones.
-- **Bluetooth coexistence is not measured**, which is why the switch is off. An iPhone advertises
-  about 28 bytes in the foreground and the TAIL token is a 128-bit service UUID (18 of them). If
-  the SDK's own advertisement takes that room, iOS moves the token to the overflow area, where
-  other phones' scans may not see it, and contact, and with it every lock, is lost.
+  Ran on two iPhones on 2026-11-13 (below); the tests use a fake mesh.
+- **Mesh carry and the beacon do not coexist**, which is why the switch is off. Measured on two
+  iPhones on 2026-11-13 with it on: 16 reports reached the relay through the other phone while one
+  was in airplane mode, so the carry works. But each phone heard the other's beacon in only 1 of
+  every 8 fifteen-second windows (every 120 s, 6 to 50 packets against 350 to 500 with it off),
+  and the lock never passed 1 of 4. An iPhone advertises about 28 bytes in the foreground; the
+  TAIL token is one 128-bit service UUID and the SDK always advertises another, so iOS moves the
+  token to the overflow area, where a scan cannot see it. SDK 0.33.0 has no way to stop or shrink
+  its advertisement.
 - **Not yet tested outdoors.** Bluetooth range (`RSSI_MIN_DBM`), pocket mode and a full match in a
   park have not run; the indoor two-phone runs on 2026-11-12 are the only device runs so far.
 - **Relay address.** Use the Mac's LAN IP (`http://<ip>:8787`). Its `.local` name can resolve to
