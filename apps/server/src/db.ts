@@ -1,12 +1,14 @@
 // The relay's own records in SQLite (bun:sqlite, WAL). Nothing here is trusted by anyone else:
 // the chain holds the money and the verdict order, the referee holds the secrets. What the relay
 // must not lose is what only it holds between calls: queued sealed batches, the sealed match
-// state, signed verdicts not yet on chain, hint receipts for the next tick, and the match log.
+// state, signed verdicts (and their consistency proofs) not yet on chain, Handler answers whose
+// receipts go into the next tick, and the match log: during play its leaf hashes and the entries
+// sealed to the referee, after End the plaintext the referee declassified.
 
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Circle } from "./referee.ts";
+import type { Circle, LogAppend, VerdictProof } from "./referee.ts";
 
 /** The devices table. The receipt columns are nullable: see DeviceRow. */
 const DEVICE_COLUMNS = `
@@ -86,6 +88,32 @@ CREATE TABLE IF NOT EXISTS log_entries (
   entry BLOB NOT NULL,
   PRIMARY KEY (match_id, idx)
 );
+CREATE TABLE IF NOT EXISTS log_leaves (
+  match_id TEXT NOT NULL,
+  idx INTEGER NOT NULL,
+  leaf BLOB NOT NULL,
+  PRIMARY KEY (match_id, idx)
+);
+CREATE INDEX IF NOT EXISTS log_leaves_by_hash ON log_leaves (match_id, leaf, idx);
+CREATE TABLE IF NOT EXISTS log_sealed (
+  match_id TEXT NOT NULL,
+  idx INTEGER NOT NULL,
+  blob BLOB NOT NULL,
+  PRIMARY KEY (match_id, idx)
+);
+CREATE TABLE IF NOT EXISTS voice_hints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  match_id TEXT NOT NULL,
+  asker INTEGER NOT NULL,
+  blob BLOB NOT NULL,
+  issued_ms INTEGER NOT NULL,
+  sealed BLOB,
+  signed_text TEXT,
+  leaves TEXT,
+  receipt BLOB,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'voiced', 'consumed', 'dropped'))
+);
+CREATE INDEX IF NOT EXISTS voice_hints_by_match ON voice_hints (match_id, status, id);
 CREATE TABLE IF NOT EXISTS hints (
   match_id TEXT NOT NULL,
   hint_id INTEGER NOT NULL,
@@ -222,6 +250,8 @@ export interface MatchRow {
   public_replay: number | null;
   /** When the retention purge deleted the match's sealed batches and trails (retention.ts). */
   purged_ms: number | null;
+  /** 2 for a match judged under protocol v2; null for one started before (served as v1). */
+  protocol: number | null;
 }
 
 interface MatchRaw extends Omit<MatchRow, "zone" | "players" | "keys" | "reveal"> {
@@ -245,8 +275,32 @@ export interface VerdictRow {
   applied_ms: number | null;
   /** The NEAR transaction that applied it; null if that answer was lost (the chain has it anyway). */
   tx_hash: string | null;
+  /** A Checkpoint/End verdict's consistency proof, passed to `apply` with it. */
+  proof: VerdictProof | null;
 }
 
+interface VerdictRaw extends Omit<VerdictRow, "proof"> {
+  proof: string | null;
+}
+
+/** A Handler line under protocol v2 (voice_hints): the relay holds only sealed parts of it. */
+export interface VoiceHintRow {
+  id: number;
+  asker: number;
+  /** The hint as the referee issued it, sealed to the referee. */
+  blob: Uint8Array;
+  issued_ms: number;
+  /** SignedVoiceLine sealed to the asker, once voiced. */
+  sealed: Uint8Array | null;
+  signed_text: string | null;
+  /** Leaf hashes (hex) of the receipt entries the voice answer describes. */
+  leaves: string[] | null;
+  /** The voice answer's `log_sealed`, which the next tick takes as a receipt. */
+  receipt: Uint8Array | null;
+  status: "pending" | "voiced" | "consumed" | "dropped";
+}
+
+/** A Handler line from a match before protocol v2 (hints table), kept for its replay. */
 export interface HintRow {
   hint_id: number;
   asker: number;
@@ -290,6 +344,8 @@ export class Store {
     this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS matches_code ON matches (code)");
     this.addColumn("matches", "public_replay", "INTEGER");
     this.addColumn("matches", "purged_ms", "INTEGER");
+    this.addColumn("matches", "protocol", "INTEGER");
+    this.addColumn("verdicts", "proof", "TEXT");
     this.relaxDeviceReceipts();
     this.addColumn("devices", "attestation", "BLOB");
     this.addColumn("devices", "challenge", "BLOB");
@@ -631,12 +687,15 @@ export class Store {
     this.db.query("UPDATE matches SET phase = ?, error = ? WHERE match_id = ?").run(phase, error, matchId);
   }
 
+  /** Started under protocol v2: the replay of this match is a version 2 bundle. */
   setStarted(
     matchId: string,
     m: { startMs: number; endMs: number; players: string[]; keys: PlayerKeysRow[] },
   ) {
     this.db
-      .query("UPDATE matches SET start_ms = ?, end_ms = ?, players = ?, keys = ? WHERE match_id = ?")
+      .query(
+        "UPDATE matches SET start_ms = ?, end_ms = ?, players = ?, keys = ?, protocol = 2 WHERE match_id = ?",
+      )
       .run(m.startMs, m.endMs, JSON.stringify(m.players), JSON.stringify(m.keys), matchId);
   }
 
@@ -722,28 +781,44 @@ export class Store {
 
   // ── Verdicts ─────────────────────────────────────────────────────────────────────
 
-  putVerdict(matchId: string, v: { seq: number; kind: string; raw: Uint8Array; callId: string }) {
+  putVerdict(
+    matchId: string,
+    v: { seq: number; kind: string; raw: Uint8Array; callId: string; proof: VerdictProof | null },
+  ) {
+    const proof = v.proof && {
+      seq: v.proof.seq,
+      fromSize: v.proof.fromSize,
+      path: v.proof.path.map((h) => Buffer.from(h).toString("base64")),
+    };
     this.db
-      .query("INSERT OR IGNORE INTO verdicts (match_id, seq, kind, raw, call_id) VALUES (?, ?, ?, ?, ?)")
-      .run(matchId, v.seq, v.kind, v.raw, v.callId);
+      .query(
+        "INSERT OR IGNORE INTO verdicts (match_id, seq, kind, raw, call_id, proof) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(matchId, v.seq, v.kind, v.raw, v.callId, proof ? JSON.stringify(proof) : null);
+  }
+
+  private verdictRows(where: string, matchId: string): VerdictRow[] {
+    return this.db
+      .query<VerdictRaw, [string]>(
+        `SELECT seq, kind, raw, call_id, applied_ms, tx_hash, proof FROM verdicts WHERE match_id = ? ${where} ORDER BY seq`,
+      )
+      .all(matchId)
+      .map((v) => {
+        const p = v.proof ? (JSON.parse(v.proof) as { seq: number; fromSize: number; path: string[] }) : null;
+        return {
+          ...v,
+          raw: u8(v.raw),
+          proof: p && { ...p, path: p.path.map((h) => new Uint8Array(Buffer.from(h, "base64"))) },
+        };
+      });
   }
 
   pendingVerdicts(matchId: string): VerdictRow[] {
-    return this.db
-      .query<VerdictRow, [string]>(
-        "SELECT seq, kind, raw, call_id, applied_ms, tx_hash FROM verdicts WHERE match_id = ? AND applied_ms IS NULL ORDER BY seq",
-      )
-      .all(matchId)
-      .map((v) => ({ ...v, raw: u8(v.raw) }));
+    return this.verdictRows("AND applied_ms IS NULL", matchId);
   }
 
   verdicts(matchId: string): VerdictRow[] {
-    return this.db
-      .query<VerdictRow, [string]>(
-        "SELECT seq, kind, raw, call_id, applied_ms, tx_hash FROM verdicts WHERE match_id = ? ORDER BY seq",
-      )
-      .all(matchId)
-      .map((v) => ({ ...v, raw: u8(v.raw) }));
+    return this.verdictRows("", matchId);
   }
 
   setVerdictTx(matchId: string, seqs: number[], txHash: string) {
@@ -763,15 +838,70 @@ export class Store {
 
   // ── Log ──────────────────────────────────────────────────────────────────────────
 
-  appendLog(matchId: string, entries: Uint8Array[]) {
-    const next =
+  private count(table: "log_leaves" | "log_sealed" | "log_entries", matchId: string): number {
+    return (
       this.db
-        .query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM log_entries WHERE match_id = ?")
-        .get(matchId)?.n ?? 0;
-    const q = this.db.query("INSERT INTO log_entries (match_id, idx, entry) VALUES (?, ?, ?)");
-    for (const [i, e] of entries.entries()) q.run(matchId, next + i, e);
+        .query<{ n: number }, [string]>(`SELECT COUNT(*) AS n FROM ${table} WHERE match_id = ?`)
+        .get(matchId)?.n ?? 0
+    );
   }
 
+  /** What one referee call appended: its leaves after the ones stored, its sealed blob after the others. */
+  appendLog(matchId: string, a: LogAppend) {
+    const next = this.count("log_leaves", matchId);
+    const q = this.db.query("INSERT INTO log_leaves (match_id, idx, leaf) VALUES (?, ?, ?)");
+    for (const [i, leaf] of a.leaves.entries()) q.run(matchId, next + i, leaf);
+    this.db
+      .query("INSERT INTO log_sealed (match_id, idx, blob) VALUES (?, ?, ?)")
+      .run(matchId, this.count("log_sealed", matchId), a.logSealed);
+  }
+
+  leafCount(matchId: string): number {
+    return this.count("log_leaves", matchId);
+  }
+
+  /** The first `limit` leaf hashes (all of them without a limit), in order. */
+  leaves(matchId: string, limit = -1): Uint8Array[] {
+    return this.db
+      .query<{ leaf: Uint8Array }, [string, number]>(
+        "SELECT leaf FROM log_leaves WHERE match_id = ? ORDER BY idx LIMIT ?",
+      )
+      .all(matchId, limit)
+      .map((r) => u8(r.leaf));
+  }
+
+  /** Where this leaf hash first appears among the first `size` leaves, if it does. */
+  leafIndex(matchId: string, leaf: Uint8Array, size: number): number | undefined {
+    return (
+      this.db
+        .query<{ idx: number }, [string, Uint8Array, number]>(
+          "SELECT idx FROM log_leaves WHERE match_id = ? AND leaf = ? AND idx < ? ORDER BY idx LIMIT 1",
+        )
+        .get(matchId, leaf, size)?.idx ?? undefined
+    );
+  }
+
+  /** Every `log_sealed` blob of the match, in the order the referee produced them. */
+  logSealed(matchId: string): Uint8Array[] {
+    return this.db
+      .query<{ blob: Uint8Array }, [string]>("SELECT blob FROM log_sealed WHERE match_id = ? ORDER BY idx")
+      .all(matchId)
+      .map((r) => u8(r.blob));
+  }
+
+  /** The plaintext log the referee declassified after End (one borsh LogEntry each). */
+  putLog(matchId: string, entries: Uint8Array[]) {
+    this.tx(() => {
+      this.db.query("DELETE FROM log_entries WHERE match_id = ?").run(matchId);
+      const q = this.db.query("INSERT INTO log_entries (match_id, idx, entry) VALUES (?, ?, ?)");
+      for (const [i, e] of entries.entries()) q.run(matchId, i, e);
+    });
+  }
+
+  /**
+   * The plaintext log: for a protocol v2 match, empty until the referee declassified it after
+   * End; for an older match, what the relay held all along.
+   */
   log(matchId: string): Uint8Array[] {
     return this.db
       .query<{ entry: Uint8Array }, [string]>("SELECT entry FROM log_entries WHERE match_id = ? ORDER BY idx")
@@ -779,43 +909,50 @@ export class Store {
       .map((r) => u8(r.entry));
   }
 
-  // ── Hints ────────────────────────────────────────────────────────────────────────
+  // ── Handler lines ────────────────────────────────────────────────────────────────
 
-  putHint(
-    matchId: string,
-    h: { hintId: number; asker: number; hint: number; value: number; question: string | null },
-    nowMs: number,
-  ) {
+  putVoiceHint(matchId: string, asker: number, blob: Uint8Array, nowMs: number) {
     this.db
       .query(
-        `INSERT OR IGNORE INTO hints (match_id, hint_id, asker, hint, value, question, issued_ms, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        "INSERT INTO voice_hints (match_id, asker, blob, issued_ms, status) VALUES (?, ?, ?, ?, 'pending')",
       )
-      .run(matchId, h.hintId, h.asker, h.hint, h.value, h.question, nowMs);
+      .run(matchId, asker, blob, nowMs);
   }
 
-  hints(matchId: string, status: HintRow["status"]): HintRow[] {
+  voiceHints(matchId: string, status: VoiceHintRow["status"] | "answered"): VoiceHintRow[] {
+    type Raw = Omit<VoiceHintRow, "leaves"> & { leaves: string | null };
+    const where = status === "answered" ? "status IN ('voiced', 'consumed')" : "status = ?";
+    const args = status === "answered" ? [matchId] : [matchId, status];
     return this.db
-      .query<HintRow, [string, string]>(
-        "SELECT * FROM hints WHERE match_id = ? AND status = ? ORDER BY hint_id",
-      )
-      .all(matchId, status)
-      .map((h) => ({ ...h, receipt: h.receipt ? u8(h.receipt) : null }));
+      .query<Raw, string[]>(`SELECT * FROM voice_hints WHERE match_id = ? AND ${where} ORDER BY id`)
+      .all(...args)
+      .map((h) => ({
+        ...h,
+        blob: u8(h.blob),
+        sealed: h.sealed ? u8(h.sealed) : null,
+        receipt: h.receipt ? u8(h.receipt) : null,
+        leaves: h.leaves ? (JSON.parse(h.leaves) as string[]) : null,
+      }));
   }
 
-  setHintVoiced(
-    matchId: string,
-    hintId: number,
-    v: { text: string; receipt: Uint8Array | undefined; chatId: string | null; model: string | null },
+  /** The voice answer for a pending hint: the asker's sealed line and the receipt for the next tick. */
+  setVoiced(
+    id: number,
+    v: { sealed: Uint8Array; signedText: string | null; leaves: string[]; receipt: Uint8Array },
   ) {
     this.db
       .query(
-        "UPDATE hints SET text = ?, receipt = ?, chat_id = ?, model = ?, status = ? WHERE match_id = ? AND hint_id = ? AND status = 'pending'",
+        "UPDATE voice_hints SET sealed = ?, signed_text = ?, leaves = ?, receipt = ?, status = 'voiced' WHERE id = ? AND status = 'pending'",
       )
-      .run(v.text, v.receipt ?? null, v.chatId, v.model, v.receipt ? "voiced" : "dropped", matchId, hintId);
+      .run(v.sealed, v.signedText, JSON.stringify(v.leaves), v.receipt, id);
   }
 
-  /** Every hint that got a Handler line, for the replay. */
+  setVoiceStatus(ids: number[], status: VoiceHintRow["status"]) {
+    const q = this.db.query("UPDATE voice_hints SET status = ? WHERE id = ?");
+    for (const id of ids) q.run(status, id);
+  }
+
+  /** Every hint of a match from before protocol v2 that got a Handler line, for its replay. */
   voicedHints(matchId: string): HintRow[] {
     return this.db
       .query<HintRow, [string]>(
@@ -823,11 +960,6 @@ export class Store {
       )
       .all(matchId)
       .map((h) => ({ ...h, receipt: h.receipt ? u8(h.receipt) : null }));
-  }
-
-  setHintStatus(matchId: string, hintIds: number[], status: HintRow["status"]) {
-    const q = this.db.query("UPDATE hints SET status = ? WHERE match_id = ? AND hint_id = ?");
-    for (const id of hintIds) q.run(status, matchId, id);
   }
 
   // ── HUDs and tick records ────────────────────────────────────────────────────────

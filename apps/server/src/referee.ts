@@ -3,6 +3,13 @@
 // answers `{ok: true, result}` or `{ok: false, error}` inside OutLayer's `output`. Bytes are
 // base64 on the wire and Uint8Array here. Each answer is checked field by field, so a shape
 // change in the referee fails loudly in this file instead of deep inside the tick loop.
+//
+// Protocol v2: during play the referee hands the relay only what the relay needs to carry. The
+// log comes as RFC 6962 leaf hashes plus one blob per call holding the same entries sealed to the
+// referee itself (`log_sealed`), which the relay keeps in order and gives back after End to have
+// the log declassified. Hints are opaque blobs sealed to the referee, the Handler's line comes
+// sealed and signed for the asker, and every Checkpoint/End verdict comes with the consistency
+// proof the contract checks it against.
 
 import { decodeSignedVerdict, type SignedVerdict } from "@tail/protocol";
 import type { Config } from "./config.ts";
@@ -64,15 +71,33 @@ export interface SealedFor {
   player: number;
   sealed: Uint8Array;
 }
-export interface StartResult {
+/**
+ * The RFC 9162 consistency proof for one Checkpoint/End verdict: from the log size the contract
+ * last anchored for the match (0 for the first) to the verdict's own `log_size`.
+ */
+export interface VerdictProof {
+  seq: number;
+  fromSize: number;
+  path: Uint8Array[];
+}
+
+/** What one referee call appended to the match log. */
+export interface LogAppend {
+  /** RFC 6962 leaf hash of each new entry, in order. */
+  leaves: Uint8Array[];
+  /** The same entries (borsh Vec<LogEntry>) sealed to the referee; opaque to the relay. */
+  logSealed: Uint8Array;
+}
+
+export interface StartResult extends LogAppend {
   callId: string;
   startMs: number;
   /** start_ms + duration_ms. */
   endMs: number;
   verdicts: RawVerdict[];
+  /** SignedPlayerKeys sealed to each player's box key. */
   keys: (SealedFor & { accountId: string })[];
   state: Uint8Array;
-  log: Uint8Array[];
 }
 
 export interface TickInput {
@@ -80,18 +105,20 @@ export interface TickInput {
   state: Uint8Array;
   lastSeq: number;
   batches: Uint8Array[];
+  /** The `log_sealed` blobs of voice answers since the last tick: the referee logs their receipts. */
   receipts: Uint8Array[];
 }
-/** A hint the referee charged this tick; `voice` turns it into a Handler line. */
+/**
+ * A hint the referee charged this tick. Everything about it (kind, fact, question) is in `blob`,
+ * sealed to the referee; the relay only knows who asked, and hands the blob to `voice`.
+ */
 export interface HintIssued {
-  hintId: number;
-  from: number;
-  to: number;
-  hint: number;
-  value: number;
-  text?: string;
+  player: number;
+  blob: Uint8Array;
 }
-export interface TickResult {
+/** A batch or action the referee turned down; `reason` is a protocol RejectCode. */
+export type Refusal = Record<string, unknown> & { player: number; reason: number };
+export interface TickResult extends LogAppend {
   callId: string;
   tickNo: number;
   /** The referee time this tick ran at. */
@@ -99,35 +126,37 @@ export interface TickResult {
   seq: number;
   state: Uint8Array;
   verdicts: RawVerdict[];
+  /** One per Checkpoint/End in `verdicts`. */
+  proofs: VerdictProof[];
+  /** SignedHud sealed to each player's box key. */
   huds: SealedFor[];
-  log: Uint8Array[];
-  /** Size and root of the whole match log after this tick, to check the relay's copy against. */
+  /** Size and root of the whole match log after this tick, to check the relay's leaves against. */
   logSize: number;
   logRoot: Uint8Array;
   /** Sealed batches that did not open (index into the tick's batches, reason). */
   unopened: Record<string, unknown>[];
-  /** Batches the referee did not accept, as it reports them (player, seq, reason). */
-  rejected: Record<string, unknown>[];
+  /** Batches the referee did not accept (player, seq, reason). */
+  rejected: Refusal[];
   /** Actions in accepted batches that had no effect (player, nonce, reason). */
-  refused: Record<string, unknown>[];
+  refused: Refusal[];
   hints: HintIssued[];
   over: boolean;
 }
 
 export interface VoiceInput {
-  hintId: number;
-  hint: number;
-  value: number;
-  question?: string;
+  state: Uint8Array;
+  blob: Uint8Array;
 }
-export interface VoiceResult {
-  text: string;
-  source: string;
-  /** borsh HintReceipt for the next tick. */
-  receipt: Uint8Array | undefined;
-  /** NEAR AI Cloud chat id and model; null for a template line. */
-  chatId: string | null;
-  model: string | null;
+export interface VoiceResult extends LogAppend {
+  /** The asker. */
+  player: number;
+  /** SignedVoiceLine sealed to the asker's box key. */
+  sealed: Uint8Array;
+  /**
+   * The exact message the NEAR AI signature covers (`model:sha256(request):sha256(response)`),
+   * public material the replay needs to check that signature; null for a template line.
+   */
+  signedText: string | null;
 }
 
 export interface EndInput {
@@ -136,13 +165,20 @@ export interface EndInput {
   lastSeq: number;
   receipts: Uint8Array[];
 }
-export interface EndResult {
+export interface EndResult extends LogAppend {
   callId: string;
   verdicts: RawVerdict[];
+  proofs: VerdictProof[];
   logSize: number;
   root: Uint8Array;
   state: Uint8Array;
+}
+
+export interface DeclassifyResult {
+  /** The whole log in plaintext (borsh LogEntry each), in order. */
   log: Uint8Array[];
+  /** The rest of the answer as the referee returned it (ring, VRF alpha and signature, …). */
+  reveal: Record<string, unknown>;
 }
 
 export interface DeclassifyBatchesInput {
@@ -167,8 +203,11 @@ export interface Referee {
   tick(i: TickInput): Promise<TickResult>;
   voice(i: VoiceInput): Promise<VoiceResult>;
   end(i: EndInput): Promise<EndResult>;
-  /** The plaintext reveal after End, kept as the referee returned it (the replay reads it). */
-  declassify(matchId: Uint8Array): Promise<Record<string, unknown>>;
+  /**
+   * After End: the plaintext log from every `log_sealed` blob of the match, in order, and the
+   * reveal (kept as the referee returned it; the replay reads it).
+   */
+  declassify(matchId: Uint8Array, logSealed: Uint8Array[]): Promise<DeclassifyResult>;
   /** After End: opens the match's stored sealed batches for the replay. */
   declassifyBatches(i: DeclassifyBatchesInput): Promise<DeclassifyBatchesResult>;
 }
@@ -226,7 +265,37 @@ function shape(cmd: string) {
       const e = obj(x, `${k}[${i}]`);
       return { player: int(e, "player"), sealed: bytes(e, "sealed") };
     });
-  return { obj, arr, str, int, bool, bytes, hex, bytesList, verdicts, sealedList };
+  const leaves = (o: Obj, k: string): Uint8Array[] =>
+    bytesList(o, k).map((h, i) => (h.length === 32 ? h : fail(`${k}[${i}] is not a 32-byte hash`)));
+  const appended = (o: Obj): LogAppend => ({
+    leaves: leaves(o, "leaves"),
+    logSealed: bytes(o, "log_sealed"),
+  });
+  const proofs = (o: Obj, k: string): VerdictProof[] =>
+    arr(o, k).map((x, i) => {
+      const e = obj(x, `${k}[${i}]`);
+      return { seq: int(e, "seq"), fromSize: int(e, "from_size"), path: leaves(e, "path") };
+    });
+  const refusals = (o: Obj, k: string): Refusal[] =>
+    arr(o, k).map((x, i) => {
+      const e = obj(x, `${k}[${i}]`);
+      return { ...e, player: int(e, "player"), reason: int(e, "reason") };
+    });
+  return {
+    obj,
+    arr,
+    str,
+    int,
+    bool,
+    bytes,
+    hex,
+    bytesList,
+    verdicts,
+    sealedList,
+    appended,
+    proofs,
+    refusals,
+  };
 }
 
 const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
@@ -453,7 +522,7 @@ export class RefereeClient implements Referee {
         };
       }),
       state: s.bytes(r, "state"),
-      log: s.bytesList(r, "log"),
+      ...s.appended(r),
     };
   }
 
@@ -473,44 +542,31 @@ export class RefereeClient implements Referee {
       seq: s.int(r, "seq"),
       state: s.bytes(r, "state"),
       verdicts: s.verdicts(r, "verdicts"),
+      proofs: s.proofs(r, "proofs"),
       huds: s.sealedList(r, "huds"),
-      log: s.bytesList(r, "log"),
+      ...s.appended(r),
       logSize: s.int(r, "log_size"),
       logRoot: s.hex(r, "log_root"),
       unopened: s.arr(r, "unopened").map((x, k) => s.obj(x, `unopened[${k}]`)),
-      rejected: s.arr(r, "rejected").map((x, k) => s.obj(x, `rejected[${k}]`)),
-      refused: s.arr(r, "refused").map((x, k) => s.obj(x, `refused[${k}]`)),
+      rejected: s.refusals(r, "rejected"),
+      refused: s.refusals(r, "refused"),
       hints: s.arr(r, "hints").map((x, k) => {
         const h = s.obj(x, `hints[${k}]`);
-        const text = h["text"];
-        return {
-          hintId: s.int(h, "hint_id"),
-          from: s.int(h, "from"),
-          to: s.int(h, "to"),
-          hint: s.int(h, "hint"),
-          value: s.int(h, "value"),
-          ...(typeof text === "string" ? { text } : {}),
-        };
+        return { player: s.int(h, "player"), blob: s.bytes(h, "blob") };
       }),
       over: s.bool(r, "over"),
     };
   }
 
   async voice(i: VoiceInput): Promise<VoiceResult> {
-    const r = await this.call("voice", {
-      hint: i.hint,
-      value: i.value,
-      hint_id: i.hintId,
-      ...(i.question ? { question: i.question } : {}),
-    });
+    const r = await this.call("voice", { state: b64(i.state), blob: b64(i.blob) });
     const s = shape("voice");
-    const receipt = r["receipt"];
+    const text = r["signed_text"];
     return {
-      text: s.str(r, "text"),
-      source: s.str(r, "source"),
-      receipt: typeof receipt === "string" ? b64d(receipt) : undefined,
-      chatId: typeof r["chat_id"] === "string" ? r["chat_id"] : null,
-      model: typeof r["model"] === "string" ? r["model"] : null,
+      player: s.int(r, "player"),
+      sealed: s.bytes(r, "sealed"),
+      signedText: text === null ? null : s.str(r, "signed_text"),
+      ...s.appended(r),
     };
   }
 
@@ -525,15 +581,18 @@ export class RefereeClient implements Referee {
     return {
       callId: s.str(r, "call_id"),
       verdicts: s.verdicts(r, "verdicts"),
+      proofs: s.proofs(r, "proofs"),
       logSize: s.int(r, "log_size"),
       root: s.hex(r, "root"),
       state: s.bytes(r, "state"),
-      log: s.bytesList(r, "log"),
+      ...s.appended(r),
     };
   }
 
-  async declassify(matchId: Uint8Array): Promise<Record<string, unknown>> {
-    return this.call("declassify", { match_id: b64(matchId) });
+  async declassify(matchId: Uint8Array, logSealed: Uint8Array[]): Promise<DeclassifyResult> {
+    const r = await this.call("declassify", { match_id: b64(matchId), log_sealed: logSealed.map(b64) });
+    const { log: _log, ...reveal } = r;
+    return { log: shape("declassify").bytesList(r, "log"), reveal };
   }
 
   async declassifyBatches(i: DeclassifyBatchesInput): Promise<DeclassifyBatchesResult> {
@@ -681,8 +740,8 @@ export class GuardedReferee implements Referee {
   end(i: EndInput) {
     return this.run("end", () => this.inner.end(i));
   }
-  declassify(matchId: Uint8Array) {
-    return this.run("declassify", () => this.inner.declassify(matchId));
+  declassify(matchId: Uint8Array, logSealed: Uint8Array[]) {
+    return this.run("declassify", () => this.inner.declassify(matchId, logSealed));
   }
   declassifyBatches(i: DeclassifyBatchesInput) {
     return this.run("declassify_batches", () => this.inner.declassifyBatches(i));

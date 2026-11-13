@@ -1,29 +1,63 @@
 // In-memory stand-ins for the chain and the referee, behind the same interfaces the relay uses
-// (near.ts `Chain`, referee.ts `Referee`). They keep the rules the relay depends on: the chain
-// applies verdicts only in seq order; the referee refuses a state whose seq is not last_seq, and
-// reports the log size and root so the relay's copy can be checked.
+// (near.ts `Chain`, referee.ts `Referee`). They keep the rules the relay depends on, in protocol
+// v2 shapes: the chain applies verdicts only in seq order, each chained to the one before by
+// `prev`, and each Checkpoint/End only with a consistency proof from the root it last anchored;
+// the referee refuses a state whose seq is not last_seq, signs what it seals to phones, hands
+// out the log as leaf hashes plus entries sealed to itself, and reports the log size and root so
+// the relay's leaves can be checked.
 
-import { ed25519 } from "@noble/curves/ed25519.js";
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { createLogger } from "@tail/log";
 import {
+  type Batch,
+  batchHash,
+  consistencyProof,
+  decodeBatchEnvelope,
+  decodeSignedVerdict,
+  derivePlayerKey,
+  deriveTagKey,
+  encodeBatch,
   encodeLogEntry,
   encodeSignedVerdict,
+  equal,
+  fromHex,
+  type Hud,
   type LogEntry,
   merkleLeaf,
   merkleRoot,
+  open,
+  Reader,
+  readLogEntry,
+  SealContext,
+  seal,
+  sealSignedHud,
+  sealSignedPlayerKeys,
+  sealSignedVoiceLine,
   sha256,
+  signHud,
+  signPlayerKeys,
+  signVerdict,
+  signVoiceLine,
   sortAccounts,
+  toHex,
+  utf8,
   type Verdict,
+  verdictDigest,
+  verifyConsistency,
+  Writer,
+  writeLogEntry,
 } from "@tail/protocol";
 import type { Store } from "../src/db.ts";
-import type { Chain, ChainMatch, ChainRoots, ContractConfig, MatchCfg } from "../src/near.ts";
+import type { ApplyProof, Chain, ChainMatch, ChainRoots, ContractConfig, MatchCfg } from "../src/near.ts";
 import {
   type DeclassifyBatchesInput,
   type DeclassifyBatchesResult,
+  type DeclassifyResult,
   type EndInput,
   type EndResult,
   type EnrollInput,
   type EnrollResult,
+  type LogAppend,
   type RawVerdict,
   type Referee,
   RefereeError,
@@ -32,6 +66,7 @@ import {
   type StartResult,
   type TickInput,
   type TickResult,
+  type VerdictProof,
   type VoiceInput,
   type VoiceResult,
 } from "../src/referee.ts";
@@ -46,6 +81,8 @@ export class FakeChain implements Chain {
   matches = new Map<string, ChainMatch>();
   accounts = new Map<string, Uint8Array>();
   applied: Uint8Array[] = [];
+  /** The proofs each apply call carried, in call order. */
+  proofs: ApplyProof[][] = [];
   applyCalls = 0;
   /** Next apply throws without touching state (a refused or failed submission). */
   failNextApply = false;
@@ -55,6 +92,9 @@ export class FakeChain implements Chain {
   /** Internal contract balances of the one test token, by account. */
   balances = new Map<string, bigint>();
   topUps: { accountId: string; amount: bigint }[] = [];
+  /** Per match, as the contract keeps it: the last verdict's digest and the last anchored log. */
+  private chainTip = new Map<string, { digest: Uint8Array; size: number; root: Uint8Array }>();
+  private roots = new Map<string, ChainRoots>();
   private n = 0;
 
   async config(): Promise<ContractConfig> {
@@ -129,8 +169,8 @@ export class FakeChain implements Chain {
     const m = this.matches.get(id);
     return m ? structuredClone(m) : null;
   }
-  async getRoots(): Promise<ChainRoots> {
-    return { checkpoints: [], final_root: null };
+  async getRoots(id: string): Promise<ChainRoots> {
+    return structuredClone(this.roots.get(id) ?? { checkpoints: [], final_root: null });
   }
   async getHeads(id: string) {
     return this.matches.get(id)?.players.map((p) => p.head) ?? null;
@@ -138,25 +178,61 @@ export class FakeChain implements Chain {
   async getBalance(accountId: string) {
     return this.balances.get(accountId) ?? 0n;
   }
-  async apply(verdicts: Uint8Array[]) {
+  /**
+   * As the contract's `apply`: all or nothing. Each verdict must be the match's next seq and name
+   * the previous verdict's digest as `prev`; each Checkpoint/End must come with a consistency
+   * proof from the last anchored (size, root), size 0 and the empty root for the first.
+   */
+  async apply(verdicts: Uint8Array[], proofs: ApplyProof[]) {
     this.applyCalls++;
     if (this.failNextApply) {
       this.failNextApply = false;
       throw new Error("apply failed");
     }
-    // Every raw verdict here starts with the 16-byte match id, then u32le seq, as borsh lays it out.
-    for (const raw of verdicts) {
-      const id = Buffer.from(raw.slice(0, 16)).toString("hex");
-      const seq = new DataView(raw.buffer, raw.byteOffset + 16, 4).getUint32(0, true);
+    const tips = new Map(this.chainTip);
+    const seqs = new Map<string, number>();
+    const decoded = verdicts.map((raw) => ({ raw, v: decodeSignedVerdict(raw) }));
+    for (const { v } of decoded) {
+      const id = toHex(v.matchId);
       const m = this.matches.get(id);
       if (!m) throw new Error("no such match");
-      if (seq !== m.seq + 1) throw new Error("verdict out of order");
-      m.seq = seq;
-      const kind = raw[36];
-      if (kind === 0) m.phase = "running";
-      if (kind === 5) m.phase = "ended";
+      const seq = seqs.get(id) ?? m.seq;
+      if (v.seq !== seq + 1) throw new Error("verdict out of order");
+      const tip = tips.get(id) ?? { digest: new Uint8Array(32), size: 0, root: merkleRoot([]) };
+      if (!equal(v.prev, tip.digest)) throw new Error("verdict does not chain to the last one");
+      let next = { ...tip, digest: verdictDigest(v) };
+      if (v.body.kind === "Checkpoint" || v.body.kind === "End") {
+        const p = proofs.find((x) => x.seq === v.seq);
+        const size = Number(v.body.logSize);
+        const path = (p?.path ?? []).map((h) => new Uint8Array(Buffer.from(h, "base64")));
+        if (
+          !p ||
+          Number(p.from_size) !== tip.size ||
+          !verifyConsistency(tip.size, size, tip.root, v.body.root, path)
+        )
+          throw new Error(`verdict ${v.seq}: missing or bad consistency proof`);
+        next = { ...next, size, root: v.body.root };
+      }
+      tips.set(id, next);
+      seqs.set(id, v.seq);
+    }
+    this.proofs.push(proofs);
+    for (const { raw, v } of decoded) {
+      const id = toHex(v.matchId);
+      const m = this.matches.get(id) as ChainMatch;
+      m.seq = v.seq;
+      if (v.body.kind === "Start") m.phase = "running";
+      const r = this.roots.get(id) ?? { checkpoints: [], final_root: null };
+      if (v.body.kind === "Checkpoint")
+        r.checkpoints.push({ log_size: Number(v.body.logSize), root: toHex(v.body.root) });
+      if (v.body.kind === "End") {
+        m.phase = "ended";
+        r.final_root = { log_size: Number(v.body.logSize), root: toHex(v.body.root) };
+      }
+      this.roots.set(id, r);
       this.applied.push(raw);
     }
+    for (const [id, t] of tips) this.chainTip.set(id, t);
     if (this.loseNextApplyAnswer) {
       this.loseNextApplyAnswer = false;
       throw new Error("timeout waiting for the transaction");
@@ -181,8 +257,39 @@ export class FakeChain implements Chain {
   }
 }
 
-/** Referee whose rules are a script: `onTick` decides what each tick returns. */
+/** The fake referee's own seal contexts: what it seals to itself, opaque to the relay. */
+const FAKE_LOG = "fake-referee/log";
+const FAKE_HINT = "fake-referee/hint";
+
+interface FakeMatch {
+  matchId: Uint8Array;
+  players: string[];
+  km: Uint8Array;
+  startMs: number;
+  seq: number;
+  prev: Uint8Array;
+  leaves: Uint8Array[];
+  /** Log size and root of the last Checkpoint/End. */
+  anchored: number;
+  tickNo: number;
+  nextSeq: number[];
+  chainTip: Uint8Array[];
+  nextHintId: number;
+}
+
+/**
+ * Referee whose rules are a script: `onTick` decides what each tick returns. A sealed batch that
+ * opens with its box key (what ghosts send) is logged as the batch it is, and its Hint actions
+ * are charged; bytes that do not open (what queue tests send) stand in for a batch whose hash is
+ * SHA256 of the bytes, and declassify back to themselves.
+ */
 export class FakeReferee implements Referee {
+  readonly sk = ed25519.utils.randomSecretKey();
+  readonly pk = ed25519.getPublicKey(this.sk);
+  readonly boxSk = x25519.utils.randomSecretKey();
+  readonly boxPk = x25519.getPublicKey(this.boxSk);
+  /** Each account's box key, as the real referee has it from enrolment; the harness reads the store. */
+  boxPkOf: (account: string) => Uint8Array | undefined = () => undefined;
   calls: string[] = [];
   /** Every enroll input, as the relay sent it. */
   enrolls: EnrollInput[] = [];
@@ -192,45 +299,90 @@ export class FakeReferee implements Referee {
   failEnrolls = 0;
   /** Corrupt the next tick's reported log root. */
   lieAboutLog = false;
+  /** Hand out a bad consistency proof with the next Checkpoint/End. */
+  lieAboutProof = false;
   tickDelayMs = 0;
   inFlight = 0;
   maxInFlight = 0;
   ticksSeen: { batches: number; receipts: number }[] = [];
+  /** The `log_sealed` blobs the last declassify was given. */
+  declassified: Uint8Array[] = [];
   /** Tick number at which the match is over. */
   overAt = 3;
-  private seq = new Map<string, number>();
-  private log = new Map<string, LogEntry[]>();
-  private tickNo = new Map<string, number>();
-  /** Tick number that issues a Hint verdict. */
+  /** Tick number that issues a Hint verdict for player 0 (0: none). */
   hintAtTick = 2;
+  /** Tick number that anchors a Checkpoint (0: none). */
+  checkpointAtTick = 0;
+  private matches = new Map<string, FakeMatch>();
+  /** Set when this call handed out a bad proof, so the tick is undone like a lying one. */
+  private lied = false;
 
-  private verdict(matchId: Uint8Array, body: Verdict): RawVerdict {
-    const key = Buffer.from(matchId).toString("hex");
-    const seq = (this.seq.get(key) ?? 0) + 1;
-    this.seq.set(key, seq);
-    const v = { matchId, seq, callId: new Uint8Array(16), body, sig: new Uint8Array(64) };
-    this.addLog(key, { kind: "Verdict", seq, digest: new Uint8Array(32).fill(seq) });
+  private m(matchId: Uint8Array): FakeMatch {
+    const m = this.matches.get(toHex(matchId));
+    if (!m) throw new RefereeError("tick", "no such match", true);
+    return m;
+  }
+  private boxOf(m: FakeMatch, player: number): Uint8Array {
+    const pk = this.boxPkOf(m.players[player] ?? "");
+    if (!pk) throw new RefereeError("start", `no device for player ${player}`, true);
+    return pk;
+  }
+  private sealLog(entries: LogEntry[]): Uint8Array {
+    return seal(this.boxPk, new Writer().vec(entries, writeLogEntry).bytes(), FAKE_LOG);
+  }
+  private openLog(blob: Uint8Array): LogEntry[] {
+    const r = new Reader(open(this.boxSk, blob, FAKE_LOG));
+    const v = r.vec(readLogEntry);
+    r.done();
+    return v;
+  }
+  /** Appends entries to the match log; returns what the relay gets for them. */
+  private log(m: FakeMatch, entries: LogEntry[], into: LogEntry[]) {
+    for (const e of entries) m.leaves.push(merkleLeaf(e));
+    into.push(...entries);
+  }
+  private verdict(m: FakeMatch, body: Verdict, log: LogEntry[]): RawVerdict {
+    m.seq += 1;
+    const v = signVerdict(
+      { matchId: m.matchId, seq: m.seq, prev: m.prev, callId: new Uint8Array(16), body },
+      this.sk,
+    );
+    m.prev = verdictDigest(v);
+    this.log(m, [{ kind: "Verdict", seq: v.seq, digest: m.prev }], log);
     return { raw: encodeSignedVerdict(v), v };
   }
-  private addLog(key: string, e: LogEntry) {
-    const l = this.log.get(key) ?? [];
-    l.push(e);
-    this.log.set(key, l);
-    return encodeLogEntry(e);
+  /** A Checkpoint/End body over the log so far, with its proof from the last anchor. */
+  private anchor(m: FakeMatch, seq: number): { size: bigint; root: Uint8Array; proof: VerdictProof } {
+    const size = m.leaves.length;
+    const path = consistencyProof(m.leaves, m.anchored);
+    if (this.lieAboutProof) {
+      this.lieAboutProof = false;
+      this.lied = true;
+      path.push(new Uint8Array(32));
+    }
+    const proof = { seq, fromSize: m.anchored, path };
+    m.anchored = size;
+    return { size: BigInt(size), root: merkleRoot(m.leaves), proof };
   }
-  private state(key: string) {
-    return new TextEncoder().encode(`state:${key}:${this.seq.get(key) ?? 0}`);
+  private state(m: FakeMatch) {
+    return new TextEncoder().encode(`state:${toHex(m.matchId)}:${m.seq}`);
   }
-  private checkState(key: string, state: Uint8Array, lastSeq: number) {
-    if (new TextDecoder().decode(state) !== `state:${key}:${lastSeq}`) {
+  private checkState(m: FakeMatch, state: Uint8Array, lastSeq: number) {
+    if (new TextDecoder().decode(state) !== `state:${toHex(m.matchId)}:${lastSeq}` || lastSeq !== m.seq) {
       throw new RefereeError("tick", "state seq is not last_seq", true);
     }
+  }
+  private appended(m: FakeMatch, from: number, entries: LogEntry[]): LogAppend {
+    return { leaves: m.leaves.slice(from), logSealed: this.sealLog(entries) };
+  }
+  private hintBlob(m: FakeMatch, asker: number): Uint8Array {
+    const id = m.nextHintId++;
+    return seal(this.boxPk, utf8(JSON.stringify({ match: toHex(m.matchId), hintId: id, asker })), FAKE_HINT);
   }
 
   async pubkeys(): Promise<RefereeKeys> {
     this.calls.push("pubkeys");
-    const z = new Uint8Array(32);
-    return { refereePk: z, refereeBoxPk: z, boxPkSig: new Uint8Array(64), vrfPk: z };
+    return { refereePk: this.pk, refereeBoxPk: this.boxPk, boxPkSig: new Uint8Array(64), vrfPk: this.pk };
   }
   async enroll(i: EnrollInput): Promise<EnrollResult> {
     this.calls.push("enroll");
@@ -250,24 +402,65 @@ export class FakeReferee implements Referee {
   }
   async start(i: StartInput): Promise<StartResult> {
     this.calls.push("start");
-    const key = Buffer.from(i.matchId).toString("hex");
     const players = sortAccounts(i.players);
-    const v = this.verdict(i.matchId, {
-      kind: "Start",
-      playersHash: new Uint8Array(32),
-      ringCommit: new Uint8Array(32),
-      startMs: BigInt(i.startMs),
-      endMs: BigInt(i.startMs + i.durationMs),
+    const m: FakeMatch = {
+      matchId: i.matchId,
+      players,
+      km: crypto.getRandomValues(new Uint8Array(32)),
+      startMs: i.startMs,
+      seq: 0,
+      prev: new Uint8Array(32),
+      leaves: [],
+      anchored: 0,
+      tickNo: 0,
+      nextSeq: players.map(() => 0),
+      chainTip: players.map(() => new Uint8Array(32)),
+      nextHintId: 0,
+    };
+    this.matches.set(toHex(i.matchId), m);
+    const log: LogEntry[] = players.map((account, player) => ({
+      kind: "Enrolled",
+      player,
+      account,
+      keyHash: new Uint8Array(32),
+      attested: true,
+    }));
+    for (const e of log) m.leaves.push(merkleLeaf(e));
+    const v = this.verdict(
+      m,
+      {
+        kind: "Start",
+        playersHash: new Uint8Array(32),
+        ringCommit: new Uint8Array(32),
+        startMs: BigInt(i.startMs),
+        endMs: BigInt(i.startMs + i.durationMs),
+      },
+      log,
+    );
+    const keys = players.map((accountId, player) => {
+      const k = {
+        matchId: i.matchId,
+        player,
+        startMs: BigInt(i.startMs),
+        endMs: BigInt(i.startMs + i.durationMs),
+        kTag: deriveTagKey(m.km),
+        kPlayer: derivePlayerKey(m.km, player),
+        target: players[(player + 1) % players.length] as string,
+      };
+      return {
+        player,
+        accountId,
+        sealed: sealSignedPlayerKeys(this.boxOf(m, player), signPlayerKeys(k, this.sk)),
+      };
     });
-    const log = [encodeLogEntry((this.log.get(key) ?? []).at(-1) as LogEntry)];
     return {
       callId: "call-start",
       startMs: i.startMs,
       endMs: i.startMs + i.durationMs,
       verdicts: [v],
-      keys: players.map((a, player) => ({ player, accountId: a, sealed: new Uint8Array([player]) })),
-      state: this.state(key),
-      log,
+      keys,
+      state: this.state(m),
+      ...this.appended(m, 0, log),
     };
   }
   async tick(i: TickInput): Promise<TickResult> {
@@ -280,60 +473,72 @@ export class FakeReferee implements Referee {
         this.failTicks--;
         throw new RefereeError("tick", "request failed: timeout", false);
       }
-      const key = Buffer.from(i.matchId).toString("hex");
-      this.checkState(key, i.state, i.lastSeq);
+      const m = this.m(i.matchId);
+      this.checkState(m, i.state, i.lastSeq);
       // A real referee keeps nothing from a call whose answer the relay throws away; this fake
       // remembers where it was so a discarded (lying) tick can be undone.
-      const undo = {
-        seq: this.seq.get(key) ?? 0,
-        log: (this.log.get(key) ?? []).length,
-        tick: this.tickNo.get(key) ?? 0,
-      };
+      const undo = structuredClone({ ...m, matchId: undefined, km: undefined });
       this.ticksSeen.push({ batches: i.batches.length, receipts: i.receipts.length });
-      const tickNo = (this.tickNo.get(key) ?? 0) + 1;
-      const before = (this.log.get(key) ?? []).length;
-      // The fake "opens" a sealed batch to its own bytes, so its log hash is SHA256 of them.
-      for (const [k, sealed] of i.batches.entries()) {
-        this.addLog(key, { kind: "Batch", player: 0, seq: k, hash: sha256(sealed) });
-      }
+      const tickNo = m.tickNo + 1;
+      const from = m.leaves.length;
+      const log: LogEntry[] = [];
+      const nowMs = Date.now();
+      this.log(m, [{ kind: "Tick", tickNo, nowMs: BigInt(nowMs), callId: new Uint8Array(16) }], log);
+      // Receipts are the voice answers' sealed entries: logged as they are.
+      for (const r of i.receipts) this.log(m, this.openLog(r), log);
       const verdicts: RawVerdict[] = [];
+      const proofs: VerdictProof[] = [];
       const hints: TickResult["hints"] = [];
+      for (const [k, sealed] of i.batches.entries()) {
+        const batch = this.openBatch(sealed);
+        if (!batch) {
+          this.log(m, [{ kind: "Batch", player: 0, seq: k, hash: sha256(sealed) }], log);
+          continue;
+        }
+        this.log(m, [{ kind: "Batch", player: batch.player, seq: batch.seq, hash: batchHash(batch) }], log);
+        m.nextSeq[batch.player] = batch.seq + 1;
+        m.chainTip[batch.player] = batchHash(batch);
+        for (const a of batch.actions) {
+          if (a.kind !== "Hint") continue;
+          const to = (batch.player + 1) % m.players.length;
+          verdicts.push(
+            this.verdict(
+              m,
+              { kind: "Hint", from: batch.player, to, amount: 100n, hintId: m.nextHintId, hint: a.hint },
+              log,
+            ),
+          );
+          hints.push({ player: batch.player, blob: this.hintBlob(m, batch.player) });
+        }
+      }
       if (tickNo === this.hintAtTick) {
-        verdicts.push(this.verdict(i.matchId, { kind: "Hint", from: 0, to: 1, amount: 100n, hintId: 0 }));
-        hints.push({ hintId: 0, from: 0, to: 1, hint: 0, value: 1, text: "close?" });
+        verdicts.push(
+          this.verdict(m, { kind: "Hint", from: 0, to: 1, amount: 100n, hintId: m.nextHintId, hint: 0 }, log),
+        );
+        hints.push({ player: 0, blob: this.hintBlob(m, 0) });
       }
-      for (const _ of i.receipts) {
-        this.addLog(key, {
-          kind: "HintReceipt",
-          hintId: 0,
-          chatId: "c",
-          textHash: new Uint8Array(32),
-          signature: new Uint8Array(1),
-          signingAddress: "0x",
-        });
+      if (tickNo === this.checkpointAtTick) {
+        const a = this.anchor(m, m.seq + 1);
+        proofs.push(a.proof);
+        verdicts.push(this.verdict(m, { kind: "Checkpoint", logSize: a.size, root: a.root }, log));
       }
-      const all = this.log.get(key) ?? [];
-      const added = all.slice(before).map(encodeLogEntry);
-      this.tickNo.set(key, tickNo);
-      const root = merkleRoot(all.map(merkleLeaf));
-      if (this.lieAboutLog) {
-        this.lieAboutLog = false;
-        root[0] = (root[0] as number) ^ 1;
-        this.seq.set(key, undo.seq);
-        this.log.set(key, all.slice(0, undo.log));
-        this.tickNo.set(key, undo.tick);
-        this.ticksSeen.pop();
-      }
-      return {
+      m.tickNo = tickNo;
+      const root = merkleRoot(m.leaves);
+      const huds = m.players.map((_, player) => ({
+        player,
+        sealed: sealSignedHud(this.boxOf(m, player), signHud(this.hud(m, player, tickNo, root), this.sk)),
+      }));
+      const out: TickResult = {
         callId: `call-tick-${tickNo}`,
         tickNo,
-        nowMs: Date.now(),
-        seq: this.seq.get(key) ?? 0,
-        state: this.state(key),
+        nowMs,
+        seq: m.seq,
+        state: this.state(m),
         verdicts,
-        huds: [0, 1, 2].map((player) => ({ player, sealed: new Uint8Array([tickNo, player]) })),
-        log: added,
-        logSize: all.length,
+        proofs,
+        huds,
+        ...this.appended(m, from, log),
+        logSize: m.leaves.length,
         logRoot: root,
         unopened: [],
         rejected: [],
@@ -341,53 +546,114 @@ export class FakeReferee implements Referee {
         hints,
         over: tickNo >= this.overAt,
       };
+      if (this.lieAboutLog || this.lied) {
+        if (this.lieAboutLog) out.logRoot = Uint8Array.from(root, (b, k) => (k === 0 ? b ^ 1 : b));
+        this.lieAboutLog = false;
+        this.lied = false;
+        Object.assign(m, { ...undo, matchId: m.matchId, km: m.km });
+        this.ticksSeen.pop();
+      }
+      return out;
     } finally {
       this.inFlight--;
     }
   }
+  private openBatch(sealed: Uint8Array): Batch | undefined {
+    try {
+      return decodeBatchEnvelope(open(this.boxSk, sealed, SealContext.batch)).batch;
+    } catch {
+      return undefined;
+    }
+  }
+  private hud(m: FakeMatch, player: number, tick: number, root: Uint8Array): Hud {
+    return {
+      matchId: m.matchId,
+      player,
+      tick,
+      epoch: 0,
+      lock: 0,
+      heat: 0,
+      head: 1_000_000n,
+      status: 0,
+      target: m.players[(player + 1) % m.players.length] as string,
+      nextSeq: m.nextSeq[player] ?? 0,
+      chainTip: m.chainTip[player] ?? new Uint8Array(32),
+      darkMs: 0,
+      tags: 0,
+      logSize: BigInt(m.leaves.length),
+      root,
+    };
+  }
   async voice(i: VoiceInput): Promise<VoiceResult> {
     this.calls.push("voice");
+    const h = JSON.parse(new TextDecoder().decode(open(this.boxSk, i.blob, FAKE_HINT))) as {
+      match: string;
+      hintId: number;
+      asker: number;
+    };
+    const m = this.m(fromHex(h.match));
+    if (!new TextDecoder().decode(i.state).startsWith(`state:${h.match}:`))
+      throw new RefereeError("voice", "state is not this hint's match", true);
+    const text = `line for hint ${h.hintId}`;
+    const line = { matchId: m.matchId, player: h.asker, hintId: h.hintId, text };
+    const receipt: LogEntry = {
+      kind: "HintReceipt",
+      hintId: h.hintId,
+      chatId: "c",
+      textHash: sha256(utf8(text)),
+      signature: new Uint8Array(65),
+      signingAddress: "0x0",
+    };
     return {
-      text: `line for hint ${i.hintId}`,
-      source: "template",
-      receipt: new Uint8Array([1, 2, 3]),
-      chatId: null,
-      model: null,
+      player: h.asker,
+      sealed: sealSignedVoiceLine(this.boxOf(m, h.asker), signVoiceLine(line, this.sk)),
+      signedText: `fake-model:${toHex(sha256(utf8("req")))}:${toHex(sha256(utf8(text)))}`,
+      leaves: [merkleLeaf(receipt)],
+      logSealed: this.sealLog([receipt]),
     };
   }
   async end(i: EndInput): Promise<EndResult> {
     this.calls.push("end");
-    const key = Buffer.from(i.matchId).toString("hex");
-    this.checkState(key, i.state, i.lastSeq);
-    const before = this.log.get(key) ?? [];
-    const size = before.length;
-    const root = merkleRoot(before.map(merkleLeaf));
-    const v = this.verdict(i.matchId, {
-      kind: "End",
-      alpha: "vrf:1:x:y",
-      vrfSignature: new Uint8Array(64),
-      logSize: BigInt(size),
-      root,
-    });
+    const m = this.m(i.matchId);
+    this.checkState(m, i.state, i.lastSeq);
+    const from = m.leaves.length;
+    const log: LogEntry[] = [];
+    // As the referee: receipts of the last tick's hints join the log before End's root.
+    for (const r of i.receipts) this.log(m, this.openLog(r), log);
+    const a = this.anchor(m, m.seq + 1);
+    const v = this.verdict(
+      m,
+      { kind: "End", alpha: "vrf:1:x:y", vrfSignature: new Uint8Array(64), logSize: a.size, root: a.root },
+      log,
+    );
     return {
       callId: "call-end",
       verdicts: [v],
-      logSize: size,
-      root,
-      state: this.state(key),
-      log: [encodeLogEntry((this.log.get(key) ?? []).at(-1) as LogEntry)],
+      proofs: [a.proof],
+      logSize: Number(a.size),
+      root: a.root,
+      state: this.state(m),
+      ...this.appended(m, from, log),
     };
   }
   declassifyChunks: number[] = [];
   async declassifyBatches(i: DeclassifyBatchesInput): Promise<DeclassifyBatchesResult> {
     this.calls.push("declassify_batches");
     this.declassifyChunks.push(i.sealed.length);
-    // Every sealed batch opens to its own bytes, plus one the log never accepted.
-    return { batches: [...i.sealed, new Uint8Array([9, 9, 9])], refused: [] };
+    // Every sealed batch opens (stand-ins to their own bytes), plus one the log never accepted.
+    const batches = i.sealed.map((s) => {
+      const b = this.openBatch(s);
+      return b ? encodeBatch(b) : s;
+    });
+    return { batches: [...batches, new Uint8Array([9, 9, 9])], refused: [] };
   }
-  async declassify(): Promise<Record<string, unknown>> {
+  async declassify(_matchId: Uint8Array, logSealed: Uint8Array[]): Promise<DeclassifyResult> {
     this.calls.push("declassify");
-    return { ring: ["a", "b", "c"], k_m: "00", vrf_alpha: "vrf:1:x:y", vrf_signature: "00".repeat(64) };
+    this.declassified = logSealed;
+    return {
+      log: logSealed.flatMap((b) => this.openLog(b)).map(encodeLogEntry),
+      reveal: { ring: ["a", "b", "c"], k_m: "00", vrf_alpha: "vrf:1:x:y", vrf_signature: "00".repeat(64) },
+    };
   }
 }
 
@@ -409,13 +675,15 @@ export function seedDevice(
   kind: "phone" | "ghost" = "phone",
   /** False: enrolled here, not yet registered with the referee. */
   withReferee = true,
+  /** The device's X25519 box key; the referee seals keys, HUDs and Handler lines to it. */
+  boxPk: Uint8Array = x25519.getPublicKey(x25519.utils.randomSecretKey()),
 ) {
   store.putDevice({
     account_id: accountId,
     kind,
     // Each device its own App Attest key, as the store requires.
     app_attest_pk: crypto.getRandomValues(new Uint8Array(65)),
-    player_box_pk: new Uint8Array(32),
+    player_box_pk: boxPk,
     near_pk: nearPk,
     receipt: withReferee ? new Uint8Array(1) : null,
     receipt_sig: withReferee ? new Uint8Array(64) : null,

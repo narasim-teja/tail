@@ -4,7 +4,19 @@
 
 import { describe, expect, test } from "bun:test";
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { decodeSignedVerdict, enrollClientDataHash, equal, type ReplayBundle, sha256 } from "@tail/protocol";
+import {
+  decodeLogEntry,
+  decodeSignedVerdict,
+  enrollClientDataHash,
+  equal,
+  merkleLeaf,
+  openSignedHud,
+  openSignedVoiceLine,
+  type ReplayBundle,
+  type ReplayBundleV2,
+  sha256,
+  toHex,
+} from "@tail/protocol";
 import { replayDigest, signRequestHeaders } from "../src/auth.ts";
 import { CHAIN_VIEW_MS } from "../src/chainview.ts";
 import type { Store, Zone } from "../src/db.ts";
@@ -14,6 +26,7 @@ import { GuardedReferee } from "../src/referee.ts";
 import { FakeReferee, seedDevice, until } from "./fakes.ts";
 import {
   appliedSeqs,
+  CONTRACT,
   type Env,
   ended,
   hudSocket,
@@ -332,10 +345,7 @@ describe("signed requests", () => {
     const env = setup();
     const a = player(env, "ana");
     const body = { ...MATCH, start_by_ms: Date.now() + 600_000 };
-    const forged = await req(env, "POST", "/matches", body, {
-      account: a.account,
-      seed: ed25519.utils.randomSecretKey(),
-    });
+    const forged = await req(env, "POST", "/matches", body, { ...a, seed: ed25519.utils.randomSecretKey() });
     expect(forged.status).toBe(401);
     expect((await req(env, "POST", "/matches", body, a)).status).toBe(200);
   });
@@ -346,11 +356,40 @@ describe("signed requests", () => {
     const bytes = new TextEncoder().encode(JSON.stringify({ ...MATCH, start_by_ms: Date.now() + 600_000 }));
     const headers = {
       "content-type": "application/json",
-      ...signRequestHeaders(a.account, a.seed, "POST", "/matches", bytes),
+      ...signRequestHeaders(
+        { contractId: CONTRACT, accountId: a.account, method: "POST", path: "/matches", body: bytes },
+        a.seed,
+      ),
     };
     expect((await env.app.request("/matches", { method: "POST", headers, body: bytes })).status).toBe(200);
-    expect((await env.app.request("/matches", { method: "POST", headers, body: bytes })).status).toBe(409);
+    const again = await env.app.request("/matches", { method: "POST", headers, body: bytes });
+    expect(again.status).toBe(409);
+    expect(await again.json()).toEqual({ code: "duplicate", error: "request already seen" });
     expect(env.chain.matches.size).toBe(1);
+  });
+
+  test("a signature made for another deployment's contract is refused", async () => {
+    const env = setup();
+    const a = player(env, "ana");
+    const bytes = new TextEncoder().encode(JSON.stringify({ ...MATCH, start_by_ms: Date.now() + 600_000 }));
+    const send = (contractId: string) =>
+      env.app.request("/matches", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...signRequestHeaders(
+            { contractId, accountId: a.account, method: "POST", path: "/matches", body: bytes },
+            a.seed,
+          ),
+        },
+        body: bytes,
+      });
+    expect((await send("tail.other.testnet")).status).toBe(401);
+    expect((await send(CONTRACT)).status).toBe(200);
+  });
+
+  test("the relay names the contract it serves, the one requests are signed for", async () => {
+    expect((await req(setup(), "GET", "/health")).json["contract"]).toBe(CONTRACT);
   });
 });
 
@@ -433,7 +472,9 @@ describe("the match view", () => {
     const m = await started(env);
     const view = await req(env, "GET", `/matches/${m.id}/zone`, undefined, m.b);
     expect(view.status).toBe(200);
-    expect(view.json["keys"]).toEqual([{ player: 1, account_id: m.b.account, sealed: "AQ==" }]);
+    const mine = (m.start["keys"] as { player: number }[]).filter((k) => k.player === 1);
+    expect(view.json["keys"]).toEqual(mine);
+    expect(mine).toHaveLength(1);
   });
 
   test("the public view reads the chain at most once per few seconds", async () => {
@@ -732,7 +773,12 @@ describe("the tick loop", () => {
     await ended(env, m.id);
     expect(env.referee.calls).toContain("voice");
     expect(env.referee.ticksSeen.map((t) => t.receipts)).toEqual([0, 0, 1]);
-    expect(env.store.hints(m.id, "consumed").map((h) => h.text)).toEqual(["line for hint 0"]);
+    const [h] = env.store.voiceHints(m.id, "consumed");
+    // The relay keeps the line sealed to the asker and the receipt sealed to the referee.
+    expect(openSignedVoiceLine(m.a.boxSk, h?.sealed as Uint8Array, env.referee.pk).text).toBe(
+      "line for hint 0",
+    );
+    expect(h?.signed_text).toStartWith("fake-model:");
   });
 });
 
@@ -750,8 +796,12 @@ describe("the replay", () => {
     await ended(env, m.id);
     const r = await req(env, "GET", `/replay/${m.id}`);
     expect(r.status).toBe(200);
-    const b = r.json as unknown as ReplayBundle;
-    expect(b.version).toBe(1);
+    const b = r.json as unknown as ReplayBundleV2;
+    expect(b.version).toBe(2);
+    expect(b.leaves).toEqual(env.store.leaves(m.id).map(toHex));
+    expect(
+      b.log.map((e) => toHex(merkleLeaf(decodeLogEntry(new Uint8Array(Buffer.from(e, "base64")))))),
+    ).toEqual(b.leaves);
     expect(b.match.players).toEqual([`ana.${PARENT}`, `bo.${PARENT}`, `cy.${PARENT}`]);
     expect(b.log.length).toBe(env.store.log(m.id).length);
     expect(
@@ -810,7 +860,7 @@ describe("the replay", () => {
     expect((await ask(ed25519.utils.randomSecretKey())).status).toBe(403);
     const ok = await ask(b.seed);
     expect(ok.status).toBe(200);
-    expect((ok.json as unknown as ReplayBundle).match.publicReplay).toBe(false);
+    expect((ok.json as unknown as ReplayBundleV2).match.publicReplay).toBe(false);
   });
 
   test("the replay says per player what device it was and whether the referee checked its attestation", async () => {
@@ -839,12 +889,30 @@ describe("the replay", () => {
     });
   });
 
-  test("a hint's Handler line is in the replay", async () => {
+  test("a hint's Handler line is in the replay by its receipt's hint id, with the signed message only", async () => {
     const env = setup();
     const m = await started(env);
     await ended(env, m.id);
+    const b = (await req(env, "GET", `/replay/${m.id}`)).json as unknown as ReplayBundleV2;
+    const signedText = env.store.voiceHints(m.id, "consumed")[0]?.signed_text;
+    expect(b.handler).toEqual([{ hintId: 0, signedText: signedText as string }]);
+    expect(JSON.stringify(b)).not.toContain("line for hint 0");
+  });
+
+  test("a match from before protocol v2 is still served as the version 1 bundle it was", async () => {
+    const env = setup();
+    const m = await started(env);
+    await ended(env, m.id);
+    env.store.db.query("UPDATE matches SET protocol = NULL WHERE match_id = ?").run(m.id);
+    env.store.db
+      .query(
+        "INSERT INTO hints (match_id, hint_id, asker, hint, value, issued_ms, text, chat_id, model, status) VALUES (?, 3, 0, 0, 1, 0, 'warmer', 'c', 'm', 'consumed')",
+      )
+      .run(m.id);
     const b = (await req(env, "GET", `/replay/${m.id}`)).json as unknown as ReplayBundle;
-    expect(b.handler).toEqual([{ hintId: 0, text: "line for hint 0", chatId: "", model: "" }]);
+    expect(b.version).toBe(1);
+    expect(b.handler).toEqual([{ hintId: 3, text: "warmer", chatId: "c", model: "m" }]);
+    expect("leaves" in b).toBe(false);
   });
 });
 
@@ -871,8 +939,9 @@ describe("the HUD socket", () => {
     await until(() => s.got.some((x) => x["type"] === "hud"), "a HUD");
     expect(s.got.map((x) => x["type"]).slice(0, 3)).toEqual(["challenge", "ready", "keys"]);
     const hud = s.got.find((x) => x["type"] === "hud");
-    // The fake referee seals HUD n for player p as the bytes [n, p]; player bo is index 1.
-    expect(Buffer.from(String(hud?.["sealed"]), "base64")[1]).toBe(1);
+    const sealedHud = new Uint8Array(Buffer.from(String(hud?.["sealed"]), "base64"));
+    // Sealed to bo's box key and signed by the referee; bo is player 1.
+    expect(openSignedHud(m.b.boxSk, sealedHud, env.referee.pk).player).toBe(1);
     s.ws.close();
   });
 });

@@ -2,13 +2,16 @@
 // phone would. Every relay made here is stopped after its test.
 
 import { afterEach, expect } from "bun:test";
-import { ed25519 } from "@noble/curves/ed25519.js";
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { createRelay, type RelayDeps } from "../src/app.ts";
 import { hudDigest, signRequestHeaders } from "../src/auth.ts";
+import { newCarryKeys } from "../src/carry.ts";
 import { Store } from "../src/db.ts";
 import { FakeChain, FakeReferee, quietLog, seedDevice, until } from "./fakes.ts";
 
 export const PARENT = "relay.testnet";
+/** The contract the test relay serves; every signed request names it. */
+export const CONTRACT = "tail.relay.testnet";
 const relays: { stop: () => void }[] = [];
 afterEach(() => {
   for (const r of relays.splice(0)) r.stop();
@@ -18,6 +21,9 @@ export function setup(over: Partial<RelayDeps> = {}) {
   const store = over.store ?? new Store(":memory:");
   const chain = (over.chain as FakeChain | undefined) ?? new FakeChain();
   const referee = (over.referee as FakeReferee | undefined) ?? new FakeReferee();
+  // The real referee has each player's box key from enrolment; the fake reads the relay's record.
+  referee.boxPkOf = (account) => store.device(account)?.player_box_pk;
+  const carryKeys = over.carryKeys ?? newCarryKeys();
   const relay = createRelay({
     store,
     chain,
@@ -27,8 +33,9 @@ export function setup(over: Partial<RelayDeps> = {}) {
     appId: "TEAM.app",
     environment: "development",
     token: "usdc.fakes.testnet",
+    carryKeys,
     replay: {
-      contract: "tail.relay.testnet",
+      contract: CONTRACT,
       network: "testnet",
       refereeProject: "relay.testnet/tail-referee",
       outlayerApi: "https://testnet-api.outlayer.ai",
@@ -47,20 +54,23 @@ export function setup(over: Partial<RelayDeps> = {}) {
       relay.enrolment.stop();
     },
   });
-  return { store, chain, referee, ...relay };
+  return { store, chain, referee, carryKeys, ...relay };
 }
 
 export type Env = ReturnType<typeof setup>;
 export interface Player {
   account: string;
   seed: Uint8Array;
+  /** X25519 key the referee seals this player's keys, HUDs and Handler lines to. */
+  boxSk: Uint8Array;
 }
 
 export function player(env: Env, name: string): Player {
   const seed = ed25519.utils.randomSecretKey();
+  const boxSk = x25519.utils.randomSecretKey();
   const account = `${name}.${PARENT}`;
-  seedDevice(env.store, account, ed25519.getPublicKey(seed));
-  return { account, seed };
+  seedDevice(env.store, account, ed25519.getPublicKey(seed), "phone", true, x25519.getPublicKey(boxSk));
+  return { account, seed, boxSk };
 }
 
 // Two identical signed requests in the same millisecond are a replay to the relay; each test
@@ -81,7 +91,14 @@ export async function req(
 ) {
   const bytes = new TextEncoder().encode(body === undefined ? "" : JSON.stringify(body));
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (as) Object.assign(headers, signRequestHeaders(as.account, as.seed, method, path, bytes, timeMs));
+  if (as)
+    Object.assign(
+      headers,
+      signRequestHeaders(
+        { contractId: CONTRACT, accountId: as.account, method, path, body: bytes, timeMs },
+        as.seed,
+      ),
+    );
   const res = await env.app.request(path, { method, headers, ...(method === "GET" ? {} : { body: bytes }) });
   return { status: res.status, json: (await res.json()) as Record<string, unknown> };
 }
@@ -116,11 +133,17 @@ export const ended = (env: Env, id: string) =>
 export const appliedSeqs = (env: Env) =>
   env.chain.applied.map((raw) => new DataView(raw.buffer, raw.byteOffset + 16, 4).getUint32(0, true));
 
-/** Opens a HUD socket for `who` and answers the challenge with `signer`'s signature. */
-export async function hudSocket(env: Env, matchId: string, who: Player, signer: Uint8Array) {
+/** Serves the relay on a free port until the test ends; returns its base URL. */
+export function serve(env: Env): string {
   const server = Bun.serve({ port: 0, fetch: env.app.fetch, websocket: env.websocket });
   relays.push({ stop: () => server.stop(true) });
-  const ws = new WebSocket(`ws://localhost:${server.port}/hud?match_id=${matchId}&account_id=${who.account}`);
+  return `http://localhost:${server.port}`;
+}
+
+/** Opens a HUD socket for `who` and answers the challenge with `signer`'s signature. */
+export async function hudSocket(env: Env, matchId: string, who: Player, signer: Uint8Array) {
+  const base = serve(env).replace(/^http/, "ws");
+  const ws = new WebSocket(`${base}/hud?match_id=${matchId}&account_id=${who.account}`);
   const got: Record<string, unknown>[] = [];
   const closed = { code: 0 };
   ws.onmessage = (ev) => {

@@ -98,6 +98,17 @@ export interface MatchCfg {
   invites: string[];
 }
 
+/**
+ * The contract's `ConsistencyArg`: the RFC 9162 proof that a Checkpoint/End verdict's log extends
+ * the match's last anchored log (size `from_size`, a U64 decimal string).
+ */
+export interface ApplyProof {
+  seq: number;
+  from_size: string;
+  /** 32-byte hashes, base64. */
+  path: string[];
+}
+
 /** Everything the relay does on chain, as an interface so tests can run without NEAR. */
 export interface Chain {
   config(): Promise<ContractConfig>;
@@ -116,8 +127,11 @@ export interface Chain {
   getRoots(matchId: string): Promise<ChainRoots | null>;
   getHeads(matchId: string): Promise<string[] | null>;
   getBalance(accountId: string, token: string): Promise<bigint>;
-  /** Submits borsh SignedVerdicts in order in one `apply`; returns the transaction hash. */
-  apply(verdicts: Uint8Array[]): Promise<string>;
+  /**
+   * Submits borsh SignedVerdicts in order in one `apply`, with a consistency proof for each
+   * Checkpoint/End among them; returns the transaction hash.
+   */
+  apply(verdicts: Uint8Array[], proofs: ApplyProof[]): Promise<string>;
   /** Testnet only: mints the test token to the relay and credits it to `accountId` in the contract. */
   topUp(accountId: string, amount: bigint): Promise<void>;
   /**
@@ -301,11 +315,11 @@ export class NearChain implements Chain {
     return BigInt(await this.view<string>("get_balance", { account_id: accountId, token }));
   }
 
-  async apply(verdicts: Uint8Array[]) {
+  async apply(verdicts: Uint8Array[], proofs: ApplyProof[]) {
     const res = await this.relay.callFunctionRaw({
       contractId: this.o.contract,
       methodName: "apply",
-      args: { verdicts: verdicts.map((v) => Buffer.from(v).toString("base64")) },
+      args: { verdicts: verdicts.map((v) => Buffer.from(v).toString("base64")), proofs },
       gas: teraToGas(Math.min(300, 100 + 10 * verdicts.length)),
     });
     return res.transaction.hash;

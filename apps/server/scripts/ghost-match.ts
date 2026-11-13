@@ -2,21 +2,25 @@
 // test referee with REFEREE_MODE=local), end to end through the relay:
 // enrol (testing door) → create the lobby → top up → join with each ghost's own key → start →
 // real-time ticks with sealed batches, a hint and a tag → End → declassify. After each step it
-// checks the contract (get_match, get_heads, get_roots, balances) and at the end the relay's
-// copy of the log against the anchored root. Runs the relay in-process with a fresh database.
+// checks the contract (get_match, get_heads, get_roots, balances), and at the end the relay's
+// leaves and the declassified log against the anchored root, and an inclusion and a consistency
+// proof from the relay's proof endpoints. Runs the relay in-process with a fresh database.
 //
 //   ALLOW_GHOSTS=1 bun apps/server/scripts/ghost-match.ts      (testnet only; ~0.5 NEAR, ~$0.05)
 //   REFEREE_MODE=local ALLOW_GHOSTS=1 RELAY_PORT=8788 bun apps/server/scripts/ghost-match.ts
 
 import { createLogger } from "@tail/log";
 import {
+  type AnyReplayBundle,
   decodeLogEntry,
   decodeSignedVerdict,
+  fromHex,
   merkleLeaf,
   merkleRoot,
-  type ReplayBundle,
+  merkleVerify,
   sha256,
   toHex,
+  verifyConsistency,
 } from "@tail/protocol";
 import { loadConfig, loadRepoEnv } from "../src/config.ts";
 import { Ghost } from "../src/ghosts/ghost.ts";
@@ -46,12 +50,16 @@ const check = (name: string, ok: boolean, note = "") => {
 const relay = startRelay(config);
 const url = `http://localhost:${relay.server.port}`;
 const nearBefore = await relay.chain.relayBalance();
-const ghosts = ["a", "b", "c"].map((r) => new Ghost(`ghost-${r}-${run}`, url));
+// What a phone pins: the contract, and the referee key that contract pins.
+const cfg = await relay.chain.config();
+const ghosts = ["a", "b", "c"].map(
+  (r) =>
+    new Ghost(`ghost-${r}-${run}`, url, { contract: config.contract, refereePk: fromHex(cfg.referee_pk) }),
+);
 let squad: Squad | undefined;
 
 try {
   // ── preflight: the contract pins this referee ────────────────────────────────────
-  const cfg = await relay.chain.config();
   const keys = await relay.referee.pubkeys();
   check(
     "the contract pins the deployed referee's verdict and VRF keys",
@@ -233,17 +241,46 @@ try {
   );
 
   const roots = await relay.chain.getRoots(matchId);
+  const leaves = relay.store.leaves(matchId);
   const entries = relay.store.log(matchId);
   const end = verdicts.map((v) => decodeSignedVerdict(v.raw).body).find((b) => b.kind === "End");
   const size = end?.kind === "End" ? Number(end.logSize) : -1;
-  const root = toHex(merkleRoot(entries.slice(0, size).map((e) => merkleLeaf(decodeLogEntry(e)))));
+  const root = toHex(merkleRoot(leaves.slice(0, size)));
   check(
-    "the relay's log copy reproduces the root anchored on chain",
-    entries.length === size + 1 && roots?.final_root?.root === root && roots.final_root.log_size === size,
-    `${entries.length} entries, ${roots?.checkpoints.length} checkpoints`,
+    "the relay's leaves reproduce the root anchored on chain",
+    leaves.length >= size && roots?.final_root?.root === root && roots.final_root.log_size === size,
+    `${leaves.length} leaves, ${roots?.checkpoints.length} checkpoints`,
   );
+  check(
+    "the declassified log hashes to exactly those leaves",
+    entries.length === leaves.length &&
+      entries.every((e, i) => toHex(merkleLeaf(decodeLogEntry(e))) === toHex(leaves[i] as Uint8Array)),
+    `${entries.length} entries`,
+  );
+  const contact = entries.findIndex((e) => decodeLogEntry(e).kind === "Contact");
+  const inc = (await (
+    await fetch(
+      `${url}/matches/${matchId}/inclusion?leaf=${toHex(leaves[contact] as Uint8Array)}&size=${size}`,
+    )
+  ).json()) as { index: number; size: number; path: string[] };
+  check(
+    "the relay's inclusion proof places a Contact entry under the anchored root",
+    contact >= 0 &&
+      merkleVerify(leaves[contact] as Uint8Array, inc.index, inc.size, inc.path.map(fromHex), fromHex(root)),
+    `entry ${contact}`,
+  );
+  const first = roots?.checkpoints[0];
+  if (first) {
+    const con = (await (
+      await fetch(`${url}/matches/${matchId}/consistency?from=${first.log_size}&to=${size}`)
+    ).json()) as { path: string[] };
+    check(
+      "the relay's consistency proof links the first checkpoint to End",
+      verifyConsistency(first.log_size, size, fromHex(first.root), fromHex(root), con.path.map(fromHex)),
+    );
+  }
   const res = await fetch(`${url}/replay/${matchId}`);
-  const bundle = (await res.json()) as ReplayBundle;
+  const bundle = (await res.json()) as AnyReplayBundle;
   const bundleRoot = toHex(
     merkleRoot(
       bundle.log
@@ -252,9 +289,10 @@ try {
     ),
   );
   check(
-    "the ReplayBundle's log reproduces the anchored root; every verdict names its transaction",
+    "the ReplayBundle (v2) reproduces the anchored root; every verdict names its transaction",
     res.ok &&
-      bundle.version === 1 &&
+      bundle.version === 2 &&
+      bundle.leaves.length === bundle.log.length &&
       bundleRoot === roots?.final_root?.root &&
       bundle.verdicts.every((v) => v.txHash),
     `${bundle.verdicts.length} verdicts, ${bundle.handler.length} Handler line(s), ring ${bundle.reveal.ring.length}`,

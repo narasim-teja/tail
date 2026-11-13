@@ -60,32 +60,93 @@ export async function jsonBody(c: Context): Promise<Obj> {
   return parseJson(await bodyBytes(c));
 }
 
+/** When a signed request may be dated, and how long its digest is remembered to refuse a replay. */
+export interface RequestWindow {
+  fromMs: number;
+  toMs: number;
+  keepUntilMs: number;
+}
+
+export interface SignedOptions {
+  /**
+   * The window for this request, once its body is read (a batch's window depends on its match).
+   * Default: within REQUEST_SKEW_MS of the relay's clock, remembered until REQUEST_SKEW_MS past
+   * the request time, which is as long as it could be accepted.
+   */
+  window?: (body: Obj, timeMs: number, nowMs: number) => RequestWindow;
+  /** `report`: a request seen before comes back with `repeat: true` instead of a 409. */
+  onRepeat?: "refuse" | "report";
+}
+
+export const defaultWindow = (_b: Obj, timeMs: number, nowMs: number): RequestWindow => ({
+  fromMs: nowMs - REQUEST_SKEW_MS,
+  toMs: nowMs + REQUEST_SKEW_MS,
+  keepUntilMs: timeMs + REQUEST_SKEW_MS,
+});
+
 /**
- * Checks a signed request (auth.ts) against the NEAR key the account enrolled with, refuses a
- * replay inside the freshness window, and returns the account and the parsed body.
+ * Signed requests (auth.ts) for the contract this relay serves. The digest names the contract
+ * and the account, so a signature made for another deployment, or for another account that
+ * shares the key, does not verify here.
+ *
+ * Requests that arrive inside a mesh carry envelope (routes/carry.ts) are dispatched through the
+ * app like direct ones; the carry route marks their Request objects here, and nothing else can,
+ * so a route can apply the carry rules only to what really came over the mesh.
  */
-export async function signedBody(
-  c: Context,
-  store: Store,
-  now = Date.now(),
-): Promise<{ account: string; body: Obj }> {
-  const account = c.req.header("x-tail-account");
-  const time = Number(c.req.header("x-tail-time"));
-  const sigB64 = c.req.header("x-tail-sig");
-  if (!account || !sigB64 || !Number.isSafeInteger(time)) throw new HttpError(401, "sign this request");
-  if (Math.abs(now - time) > REQUEST_SKEW_MS)
-    throw new HttpError(401, "request time is off; check the clock");
-  const device = store.device(account);
-  if (!device) throw new HttpError(401, "account not enrolled here");
-  const bytes = await bodyBytes(c);
-  const url = new URL(c.req.url);
-  const digest = requestDigest(c.req.method, url.pathname + url.search, time, bytes);
-  if (!verifyEd25519(device.near_pk, digest, new Uint8Array(Buffer.from(sigB64, "base64")))) {
-    throw new HttpError(401, "bad request signature");
+export class RequestAuth {
+  private readonly carried = new WeakSet<Request>();
+
+  constructor(
+    private readonly store: Store,
+    readonly contractId: string,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** Marks a request built from an opened carry envelope. */
+  markCarried(req: Request): Request {
+    this.carried.add(req);
+    return req;
   }
-  if (!store.firstSight(digest, time + REQUEST_SKEW_MS, now))
-    throw new HttpError(409, "request already seen");
-  return { account, body: parseJson(bytes) };
+
+  isCarried(c: Context): boolean {
+    return this.carried.has(c.req.raw);
+  }
+
+  /**
+   * Checks the signature against the NEAR key the account enrolled with, the request time
+   * against its window, and refuses (or reports) a request seen before. Returns the account and
+   * the parsed body.
+   */
+  async signed(c: Context, o: SignedOptions = {}): Promise<{ account: string; body: Obj; repeat: boolean }> {
+    const account = c.req.header("x-tail-account");
+    const time = Number(c.req.header("x-tail-time"));
+    const sigB64 = c.req.header("x-tail-sig");
+    if (!account || !sigB64 || !Number.isSafeInteger(time)) throw new HttpError(401, "sign this request");
+    const device = this.store.device(account);
+    if (!device) throw new HttpError(401, "account not enrolled here");
+    const bytes = await bodyBytes(c);
+    const url = new URL(c.req.url);
+    const digest = requestDigest({
+      contractId: this.contractId,
+      accountId: account,
+      method: c.req.method,
+      path: url.pathname + url.search,
+      timeMs: time,
+      body: bytes,
+    });
+    if (!verifyEd25519(device.near_pk, digest, new Uint8Array(Buffer.from(sigB64, "base64")))) {
+      throw new HttpError(401, "bad request signature");
+    }
+    const body = parseJson(bytes);
+    const now = this.now();
+    const w = (o.window ?? defaultWindow)(body, time, now);
+    if (time < w.fromMs || time > w.toMs) throw new HttpError(401, "request time is off; check the clock");
+    const repeat = !this.store.firstSight(digest, Math.max(w.keepUntilMs, time + REQUEST_SKEW_MS), now);
+    // `code` lets a client tell "already delivered" from a refusal without reading the message.
+    if (repeat && o.onRepeat !== "report")
+      throw new HttpError(409, "request already seen", { code: "duplicate" });
+    return { account, body, repeat };
+  }
 }
 
 export const field = {

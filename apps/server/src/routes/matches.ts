@@ -6,7 +6,7 @@ import { HttpError } from "../errors.ts";
 import type { Matches } from "../matches.ts";
 import type { Chain } from "../near.ts";
 import type { Circle } from "../referee.ts";
-import { field, signedBody } from "./util.ts";
+import { field, type RequestAuth } from "./util.ts";
 
 type Obj = Record<string, unknown>;
 
@@ -32,11 +32,14 @@ async function maySeeZone(view: ChainView, m: MatchRow, account: string): Promis
   return (await listed(false)) || (await listed(true));
 }
 
-export function matchRoutes(app: Hono, d: { store: Store; chain: Chain; view: ChainView; matches: Matches }) {
+export function matchRoutes(
+  app: Hono,
+  d: { store: Store; auth: RequestAuth; chain: Chain; view: ChainView; matches: Matches },
+) {
   // Signed by the host. {stake, duration_ms, zone, safehouses?, public_replay, min_players,
   // max_players, start_by_ms} → {match_id, zone_hash, code}
   app.post("/matches", async (c) => {
-    const { account, body: b } = await signedBody(c, d.store);
+    const { account, body: b } = await d.auth.signed(c);
     const now = Date.now();
     const zone = circle(field.obj(b, "zone"), "zone");
     const safehouses = field
@@ -89,7 +92,7 @@ export function matchRoutes(app: Hono, d: { store: Store; chain: Chain; view: Ch
   // before), and why the last Start failed, if it did.
   app.get("/matches/:id/zone", async (c) => {
     const id = field.matchId(c.req.param("id"));
-    const { account } = await signedBody(c, d.store);
+    const { account } = await d.auth.signed(c);
     const m = d.store.match(id);
     if (!m) throw new HttpError(404, "no such match");
     if (!(await maySeeZone(d.view, m, account))) throw new HttpError(403, "not in this match");
@@ -118,7 +121,7 @@ export function matchRoutes(app: Hono, d: { store: Store; chain: Chain; view: Ch
   // Signed by the host. → {players, keys: [{player, account_id, sealed}], start_ms, end_ms}
   app.post("/matches/:id/start", async (c) => {
     const id = field.matchId(c.req.param("id"));
-    const { account } = await signedBody(c, d.store);
+    const { account } = await d.auth.signed(c);
     const r = await d.matches.start(id, account);
     return c.json({ players: r.players, keys: r.keys, start_ms: r.startMs, end_ms: r.endMs });
   });

@@ -2,9 +2,16 @@
 //
 //   create (relay hosts on chain) → players join with their own keys → start: lock the lobby,
 //   referee `start`, apply Start, hand out sealed PlayerKeys → every TICK_MS: flush unapplied
-//   verdicts, voice issued hints, referee `tick` with the queued sealed batches and receipts,
-//   store everything it returned in one transaction, push HUDs, apply its verdicts → when the
-//   referee says `over`: `end`, apply End, `declassify`, keep the reveal for the replay.
+//   verdicts, voice issued hints (each sealed line to its asker only), referee `tick` with the
+//   queued sealed batches and the voice receipts, store everything it returned in one
+//   transaction, push HUDs, apply its verdicts with their consistency proofs → when the referee
+//   says `over`: `end`, apply End, `declassify` the sealed log, keep it and the reveal for the
+//   replay.
+//
+// Protocol v2: the relay never sees a log entry during play. It keeps the leaf hashes (which
+// reveal nothing, and serve inclusion and consistency proofs) and the referee's sealed copy of
+// the entries, and checks every root the referee reports, and every consistency proof it hands
+// over for the contract, against those leaves before storing anything.
 //
 // Invariants the loop keeps:
 // - At most one step per match runs at a time (OutLayer calls take 2–10 s; a second tick on the
@@ -22,6 +29,7 @@
 import type { Logger } from "@tail/log";
 import {
   decodeLogEntry,
+  decodeSignedVerdict,
   epochAt,
   equal,
   merkleLeaf,
@@ -30,6 +38,7 @@ import {
   TICK_MS,
   toHex,
   utf8,
+  verifyConsistency,
   Writer,
 } from "@tail/protocol";
 import { mintCode } from "./codes.ts";
@@ -43,6 +52,7 @@ import {
   type RawVerdict,
   type Referee,
   RefereeError,
+  type VerdictProof,
 } from "./referee.ts";
 
 /** Sealed batches per tick; the referee refuses more than 256. */
@@ -281,8 +291,8 @@ export class Matches {
     this.leasedTx(matchId, () => {
       this.d.store.setStarted(matchId, { startMs: started.startMs, endMs: started.endMs, players, keys });
       this.d.store.setState(matchId, started.state, 0);
-      this.d.store.appendLog(matchId, started.log);
-      this.storeVerdicts(matchId, started.verdicts);
+      this.d.store.appendLog(matchId, started);
+      this.storeVerdicts(matchId, started.verdicts, []);
       this.d.store.setPhase(matchId, "running");
     });
     for (const k of keys) {
@@ -406,7 +416,7 @@ export class Matches {
     const m = this.d.store.match(matchId);
     if (!m?.state || !m.players) throw new Error("running match has no state");
     const batches = this.d.store.queuedBatches(matchId, MAX_BATCHES_PER_TICK);
-    const voiced = this.d.store.hints(matchId, "voiced");
+    const voiced = this.d.store.voiceHints(matchId, "voiced");
     const t0 = performance.now();
     const r = await this.d.referee.tick({
       matchId: idBytes(matchId),
@@ -417,28 +427,21 @@ export class Matches {
     });
     const wallMs = Math.round(performance.now() - t0);
     const now = this.now();
-    // The relay holds the only full copy of the log; refuse to go on with a copy that differs.
-    this.checkLog(matchId, r.log, r.logSize, r.logRoot);
+    // The relay holds the only full copy of the leaves; refuse to go on with a copy that differs.
+    this.checkLog(matchId, r.leaves, r.verdicts, r.proofs, { size: r.logSize, root: r.logRoot });
     this.leasedTx(matchId, () => {
       this.d.store.setState(matchId, r.state, r.tickNo);
-      this.d.store.appendLog(matchId, r.log);
-      this.storeVerdicts(matchId, r.verdicts);
+      this.d.store.appendLog(matchId, r);
+      this.storeVerdicts(matchId, r.verdicts, r.proofs);
       this.d.store.markBatchesSent(
         batches.map((b) => b.id),
         r.tickNo,
       );
-      this.d.store.setHintStatus(
-        matchId,
-        voiced.map((h) => h.hint_id),
+      this.d.store.setVoiceStatus(
+        voiced.map((h) => h.id),
         "consumed",
       );
-      for (const h of r.hints) {
-        this.d.store.putHint(
-          matchId,
-          { hintId: h.hintId, asker: h.from, hint: h.hint, value: h.value, question: h.text ?? null },
-          now,
-        );
-      }
+      for (const h of r.hints) this.d.store.putVoiceHint(matchId, h.player, h.blob, now);
       for (const h of r.huds) this.d.store.putHud(matchId, h.player, r.tickNo, h.sealed);
       this.d.store.putTick(matchId, {
         tick_no: r.tickNo,
@@ -461,16 +464,10 @@ export class Matches {
       });
     }
     if (r.unopened.length) this.d.log.warn({ matchId, unopened: r.unopened }, "sealed batches did not open");
-    for (const x of r.rejected) {
-      if (typeof x["player"] === "number") {
-        this.d.hub.send(matchId, x["player"], { type: "rejected", match_id: matchId, detail: x });
-      }
-    }
-    for (const x of r.refused) {
-      if (typeof x["player"] === "number") {
-        this.d.hub.send(matchId, x["player"], { type: "refused", match_id: matchId, detail: x });
-      }
-    }
+    for (const x of r.rejected)
+      this.d.hub.send(matchId, x.player, { type: "rejected", match_id: matchId, detail: x });
+    for (const x of r.refused)
+      this.d.hub.send(matchId, x.player, { type: "refused", match_id: matchId, detail: x });
     this.d.log.info(
       {
         matchId,
@@ -493,7 +490,7 @@ export class Matches {
     if (!m?.state) throw new Error("ending match has no state");
     const haveEnd = this.d.store.verdicts(matchId).some((v) => v.kind === "End");
     if (!haveEnd) {
-      const voiced = this.d.store.hints(matchId, "voiced");
+      const voiced = this.d.store.voiceHints(matchId, "voiced");
       const r = await this.d.referee.end({
         matchId: idBytes(matchId),
         state: m.state,
@@ -502,15 +499,15 @@ export class Matches {
       });
       const end = r.verdicts.find((v) => v.v.body.kind === "End")?.v.body;
       if (end?.kind !== "End") throw new Error("referee end returned no End verdict");
-      // End carries the log before its own entry; the entries `end` returns come after it.
-      this.checkLog(matchId, [], Number(end.logSize), end.root);
+      // End anchors the log up to its own entry: the receipts `end` logs come before it, the
+      // End verdict's own entry after. The anchor check covers exactly that prefix.
+      this.checkLog(matchId, r.leaves, r.verdicts, r.proofs);
       this.leasedTx(matchId, () => {
         this.d.store.setState(matchId, r.state, m?.tick_no ?? 0);
-        this.d.store.appendLog(matchId, r.log);
-        this.storeVerdicts(matchId, r.verdicts);
-        this.d.store.setHintStatus(
-          matchId,
-          voiced.map((h) => h.hint_id),
+        this.d.store.appendLog(matchId, r);
+        this.storeVerdicts(matchId, r.verdicts, r.proofs);
+        this.d.store.setVoiceStatus(
+          voiced.map((h) => h.id),
           "consumed",
         );
       });
@@ -519,8 +516,12 @@ export class Matches {
     if (!(await this.flushVerdicts(matchId))) return false;
     m = this.d.store.match(matchId);
     if (!m?.reveal) {
-      const reveal = await this.d.referee.declassify(idBytes(matchId));
-      this.d.store.setReveal(matchId, reveal);
+      const d = await this.d.referee.declassify(idBytes(matchId), this.d.store.logSealed(matchId));
+      this.checkDeclassified(matchId, d.log);
+      this.d.store.tx(() => {
+        this.d.store.putLog(matchId, d.log);
+        this.d.store.setReveal(matchId, d.reveal);
+      });
     }
     if (!m?.trails_done) await this.declassifyTrails(matchId);
     this.d.store.setPhase(matchId, "ended");
@@ -531,15 +532,63 @@ export class Matches {
   }
 
   /**
-   * Checks that the stored log plus `added` has `size` entries and Merkle root `root`. Throws
-   * before anything is stored, so the step is retried rather than building on a broken copy.
+   * Checks the stored leaves plus `added`: that they number `whole.size` and have Merkle root
+   * `whole.root` when the referee reports the whole log (a tick does), and that every
+   * Checkpoint/End in `verdicts` anchors a prefix of them with a consistency proof the contract
+   * will accept. Throws before anything is stored, so the step is retried rather than building on
+   * a broken copy, and a verdict the contract would refuse never stalls the match.
    */
-  private checkLog(matchId: string, added: Uint8Array[], size: number, root: Uint8Array) {
-    const entries = [...this.d.store.log(matchId), ...added];
-    if (entries.length !== size)
-      throw new Error(`log copy has ${entries.length} entries, referee says ${size}`);
-    if (!equal(merkleRoot(entries.map((e) => merkleLeaf(decodeLogEntry(e)))), root)) {
+  private checkLog(
+    matchId: string,
+    added: Uint8Array[],
+    verdicts: RawVerdict[],
+    proofs: VerdictProof[],
+    whole?: { size: number; root: Uint8Array },
+  ) {
+    const leaves = [...this.d.store.leaves(matchId), ...added];
+    if (whole && leaves.length !== whole.size)
+      throw new Error(`log copy has ${leaves.length} leaves, referee says ${whole.size}`);
+    if (whole && !equal(merkleRoot(leaves), whole.root))
       throw new Error("log copy does not match the referee's root");
+    let from = this.anchoredSize(matchId);
+    const anchors = verdicts.flatMap(({ v }) =>
+      v.body.kind === "Checkpoint" || v.body.kind === "End"
+        ? [{ seq: v.seq, size: Number(v.body.logSize), root: v.body.root }]
+        : [],
+    );
+    for (const a of anchors) {
+      const p = proofs.filter((x) => x.seq === a.seq);
+      if (p.length !== 1 || !p[0]) throw new Error(`verdict ${a.seq} has ${p.length} consistency proofs`);
+      if (p[0].fromSize !== from)
+        throw new Error(`verdict ${a.seq}'s proof starts at ${p[0].fromSize}, the chain anchored ${from}`);
+      if (a.size > leaves.length || !equal(merkleRoot(leaves.slice(0, a.size)), a.root))
+        throw new Error(`verdict ${a.seq} anchors a root that is not the relay's log`);
+      if (!verifyConsistency(from, a.size, merkleRoot(leaves.slice(0, from)), a.root, p[0].path))
+        throw new Error(`verdict ${a.seq}'s consistency proof does not verify`);
+      from = a.size;
+    }
+    if (proofs.length !== anchors.length) throw new Error("a consistency proof names no Checkpoint or End");
+  }
+
+  /** The log size of the match's last stored Checkpoint/End (what the contract anchors), or 0. */
+  private anchoredSize(matchId: string): number {
+    let size = 0;
+    for (const v of this.d.store.verdicts(matchId)) {
+      if (v.kind !== "Checkpoint" && v.kind !== "End") continue;
+      const body = decodeSignedVerdict(v.raw).body;
+      if (body.kind === "Checkpoint" || body.kind === "End") size = Number(body.logSize);
+    }
+    return size;
+  }
+
+  /** The declassified log must be exactly the entries behind the leaves the relay kept. */
+  private checkDeclassified(matchId: string, log: Uint8Array[]) {
+    const leaves = this.d.store.leaves(matchId);
+    if (log.length !== leaves.length)
+      throw new Error(`declassified log has ${log.length} entries, the relay holds ${leaves.length} leaves`);
+    for (const [i, e] of log.entries()) {
+      if (!equal(merkleLeaf(decodeLogEntry(e)), leaves[i] as Uint8Array))
+        throw new Error(`declassified entry ${i} does not hash to its leaf`);
     }
   }
 
@@ -574,9 +623,16 @@ export class Matches {
     );
   }
 
-  private storeVerdicts(matchId: string, verdicts: RawVerdict[]) {
+  private storeVerdicts(matchId: string, verdicts: RawVerdict[], proofs: VerdictProof[]) {
     for (const { raw, v } of verdicts) {
-      this.d.store.putVerdict(matchId, { seq: v.seq, kind: v.body.kind, raw, callId: hexId(v.callId) });
+      const proof = proofs.find((p) => p.seq === v.seq) ?? null;
+      this.d.store.putVerdict(matchId, {
+        seq: v.seq,
+        kind: v.body.kind,
+        raw,
+        callId: hexId(v.callId),
+        proof,
+      });
     }
   }
 
@@ -600,7 +656,12 @@ export class Matches {
       }
       const batch = left.slice(0, MAX_VERDICTS_PER_APPLY);
       try {
-        const tx = await this.d.chain.apply(batch.map((v) => v.raw));
+        const tx = await this.d.chain.apply(
+          batch.map((v) => v.raw),
+          batch.flatMap((v) =>
+            v.proof ? [{ seq: v.seq, from_size: String(v.proof.fromSize), path: v.proof.path.map(b64) }] : [],
+          ),
+        );
         this.d.store.setVerdictTx(
           matchId,
           batch.map((v) => v.seq),
@@ -629,32 +690,34 @@ export class Matches {
     }
   }
 
-  /** Turns issued hints into Handler lines and receipts for the next tick. */
+  /**
+   * Has the referee voice each issued hint. The line comes back sealed and signed for the asker,
+   * so it goes to the asker's HUD sockets only; its receipt goes into the next tick.
+   */
   private async voicePending(matchId: string) {
-    for (const h of this.d.store.hints(matchId, "pending")) {
+    for (const h of this.d.store.voiceHints(matchId, "pending")) {
       if (this.now() - h.issued_ms > VOICE_WINDOW_MS) {
-        this.d.store.setHintStatus(matchId, [h.hint_id], "dropped");
+        this.d.store.setVoiceStatus([h.id], "dropped");
         continue;
       }
+      const state = this.d.store.match(matchId)?.state;
+      if (!state) return;
       try {
-        const v = await this.d.referee.voice({
-          hintId: h.hint_id,
-          hint: h.hint,
-          value: h.value,
-          ...(h.question ? { question: h.question } : {}),
+        const v = await this.d.referee.voice({ state, blob: h.blob });
+        if (v.player !== h.asker) {
+          this.d.log.error({ matchId, asker: h.asker, player: v.player }, "voice answered another player");
+          this.d.store.setVoiceStatus([h.id], "dropped");
+          continue;
+        }
+        this.d.store.setVoiced(h.id, {
+          sealed: v.sealed,
+          signedText: v.signedText,
+          leaves: v.leaves.map(toHex),
+          receipt: v.logSealed,
         });
-        this.d.store.setHintVoiced(matchId, h.hint_id, v);
-        this.d.hub.send(matchId, h.asker, {
-          type: "handler",
-          match_id: matchId,
-          hint_id: h.hint_id,
-          text: v.text,
-        });
+        this.d.hub.send(matchId, h.asker, { type: "handler", match_id: matchId, sealed: b64(v.sealed) });
       } catch (e) {
-        this.d.log.warn(
-          { matchId, hintId: h.hint_id, err: (e as Error).message },
-          "voice failed; will retry",
-        );
+        this.d.log.warn({ matchId, hint: h.id, err: (e as Error).message }, "voice failed; will retry");
       }
     }
   }

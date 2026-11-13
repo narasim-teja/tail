@@ -2,6 +2,12 @@
 // everything the replay app needs to re-verify it in the browser. Bytes are base64 (b64) or
 // lowercase hex as named. The bundle is untrusted input: the replay recomputes every hash,
 // root and signature from it and checks them against NEAR before showing a verified mark.
+//
+// Two versions are served. `ReplayBundle` (version 1) is a match judged before protocol v2: the
+// relay held the plaintext log during play. `ReplayBundleV2` is a match judged under protocol v2:
+// during play the relay held only leaf hashes and log entries sealed to the referee, and the
+// plaintext log exists only after End, when the referee declassified it. The relay keeps serving
+// a v1 match's bundle as it was.
 
 export interface ReplayCircle {
   latE7: number;
@@ -59,3 +65,51 @@ export interface ReplayBundle {
 }
 
 export const REPLAY_VERSION = 1 as const;
+
+/** Per player, in index order: what kind of device it was and whether the referee checked its attestation. */
+export interface ReplayDevice {
+  accountId: string;
+  /** `ghost`: a simulated test player (testnet only). Null when the relay has no record. */
+  kind: "phone" | "ghost" | null;
+  /**
+   * What the referee said when it registered the device: true it checked an Apple attestation,
+   * false it took the device unattested (a ghost). Null when not recorded. The relay's word only:
+   * the `Enrolled` log entries carry the referee's own record, under the anchored root.
+   */
+  attested: boolean | null;
+}
+
+export interface ReplayBundleV2 {
+  version: 2;
+  match: ReplayBundle["match"];
+  referee: ReplayBundle["referee"];
+  /** Every signed verdict (protocol v2, chained by `prev`) in seq order, with its NEAR transaction. */
+  verdicts: { signed: string; txHash: string | null }[];
+  /**
+   * The RFC 6962 leaf hash of every log entry, lowercase hex, in order: what the relay held
+   * during play and served inclusion and consistency proofs from. `leaves[i]` must equal
+   * `merkleLeaf(log[i])`.
+   */
+  leaves: string[];
+  /**
+   * Every log entry in order (b64 borsh LogEntry), declassified by the referee after End. Its
+   * Merkle root at each anchored size must match the chain.
+   */
+  log: string[];
+  /** As in version 1: declassified batches (b64 borsh Batch), each one a logged `Batch` entry. */
+  batches: string[];
+  reveal: ReplayBundle["reveal"];
+  devices: ReplayDevice[];
+  /**
+   * Hints the Handler answered. The words were sealed to the asker, so the relay never had them;
+   * what is public is `signedText`, the message the NEAR AI signature covers
+   * (`model:sha256(request):sha256(response)`), or null for a template line. The `HintReceipt`
+   * log entry with this `hintId` holds the signature, the signing address and SHA256(text).
+   */
+  handler: { hintId: number; signedText: string | null }[];
+}
+
+export const REPLAY_VERSION_V2 = 2 as const;
+
+/** What GET /replay/:id returns: version 1 for matches before protocol v2, version 2 after. */
+export type AnyReplayBundle = ReplayBundle | ReplayBundleV2;

@@ -6,11 +6,23 @@
 // replayDigest(nonce, match_id, account_id) (auth.ts). A nonce works once, for 2 minutes.
 // A private match's trails are deleted a while after End (retention.ts); its replay then
 // answers 410 rather than a bundle that silently lacks them.
+//
+// A match judged under protocol v2 is served as a version 2 bundle: the leaves the relay held
+// during play, the log the referee declassified after End, and for each Handler line only the
+// public message its model signature covers (the words were sealed to the asker). A match from
+// before is served as the version 1 bundle it always was.
 
-import type { ReplayBundle } from "@tail/protocol";
+import {
+  decodeLogEntry,
+  fromHex,
+  type ReplayBundle,
+  type ReplayBundleV2,
+  type ReplayDevice,
+  toHex,
+} from "@tail/protocol";
 import type { Hono } from "hono";
 import { replayDigest, verifyEd25519 } from "../auth.ts";
-import type { Store } from "../db.ts";
+import type { MatchRow, Store } from "../db.ts";
 import { HttpError } from "../errors.ts";
 import type { Chain } from "../near.ts";
 import { field, jsonBody } from "./util.ts";
@@ -90,13 +102,7 @@ export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: R
 
     const reveal = m.reveal;
     const ring = Array.isArray(reveal["ring"]) ? (reveal["ring"] as unknown[]).map(String) : [];
-    // Beside the protocol's bundle: per player, in index order, what kind of device it was and
-    // whether the referee itself checked its Apple attestation (false: a ghost taken unattested;
-    // null: not recorded). The replay labels unattested players with it.
-    const bundle: ReplayBundle & {
-      devices: { accountId: string; kind: "phone" | "ghost" | null; attested: boolean | null }[];
-    } = {
-      version: 1,
+    const common = {
       match: {
         id,
         contract: d.meta.contract,
@@ -126,7 +132,9 @@ export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: R
         vrfSignature: String(reveal["vrf_signature"] ?? ""),
         ring,
       },
-      devices: m.players.map((accountId) => {
+      // Per player, in index order: what kind of device it was and whether the referee itself
+      // checked its Apple attestation. The replay labels unattested players with it.
+      devices: m.players.map((accountId): ReplayDevice => {
         const dev = d.store.device(accountId);
         return {
           accountId,
@@ -134,6 +142,11 @@ export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: R
           attested: dev?.attested === null || dev?.attested === undefined ? null : dev.attested === 1,
         };
       }),
+    };
+    if (m.protocol === 2) return c.json(bundleV2(d.store, m, common));
+    const bundle: ReplayBundle & { devices: ReplayDevice[] } = {
+      version: 1,
+      ...common,
       handler: d.store.voicedHints(id).map((h) => ({
         hintId: h.hint_id,
         text: h.text ?? "",
@@ -143,4 +156,29 @@ export function replayRoutes(app: Hono, d: { store: Store; chain: Chain; meta: R
     };
     return c.json(bundle);
   });
+}
+
+/**
+ * Version 2: the leaves beside the declassified log, and each answered hint by the `hintId` of
+ * its receipt. The relay never learnt a hint's id (the hint was sealed to the referee); it finds
+ * it by looking up the voice answer's leaf in the declassified log. A line whose receipt the
+ * referee did not log (it came too late) has nothing to be checked against, so it is left out.
+ */
+function bundleV2(
+  store: Store,
+  m: MatchRow,
+  common: Omit<ReplayBundleV2, "version" | "leaves" | "handler">,
+): ReplayBundleV2 {
+  const leaves = store.leaves(m.match_id);
+  const log = store.log(m.match_id);
+  const handler: ReplayBundleV2["handler"] = [];
+  for (const h of store.voiceHints(m.match_id, "answered")) {
+    for (const leaf of h.leaves ?? []) {
+      const i = store.leafIndex(m.match_id, fromHex(leaf), leaves.length);
+      const e = i === undefined ? undefined : log[i];
+      const entry = e ? decodeLogEntry(e) : undefined;
+      if (entry?.kind === "HintReceipt") handler.push({ hintId: entry.hintId, signedText: h.signed_text });
+    }
+  }
+  return { version: 2, ...common, leaves: leaves.map(toHex), handler };
 }

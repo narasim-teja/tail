@@ -2,8 +2,10 @@
 // key the relay installed on their account at enrolment (the phone keeps it in the Keychain).
 // Two shapes, both ed25519 over a SHA-256 digest with its own domain string:
 //
-//   request:  SHA256("tail/relay-req/v1" ‖ borsh(method) ‖ borsh(path) ‖ u64le(time_ms) ‖ SHA256(body))
-//             headers x-tail-account, x-tail-time, x-tail-sig (base64, 64 bytes)
+//   request:  SHA256("tail/relay-req/v2" ‖ borsh(contract_id) ‖ borsh(account_id) ‖ borsh(METHOD)
+//                    ‖ borsh(path) ‖ u64le(time_ms) ‖ SHA256(body))
+//             headers x-tail-account, x-tail-time, x-tail-sig (base64, 64 bytes); contract_id is
+//             the contract this relay serves (GET /health `contract`)
 //   HUD:      SHA256("tail/hud-auth/v1" ‖ nonce[32] ‖ match_id[16] ‖ borsh(account_id))
 //   replay:   SHA256("tail/replay-auth/v1" ‖ nonce[32] ‖ match_id[16] ‖ borsh(account_id))
 //
@@ -33,18 +35,26 @@ export function verifyEd25519(publicKey: Uint8Array, digest: Uint8Array, sig: Ui
   }
 }
 
+/** A signed request as the phone sends it, directly or inside a mesh carry envelope. */
+export interface SignedRequest {
+  contractId: string;
+  accountId: string;
+  method: string;
+  path: string;
+  body: Uint8Array;
+  timeMs?: number;
+}
+
+export function signRequest(r: SignedRequest, secretKey: Uint8Array): { timeMs: number; sig: Uint8Array } {
+  const timeMs = r.timeMs ?? Date.now();
+  return { timeMs, sig: ed25519.sign(requestDigest({ ...r, timeMs }), secretKey) };
+}
+
 /** Client side (ghosts, tests, and what the phone must do): headers for a signed request. */
-export function signRequestHeaders(
-  accountId: string,
-  secretKey: Uint8Array,
-  method: string,
-  path: string,
-  body: Uint8Array,
-  timeMs = Date.now(),
-): Record<string, string> {
-  const sig = ed25519.sign(requestDigest(method, path, timeMs, body), secretKey);
+export function signRequestHeaders(r: SignedRequest, secretKey: Uint8Array): Record<string, string> {
+  const { timeMs, sig } = signRequest(r, secretKey);
   return {
-    "x-tail-account": accountId,
+    "x-tail-account": r.accountId,
     "x-tail-time": String(timeMs),
     "x-tail-sig": Buffer.from(sig).toString("base64"),
   };

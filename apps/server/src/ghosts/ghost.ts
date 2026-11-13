@@ -1,9 +1,11 @@
 // A ghost player: a simulated phone that talks to the relay exactly as the app does, over HTTP
 // and the HUD WebSocket. It has the three keys a phone has (a NEAR function-call key, an X25519
 // box key, a P-256 App Attest-style key), builds real batches with real beacon tokens, chains
-// them, asserts them (assertion.ts) and seals them to the referee. The only thing it skips is
-// Apple's attestation at enrolment (the testing door): it enrols in-process, through the relay's
-// own Enrolment, because no HTTP route enrols a device without an attestation.
+// them, asserts them (assertion.ts) and seals them to the referee. It checks the referee's
+// signature on everything sealed to it (keys, HUDs, Handler lines), and can hand a signed request
+// to the mesh as a carry envelope. The only thing it skips is Apple's attestation at enrolment
+// (the testing door): it enrols in-process, through the relay's own Enrolment, because no HTTP
+// route enrols a device without an attestation.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
@@ -12,21 +14,23 @@ import {
   batchClientDataHash,
   batchHash,
   beaconToken,
-  decodeHud,
-  decodePlayerKeys,
   encodeBatchEnvelope,
   epochAt,
   type Fix,
   type Hud,
-  open,
+  openSignedHud,
+  openSignedPlayerKeys,
+  openSignedVoiceLine,
   type PlayerKeys,
+  SealContext,
   type Sighting,
   seal,
+  sealCarry,
   tagMatches,
   toHex,
 } from "@tail/protocol";
 import type { JsonRpcProvider } from "near-api-js";
-import { hudDigest, signRequestHeaders } from "../auth.ts";
+import { hudDigest, signRequest, signRequestHeaders } from "../auth.ts";
 import type { Enrolment } from "../enroll.ts";
 import { joinMatchWithKey } from "../near.ts";
 import { signAssertion } from "./assertion.ts";
@@ -34,6 +38,12 @@ import { newGhostKeys } from "./keys.ts";
 
 const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
 const unb64 = (s: string) => new Uint8Array(Buffer.from(s, "base64"));
+
+/** What a phone pins before it talks to a relay: the contract it plays on and that contract's referee key. */
+export interface GhostTrust {
+  contract: string;
+  refereePk: Uint8Array;
+}
 
 export class Ghost {
   private readonly k = newGhostKeys();
@@ -58,13 +68,18 @@ export class Ghost {
   constructor(
     readonly handle: string,
     private readonly relayUrl: string,
+    private readonly trust: GhostTrust,
   ) {}
+
+  private signed(method: string, path: string, bytes: Uint8Array) {
+    return { contractId: this.trust.contract, accountId: this.accountId, method, path, body: bytes };
+  }
 
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const bytes = new TextEncoder().encode(body === undefined ? "" : JSON.stringify(body));
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.accountId)
-      Object.assign(headers, signRequestHeaders(this.accountId, this.nearSeed, method, path, bytes));
+      Object.assign(headers, signRequestHeaders(this.signed(method, path, bytes), this.nearSeed));
     const res = await fetch(`${this.relayUrl}${path}`, {
       method,
       headers,
@@ -108,14 +123,12 @@ export class Ghost {
           );
           ws.send(JSON.stringify({ type: "auth", sig: b64(ed25519.sign(digest, this.nearSeed)) }));
         } else if (m["type"] === "ready") resolve();
-        else if (m["type"] === "keys")
-          this.keys = decodePlayerKeys(open(this.boxSk, unb64(String(m["sealed"])), "tail/keys"));
-        else if (m["type"] === "hud") {
-          const hud = decodeHud(open(this.boxSk, unb64(String(m["sealed"])), "tail/hud"));
-          if (hud.tick > (this.huds.at(-1)?.tick ?? 0)) this.huds.push(hud);
-          if (hud.status === 1) this.out = true;
-        } else if (m["type"] === "handler") this.handlerLines.push(String(m["text"]));
-        else if (m["type"] === "rejected") this.rejections.push(m);
+        else if (m["type"] === "keys") this.setKeys(String(m["sealed"]));
+        else if (m["type"] === "hud") this.takeHud(String(m["sealed"]));
+        else if (m["type"] === "handler") {
+          const line = openSignedVoiceLine(this.boxSk, unb64(String(m["sealed"])), this.trust.refereePk);
+          this.handlerLines.push(line.text);
+        } else if (m["type"] === "rejected") this.rejections.push(m);
       };
       ws.onclose = (ev) => reject(new Error(`HUD socket closed: ${ev.code} ${ev.reason}`));
       ws.onerror = () => reject(new Error("HUD socket error"));
@@ -126,8 +139,33 @@ export class Ghost {
     this.ws?.close();
   }
 
+  /** Opens SignedPlayerKeys sealed to this ghost; throws unless the pinned referee signed them. */
   setKeys(sealed: string) {
-    this.keys = decodePlayerKeys(open(this.boxSk, unb64(sealed), "tail/keys"));
+    this.keys = openSignedPlayerKeys(this.boxSk, unb64(sealed), this.trust.refereePk);
+  }
+
+  /** Opens a SignedHud, as a phone does: also from a carry answer (`hud`). */
+  takeHud(sealed: string) {
+    const hud = openSignedHud(this.boxSk, unb64(sealed), this.trust.refereePk);
+    if (hud.tick > (this.huds.at(-1)?.tick ?? 0)) this.huds.push(hud);
+    if (hud.status === 1) this.out = true;
+  }
+
+  /**
+   * A signed request sealed to the relay's carry key, for another phone to post to /carry: what
+   * a phone without signal hands to the mesh.
+   */
+  carried(method: string, path: string, body: unknown, relayBoxPk: Uint8Array): Uint8Array {
+    const bytes = new TextEncoder().encode(JSON.stringify(body));
+    const { timeMs, sig } = signRequest(this.signed(method, path, bytes), this.nearSeed);
+    return sealCarry(relayBoxPk, {
+      account: this.accountId,
+      timeMs: BigInt(timeMs),
+      method,
+      path,
+      body: bytes,
+      sig,
+    });
   }
 
   private mustKeys(): PlayerKeys {
@@ -198,6 +236,6 @@ export class Ghost {
     const assertion = signAssertion(this.attestSk, batchClientDataHash(batch), appId, this.counter);
     this.seq++;
     this.prev = batchHash(batch);
-    return seal(refereeBoxPk, encodeBatchEnvelope({ batch, assertion }), "tail/batch");
+    return seal(refereeBoxPk, encodeBatchEnvelope({ batch, assertion }), SealContext.batch);
   }
 }

@@ -5,6 +5,7 @@ import { verifyAttestation as appleVerify, type Environment } from "@tail/appatt
 import type { Logger } from "@tail/log";
 import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
+import type { CarryKeys } from "./carry.ts";
 import { ChainView } from "./chainview.ts";
 import type { Store } from "./db.ts";
 import { Enrolment, type VerifyAttestation } from "./enroll.ts";
@@ -16,11 +17,14 @@ import type { Chain } from "./near.ts";
 import { type Referee, RefereeError, type RefereeHealth, RefereeUnavailableError } from "./referee.ts";
 import { DEFAULT_RETENTION_HOURS, Retention } from "./retention.ts";
 import { batchRoutes } from "./routes/batch.ts";
+import { carryRoutes } from "./routes/carry.ts";
 import { ghostRoutes, topupRoutes } from "./routes/dev.ts";
 import { enrollRoutes } from "./routes/enroll.ts";
 import { hudRoutes } from "./routes/hud.ts";
 import { matchRoutes } from "./routes/matches.ts";
+import { proofRoutes } from "./routes/proofs.ts";
 import { type ReplayMeta, replayRoutes } from "./routes/replay.ts";
+import { RequestAuth } from "./routes/util.ts";
 
 export interface RelayDeps {
   store: Store;
@@ -31,8 +35,13 @@ export interface RelayDeps {
   appId: string;
   environment: Environment;
   token: string;
-  /** What the replay bundle names: contract, network, referee project and API. */
+  /**
+   * What the replay bundle names: contract, network, referee project and API. `contract` is also
+   * what every signed request names (auth.ts), and what GET /health tells the phone.
+   */
   replay: ReplayMeta;
+  /** The relay's mesh carry keys (carry.ts): box key for envelopes, ed25519 key for receipts. */
+  carryKeys: CarryKeys;
   /** NEAR_NETWORK=testnet: mounts POST /dev/topup. */
   testnet: boolean;
   /**
@@ -82,6 +91,8 @@ export function createRelay(d: RelayDeps) {
   });
   const { upgradeWebSocket, websocket } = createBunWebSocket();
   const now = d.now ?? Date.now;
+  // Request freshness is wall-clock time, like the phone's signature on it, not the loop's clock.
+  const auth = new RequestAuth(d.store, d.replay.contract);
   const view = new ChainView(d.chain, now, d.chainViewMs);
   const retention = new Retention({
     store: d.store,
@@ -129,8 +140,9 @@ export function createRelay(d: RelayDeps) {
     const r = d.refereeHealth?.();
     return c.json({
       ok: true,
-      // The contract this relay plays on. Phones keep their own setting as the trust anchor and
-      // only use this to notice a mismatch (and offer to switch), never to adopt it silently.
+      // The contract this relay plays on, which every signed request names. Phones keep their own
+      // setting as the trust anchor and only use this to notice a mismatch (and offer to
+      // switch), never to adopt it silently.
       contract: d.replay.contract,
       test_players: d.allowGhosts,
       ...(r
@@ -157,11 +169,13 @@ export function createRelay(d: RelayDeps) {
     return c.json(await pubkeys);
   });
   enrollRoutes(app, enrolment);
-  matchRoutes(app, { store: d.store, chain: d.chain, view, matches });
-  batchRoutes(app, { store: d.store, matches });
+  matchRoutes(app, { store: d.store, auth, chain: d.chain, view, matches });
+  proofRoutes(app, { store: d.store });
+  batchRoutes(app, { store: d.store, auth, matches });
+  carryRoutes(app, { store: d.store, auth, keys: d.carryKeys, now });
   hudRoutes(app, { store: d.store, hub, upgradeWebSocket });
   replayRoutes(app, { store: d.store, chain: d.chain, meta: d.replay });
-  if (d.testnet) topupRoutes(app, { store: d.store, chain: d.chain, now });
+  if (d.testnet) topupRoutes(app, { store: d.store, auth, chain: d.chain, now });
   if (d.allowGhosts) {
     const filler = new GhostFiller({
       store: d.store,
@@ -171,7 +185,7 @@ export function createRelay(d: RelayDeps) {
       token: d.token,
       ...(d.now ? { now: d.now } : {}),
     });
-    ghostRoutes(app, { store: d.store, filler });
+    ghostRoutes(app, { auth, filler });
   }
 
   return { app, websocket, matches, enrolment, hub, retention };

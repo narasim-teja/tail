@@ -42,6 +42,8 @@ export interface Config {
   localReferee: { bin: string; dir: string } | null;
   /** How long after End a private match's sealed batches and trails are kept (retention.ts). */
   retentionMs: number;
+  /** Where the relay's own mesh carry keys live (carry.ts); generated there on first start. */
+  keysDir: string;
 }
 
 export class ConfigError extends Error {
@@ -136,6 +138,8 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
           }
         : null,
     retentionMs: retentionHours * 3_600_000,
+    // Private keys: under the repo's ignored .keys/, never next to the relay's data.
+    keysDir: opt("RELAY_KEYS_DIR", new URL("../../../.keys/relay", import.meta.url).pathname),
   };
 }
 
@@ -156,6 +160,7 @@ export function describeConfig(c: Config) {
     port: c.port,
     allowGhosts: c.allowGhosts,
     retentionHours: c.retentionMs / 3_600_000,
+    keysDir: c.keysDir,
   };
 }
 

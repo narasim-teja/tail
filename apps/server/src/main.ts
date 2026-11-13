@@ -5,6 +5,7 @@
 import { createLogger } from "@tail/log";
 import { toHex } from "@tail/protocol";
 import { createRelay } from "./app.ts";
+import { loadCarryKeys } from "./carry.ts";
 import { type Config, ConfigError, describeConfig, loadConfig, loadRepoEnv } from "./config.ts";
 import { Store } from "./db.ts";
 import { NearChain } from "./near.ts";
@@ -20,6 +21,8 @@ export function startRelay(config: Config) {
   // The client keeps call stats and spend; the guard in front of it is what the relay calls.
   const refereeClient = makeReferee(config);
   const referee = new GuardedReferee(refereeClient, config.refereeMode);
+  const carry = loadCarryKeys(config.keysDir);
+  if (carry.created) log.info({ dir: config.keysDir }, "made new mesh carry keys");
   const relay = createRelay({
     store,
     chain,
@@ -36,6 +39,7 @@ export function startRelay(config: Config) {
       outlayerApi: config.outlayerApi,
       refereeKind: config.refereeMode,
     },
+    carryKeys: carry.keys,
     refereeHealth: () => referee.health(),
     testnet: config.network === "testnet",
     allowGhosts: config.allowGhosts,

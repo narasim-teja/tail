@@ -1,11 +1,15 @@
 // Fan-out of per-player messages to authenticated HUD sockets. A message for (match, player)
-// reaches only sockets that proved that player's NEAR key (routes/hud.ts). HUDs are sealed to
-// the player's box key; the hub only routes them.
+// reaches only sockets that proved that player's NEAR key (routes/hud.ts). Keys, HUDs and
+// Handler lines are signed by the referee and sealed to the player's box key; the hub only
+// routes them.
 
 export type HudMessage =
+  /** SignedPlayerKeys sealed to the player (openSignedPlayerKeys). */
   | { type: "keys"; match_id: string; player: number; sealed: string }
+  /** SignedHud sealed to the player (openSignedHud). */
   | { type: "hud"; match_id: string; tick: number; sealed: string }
-  | { type: "handler"; match_id: string; hint_id: number; text: string }
+  /** The Handler's line for the player's own hint: SignedVoiceLine sealed to them (openSignedVoiceLine). */
+  | { type: "handler"; match_id: string; sealed: string }
   | { type: "rejected"; match_id: string; detail: Record<string, unknown> }
   | { type: "refused"; match_id: string; detail: Record<string, unknown> }
   | { type: "over"; match_id: string };

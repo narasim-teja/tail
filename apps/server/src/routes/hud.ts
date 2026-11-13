@@ -1,7 +1,8 @@
 // GET /hud?match_id=…&account_id=… (WebSocket). The relay sends a fresh 32-byte challenge; the
 // phone answers with its NEAR key's signature over hudDigest(nonce, match_id, account_id)
 // (auth.ts). Only then does the socket receive that player's messages (hub.ts): the sealed
-// PlayerKeys, the latest sealed HUD, then every new HUD, Handler lines and rejections.
+// PlayerKeys, the latest sealed HUD and the Handler lines voiced so far for the player's own
+// hints, then every new HUD, Handler line and rejection.
 
 import type { Hono } from "hono";
 import type { UpgradeWebSocket } from "hono/ws";
@@ -84,6 +85,18 @@ export function hudRoutes(
                 match_id: matchId,
                 tick: hud.tick_no,
                 sealed: Buffer.from(hud.sealed).toString("base64"),
+              }),
+            );
+          }
+          // The Handler's lines for this player's own hints, so a phone that was offline when one
+          // was voiced still gets it. Each is sealed to this player; the phone dedupes by hint id.
+          for (const h of d.store.voiceHints(matchId, "answered")) {
+            if (h.asker !== player || !h.sealed) continue;
+            ws.send(
+              JSON.stringify({
+                type: "handler",
+                match_id: matchId,
+                sealed: Buffer.from(h.sealed).toString("base64"),
               }),
             );
           }

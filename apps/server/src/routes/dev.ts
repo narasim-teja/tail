@@ -9,12 +9,15 @@ import { HttpError } from "../errors.ts";
 import type { GhostFiller } from "../ghosts/fill.ts";
 import type { Chain } from "../near.ts";
 import { cappedTopUp, MAX_TOPUP } from "../topup.ts";
-import { field, signedBody } from "./util.ts";
+import { field, type RequestAuth } from "./util.ts";
 
-export function topupRoutes(app: Hono, d: { store: Store; chain: Chain; now: () => number }) {
+export function topupRoutes(
+  app: Hono,
+  d: { store: Store; auth: RequestAuth; chain: Chain; now: () => number },
+) {
   // Signed by an enrolled account. {account_id, amount} → {account_id, credited}
   app.post("/dev/topup", async (c) => {
-    const { account, body } = await signedBody(c, d.store);
+    const { account, body } = await d.auth.signed(c);
     const target = field.str(body, "account_id", 64);
     const amount = field.amount(body, "amount");
     if (amount === 0n || amount > MAX_TOPUP) throw new HttpError(400, `amount: 1 to ${MAX_TOPUP}`);
@@ -24,10 +27,10 @@ export function topupRoutes(app: Hono, d: { store: Store; chain: Chain; now: () 
   });
 }
 
-export function ghostRoutes(app: Hono, d: { store: Store; filler: GhostFiller }) {
+export function ghostRoutes(app: Hono, d: { auth: RequestAuth; filler: GhostFiller }) {
   // Signed by the lobby's host. {match_id} → {account_id} of the test player now in the lobby.
   app.post("/dev/ghosts/fill", async (c) => {
-    const { account, body } = await signedBody(c, d.store);
+    const { account, body } = await d.auth.signed(c);
     return c.json(await d.filler.fill(field.matchId(field.str(body, "match_id", 32)), account));
   });
 }

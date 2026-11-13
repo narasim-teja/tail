@@ -1,7 +1,9 @@
 // A ghost builds what a phone builds: a chained, asserted batch sealed to the referee box key,
-// with sightings only of tokens from its own match.
+// with sightings only of tokens from its own match; it takes only keys the pinned referee signed;
+// and it can hand a v2-signed request to the mesh.
 
 import { describe, expect, test } from "bun:test";
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { p256 } from "@noble/curves/nist.js";
 import {
   batchClientDataHash,
@@ -11,10 +13,13 @@ import {
   decodeBatchEnvelope,
   derivePlayerKey,
   deriveTagKey,
-  encodePlayerKeys,
   equal,
   open,
-  seal,
+  openCarry,
+  requestDigest,
+  sealSignedPlayerKeys,
+  signPlayerKeys,
+  verifyEd25519,
 } from "@tail/protocol";
 import { decode } from "cbor-x";
 import { Ghost } from "../src/ghosts/ghost.ts";
@@ -23,9 +28,11 @@ import { positionAt } from "../src/ghosts/trace.ts";
 const km = new Uint8Array(32).fill(3);
 const startMs = 1_700_000_000_000;
 const refereeSk = new Uint8Array(32).fill(9);
+const signingSk = new Uint8Array(32).fill(8);
+const trust = { contract: "tail.relay.testnet", refereePk: ed25519.getPublicKey(signingSk) };
 
-function keyed(player: number) {
-  const g = new Ghost(`ghost-${player}`, "http://relay.invalid");
+function keyed(player: number, signer = signingSk) {
+  const g = new Ghost(`ghost-${player}`, "http://relay.invalid", trust);
   const keys = {
     matchId: new Uint8Array(16).fill(1),
     player,
@@ -35,7 +42,9 @@ function keyed(player: number) {
     kPlayer: derivePlayerKey(km, player),
     target: "someone",
   };
-  g.setKeys(Buffer.from(seal(boxPublicKey(g.boxSk), encodePlayerKeys(keys), "tail/keys")).toString("base64"));
+  g.setKeys(
+    Buffer.from(sealSignedPlayerKeys(boxPublicKey(g.boxSk), signPlayerKeys(keys, signer))).toString("base64"),
+  );
   return g;
 }
 
@@ -91,6 +100,30 @@ describe("a ghost", () => {
         open(refereeSk, a.sealedBatch(t + 5000, boxPublicKey(refereeSk), "X.y"), "tail/batch"),
       ).batch.sightings,
     ).toHaveLength(1);
+  });
+});
+
+describe("a ghost's trust", () => {
+  test("takes PlayerKeys only when the pinned referee signed them", () => {
+    expect(() => keyed(0, new Uint8Array(32).fill(7))).toThrow("not signed by the referee");
+  });
+
+  test("hands the mesh a request sealed to the relay, signed for the relay's contract", () => {
+    const g = keyed(0);
+    g.accountId = "ghost-0.relay.testnet";
+    const relaySk = x25519.utils.randomSecretKey();
+    const envelope = g.carried("POST", "/batch", { match_id: "ab".repeat(16) }, x25519.getPublicKey(relaySk));
+    const r = openCarry(relaySk, envelope);
+    expect(r.account).toBe(g.accountId);
+    const digest = requestDigest({
+      contractId: trust.contract,
+      accountId: r.account,
+      method: r.method,
+      path: r.path,
+      timeMs: Number(r.timeMs),
+      body: r.body,
+    });
+    expect(verifyEd25519(ed25519.getPublicKey(g.nearSeed), digest, r.sig)).toBe(true);
   });
 });
 
