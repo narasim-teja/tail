@@ -10,7 +10,7 @@ import { Mark, TrailMark } from "./icons.tsx";
 import { overall } from "./marks.ts";
 
 export function Header({ place, compact }: { place: string | null | undefined; compact: boolean }) {
-  const { match, verify, source, select, reduced } = useReplay();
+  const { match, verify, select, reduced } = useReplay();
   const statuses = useStore(verify, (s) => s.statuses);
   const localDone = useStore(verify, (s) => s.local.filter(Boolean).length);
   const chain = useStore(verify, (s) => s.chainSummary);
@@ -22,6 +22,7 @@ export function Header({ place, compact }: { place: string | null | undefined; c
   const problem = matchProblem(binding, level, history, match.settlement);
   const line = summaryLine(sum, chain, problem, localDone);
   const status = overall(sum, chain, problem);
+  const chip = useTrustChip();
   const title = place === undefined ? null : (place ?? `Match ${match.id.slice(0, 6)}`);
 
   return (
@@ -66,12 +67,28 @@ export function Header({ place, compact }: { place: string | null | undefined; c
         <span className="over-map" aria-live="polite">
           {line}
         </span>
-        {source.kind === "fixture" && (
-          <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-text-2">
-            Fixture
-          </span>
-        )}
+        {chip && <Chip>{chip}</Chip>}
       </button>
     </header>
+  );
+}
+
+/**
+ * Who signed, when no enclave did: "Fixture" for the page's own generated match, "Test referee"
+ * when NEAR's referee key for the match is the local test referee's (signer.ts, from NEAR, never
+ * from the bundle). Shown beside the header line and on the finale, so a match the test referee
+ * judged never reads as an enclave's.
+ */
+export function useTrustChip(): string | null {
+  const { source, verify } = useReplay();
+  const signer = useStore(verify, (s) => s.signer);
+  return source.kind === "fixture" ? "Fixture" : signer === "local" ? "Test referee" : null;
+}
+
+export function Chip({ children }: { children: string }) {
+  return (
+    <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[0.6875rem] font-semibold uppercase tracking-[0.08em] whitespace-nowrap text-text-2">
+      {children}
+    </span>
   );
 }

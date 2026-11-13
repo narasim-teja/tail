@@ -13,6 +13,7 @@ import { useStore } from "../lib/store.ts";
 import { type Match, snapshotAt } from "../model/match.ts";
 import { endLine, refundLine } from "../replay/copy.ts";
 import { useReplay } from "./context.tsx";
+import { Chip, useTrustChip } from "./Header.tsx";
 import { GameIcon } from "./icons.tsx";
 import { useTween } from "./tween.ts";
 
@@ -58,6 +59,7 @@ export function Finale({ compact }: { compact: boolean }) {
   const decimals = useStore(verify, (s) => s.token.decimals);
   const rows = standings(match);
   const refund = refundLine(match.settlement);
+  const chip = useTrustChip();
   // A short staggered reveal: the headline, each standing, then the actions.
   const enter = (i: number): { className: string; style?: CSSProperties } =>
     reduced
@@ -85,6 +87,11 @@ export function Finale({ compact }: { compact: boolean }) {
       >
         {endLine(match)}
       </h2>
+      {chip && (
+        <p style={enter(0).style} className={cn(enter(0).className, "flex justify-center")}>
+          <Chip>{chip}</Chip>
+        </p>
+      )}
       {refund && (
         <p
           style={enter(0).style}

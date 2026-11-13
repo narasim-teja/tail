@@ -3,6 +3,8 @@
 
 import { describe, expect, test } from "bun:test";
 import { forgedFixture, makeFixtures } from "../scripts/fixture.ts";
+import { Finale } from "../src/ui/Finale.tsx";
+import { Header } from "../src/ui/Header.tsx";
 import { Inspector } from "../src/ui/Inspector.tsx";
 import { html, replayOf, row } from "./render.tsx";
 
@@ -58,5 +60,32 @@ describe("a forfeit's sheet", () => {
     expect(quiet.detail).toStartWith(
       "Its last released position is from 0:02 before the forfeit, outside the zone.",
     );
+  });
+});
+
+describe("who signed, beside the verdict line", () => {
+  const relay = (bundle: typeof fx.full) => ({
+    kind: "relay" as const,
+    matchId: bundle.match.id,
+    url: "x",
+  });
+  const chips = (h: string) => [...h.matchAll(/tracking-\[0\.08em\][^>]*>([^<]+)</g)].map((m) => m[1]);
+
+  test("a match NEAR pins to the local test referee carries a Test referee chip, header and finale", () => {
+    const r = replayOf(fx.full, { source: relay(fx.full), signer: "local" });
+    const header = html(r, <Header place="Boston Common" compact={false} />);
+    expect(header).toContain("All 27 verdicts match NEAR");
+    expect(chips(header)).toEqual(["Test referee"]);
+    expect(chips(html(r, <Finale compact={false} />))).toEqual(["Test referee"]);
+  });
+
+  test("an enclave or an unknown key gets none; a fixture is labelled Fixture", () => {
+    for (const signer of ["enclave", "unknown"] as const) {
+      const r = replayOf(fx.full, { source: relay(fx.full), signer });
+      expect(chips(html(r, <Header place="Boston Common" compact={false} />))).toEqual([]);
+      expect(chips(html(r, <Finale compact={false} />))).toEqual([]);
+    }
+    const f = replayOf(fx.full);
+    expect(chips(html(f, <Header place="Boston Common" compact={false} />))).toEqual(["Fixture"]);
   });
 });
