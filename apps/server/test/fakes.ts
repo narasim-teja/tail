@@ -396,6 +396,12 @@ export class FakeReferee implements Referee {
   failTicks = 0;
   /** Throw a transport error on the next N enroll calls (the referee not answering). */
   failEnrolls = 0;
+  /** Throw a transport error on the next N voice calls (the Handler not answering in time). */
+  failVoices = 0;
+  /** The next `end` is recorded, as the referee records it, but its answer is lost on the way. */
+  loseNextEndAnswer = false;
+  /** Per match, the End recorded and the input it was made from: a repeat gets it back. */
+  private ended = new Map<string, { input: string; result: EndResult }>();
   /** Refuse `start`, as the referee refuses a match id it started before. */
   refuseStart = false;
   /** Refuse the next N enroll calls, as the referee refuses an attestation it does not accept. */
@@ -792,6 +798,10 @@ export class FakeReferee implements Referee {
   }
   async voice(i: VoiceInput): Promise<VoiceResult> {
     this.calls.push("voice");
+    if (this.failVoices > 0) {
+      this.failVoices--;
+      throw new RefereeError("voice", "request failed: timeout", false);
+    }
     const h = JSON.parse(new TextDecoder().decode(open(this.boxSk, i.blob, FAKE_HINT))) as {
       match: string;
       hintId: number;
@@ -820,8 +830,28 @@ export class FakeReferee implements Referee {
       receipt: this.sealLog([receipt]),
     };
   }
+  /**
+   * As the referee (crates/referee-wasi cmd/end.rs): the first `end` records the End; the same
+   * input again gets that End back, any other input is refused.
+   */
   async end(i: EndInput): Promise<EndResult> {
     this.calls.push("end");
+    const input = JSON.stringify([toHex(i.state), i.lastSeq, i.receipts.map(toHex)]);
+    const recorded = this.ended.get(toHex(i.matchId));
+    if (recorded) {
+      if (recorded.input !== input)
+        throw new RefereeError("end", "match has already ended with another End", true);
+      return recorded.result;
+    }
+    const result = await this.endOnce(i);
+    this.ended.set(toHex(i.matchId), { input, result });
+    if (this.loseNextEndAnswer) {
+      this.loseNextEndAnswer = false;
+      throw new RefereeError("end", "request failed: the answer was lost", false);
+    }
+    return result;
+  }
+  private async endOnce(i: EndInput): Promise<EndResult> {
     const m = this.m(i.matchId);
     this.checkState(m, i.state, i.lastSeq);
     const from = m.leaves.length;

@@ -155,3 +155,28 @@ describe("finality", () => {
     expect(appliedSeqs(env).at(-1)).toBe(2);
   });
 });
+
+describe("end", () => {
+  test("a lost end answer: the next step gets the same End back, a hint the Handler missed dropped first", async () => {
+    const env = setup({ tickMs: 60_000 });
+    env.matches.stop();
+    // The last tick issues a hint; the Handler misses it, and end's answer is lost.
+    env.referee.overAt = 2;
+    env.referee.hintAtTick = 2;
+    env.referee.failVoices = 1;
+    env.referee.loseNextEndAnswer = true;
+    const m = await started(env);
+    expect(await env.matches.step(m.id)).toBe(true);
+    await expect(env.matches.step(m.id)).rejects.toThrow("the answer was lost");
+    expect(env.store.match(m.id)?.phase).toBe("ending");
+    // No special case: the next step asks again and settles the match.
+    expect(await env.matches.step(m.id)).toBe(false);
+    expect(env.store.match(m.id)?.phase).toBe("ended");
+    const calls = env.referee.calls;
+    expect(calls.filter((c) => c === "end").length).toBe(2);
+    // Nothing was voiced after End: that line would have had no receipt in the log.
+    expect(calls.slice(calls.indexOf("end"))).not.toContain("voice");
+    expect(env.store.voiceHints(m.id, "dropped").length).toBe(1);
+    expect(appliedSeqs(env)).toEqual([1, 2, 3]);
+  });
+});

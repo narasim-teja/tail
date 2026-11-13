@@ -262,11 +262,14 @@ on one sealed state would fork it. Each step:
    failed call stores nothing, so its batches go again next tick.
 4. **Push** each sealed HUD to that player's socket(s), then flush the new verdicts:
    `apply(verdicts, proofs)` with `proofs: [{seq, from_size, path}]` for the Checkpoint/End verdicts.
-5. **End.** When a tick says `over`: `end` with the last receipts → check End's root and proof
-   against the leaves → apply End → `declassify` with every `log_sealed` blob in order (each
-   returned entry must hash to its stored leaf) → `declassify_batches` (chunks of 500) → store
-   the log, the reveal and the trails for the replay. Each of these retries on the next step if
-   it fails; the match counts as ended only when both are stored.
+5. **End.** When a tick says `over`: voice the hints that tick issued, and drop any the Handler
+   could not voice (a line after End would have no receipt in the log) → `end` with the
+   receipts → check End's root and proof against the leaves → apply End → `declassify` with
+   every `log_sealed` blob in order (each returned entry must hash to its stored leaf) →
+   `declassify_batches` (chunks of 500) → store the log, the reveal and the trails for the
+   replay. Each of these retries on the next step if it fails; the match counts as ended only
+   when both are stored. `end` asked again with the same state and receipts answers with the End
+   it recorded, so a lost answer costs one step.
 
 Start: the relay reads the lobby from the chain, checks every player is enrolled, asks the
 referee (`devices`) whether it holds each player's device exactly as the relay's receipt says

@@ -497,7 +497,6 @@ export class Matches {
       // The tick's verdicts go on chain now, not a tick later: a Tag or a Forfeit moves money.
       const flushed = await this.flushVerdicts(matchId);
       if (this.d.store.match(matchId)?.phase !== "ending" || !flushed) return true;
-      await this.voicePending(matchId);
     }
     const done = await this.finish(matchId);
     if (done) this.d.store.releaseLease(matchId, this.holder);
@@ -582,6 +581,16 @@ export class Matches {
     if (!m?.state) throw new Error("ending match has no state");
     const haveEnd = this.d.store.verdicts(matchId).some((v) => v.kind === "End");
     if (!haveEnd) {
+      // The hints of the last tick get their lines now, while `end` can still log the receipts.
+      // One the Handler could not voice is dropped before `end` is asked: voiced after End, its
+      // line would have no receipt in the log. Dropped first, so `end` asked again (its answer
+      // lost) is passed the same receipts, and answers with the End it recorded.
+      await this.voicePending(matchId);
+      const unvoiced = this.d.store.voiceHints(matchId, "pending").map((h) => h.id);
+      if (unvoiced.length) {
+        this.leasedTx(matchId, () => this.d.store.setVoiceStatus(unvoiced, "dropped"));
+        this.d.log.warn({ matchId, hints: unvoiced.length }, "hints not voiced before End are dropped");
+      }
       const voiced = this.d.store.voiceHints(matchId, "voiced");
       const r = await this.d.referee.end({
         matchId: idBytes(matchId),
