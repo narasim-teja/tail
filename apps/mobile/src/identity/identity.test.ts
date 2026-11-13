@@ -508,8 +508,15 @@ describe("the App Attest key the relay holds", () => {
         fetch: (async () => Response.json(answer)) as unknown as typeof fetch,
       }).enrolStatus({ accountId: "alice.tail.testnet", sign: () => new Uint8Array(64) });
     const base = { account_id: "alice.tail.testnet", with_referee: true };
-    expect(await status({ ...base, app_attest_key_id: "bmV3" })).toMatchObject({ appAttestKeyId: "bmV3" });
+    const key32 = toB64(sha256(utf8("an App Attest key")));
+    expect(await status({ ...base, app_attest_key_id: key32 })).toMatchObject({ appAttestKeyId: key32 });
     expect(await status(base)).toMatchObject({ withReferee: true, appAttestKeyId: null });
+    // A key id that is not 32 bytes of standard base64 is a bad answer, not a key the phone
+    // lacks: a refresh would never make it match, so every check would refresh again.
+    await expect(status({ ...base, app_attest_key_id: "bmV3" })).rejects.toThrow("app_attest_key_id");
+    // URL-safe base64 of 32 bytes of 0xff ("/" written as "_").
+    const urlSafe = toB64(new Uint8Array(32).fill(0xff)).replaceAll("/", "_");
+    await expect(status({ ...base, app_attest_key_id: urlSafe })).rejects.toThrow("not base64");
   });
 
   test("the relay holding the current key drops the pending one; a key the phone doesn't have, or a pending one the relay can't name, refreshes", async () => {

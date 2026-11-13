@@ -272,11 +272,14 @@ export class RelayClient extends RelayTransport {
     signer: Signer,
   ): Promise<{ accountId: string; withReferee: boolean; appAttestKeyId: string | null }> {
     const r = await this.send(await this.sign(signer, "GET", "/enroll/status", ""));
-    const keyId = r["app_attest_key_id"];
+    const absent = r["app_attest_key_id"] === undefined || r["app_attest_key_id"] === null;
+    // Checked here: a key id the phone could never match would make every check refresh again.
+    if (!absent && read.b64(r, "app_attest_key_id").length !== 32)
+      throw new RelayError(0, "relay answer: app_attest_key_id is not a 32-byte key id");
     return {
       accountId: read.str(r, "account_id"),
       withReferee: read.bool(r, "with_referee"),
-      appAttestKeyId: keyId === undefined || keyId === null ? null : read.str(r, "app_attest_key_id"),
+      appAttestKeyId: absent ? null : read.str(r, "app_attest_key_id"),
     };
   }
 
