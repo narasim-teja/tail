@@ -1,9 +1,13 @@
 // Reads a player's Dossier (the contract's soulbound NEP-171 token) over NEAR RPC: the record from
-// `get_dossier`, the facts of each match it lists from `get_match`, and each token's decimals.
-// View calls only; nothing is signed. `rootOnNear` asks the contract's `get_roots` whether an
-// entry's root is one the match anchored.
+// `get_dossier` and the token itself from `nft_token`, both at one final block so they describe
+// the same record, the facts of each match it lists from `get_match`, and each token's decimals.
+// View calls only; nothing is signed. The token's card (`metadata.media`) is compared byte for
+// byte with the one `@tail/brand` draws from the record here (compareCard). `rootOnNear` asks the
+// contract's `get_roots` whether an entry's root is one the match anchored.
 
-import type { DossierEntry, DossierView } from "@tail/brand";
+import { type DossierEntry, type DossierView, dossierSvg } from "@tail/brand";
+import { equal, utf8 } from "@tail/protocol";
+import { fromB64 } from "../verify/bundle.ts";
 import { RPC, type TokenMeta } from "../verify/chain.ts";
 
 export interface EntryFacts {
@@ -12,10 +16,38 @@ export interface EntryFacts {
   publicReplay: boolean;
 }
 
+/**
+ * The contract's own card against the one drawn here from the same record.
+ * same: `nft_token`'s media is that SVG, byte for byte; `media` is the contract's data URI.
+ * differs: it isn't, or the token has no SVG media (`media` null), or there is no token.
+ * unread: `nft_token` couldn't be read, so only the card drawn here is shown.
+ */
+export type CardCheck =
+  | { kind: "same"; media: string }
+  | { kind: "differs"; media: string | null }
+  | { kind: "unread" };
+
+/** The contract writes the card as `data:image/svg+xml;base64,` (contracts/tail dossier.rs). */
+const SVG_URI = "data:image/svg+xml;base64,";
+
+export function compareCard(token: unknown, view: DossierView): CardCheck {
+  const metadata = (token as { metadata?: { media?: unknown } } | null)?.metadata;
+  const media = typeof metadata?.media === "string" ? metadata.media : null;
+  if (!media?.startsWith(SVG_URI)) return { kind: "differs", media: null };
+  let bytes: Uint8Array;
+  try {
+    bytes = fromB64(media.slice(SVG_URI.length));
+  } catch {
+    return { kind: "differs", media: null };
+  }
+  return equal(bytes, utf8(dossierSvg(view))) ? { kind: "same", media } : { kind: "differs", media };
+}
+
 export type DossierRead =
   | {
       kind: "found";
       view: DossierView;
+      card: CardCheck;
       /** By match id; missing when NEAR did not return the match. */
       matches: Record<string, EntryFacts>;
       /** By token account. */
@@ -38,17 +70,24 @@ function viewer(network: string) {
   const provider = import("near-api-js").then(
     ({ JsonRpcProvider }) => new JsonRpcProvider({ url: RPC[network] ?? (RPC["testnet"] as string) }),
   );
-  return async <T>(contractId: string, method: string, args: Record<string, unknown>) =>
-    (await provider).callFunction({ contractId, method, args, blockQuery: { finality: "final" } }) as Promise<
-      T | undefined
-    >;
+  const call = async <T>(
+    contractId: string,
+    method: string,
+    args: Record<string, unknown>,
+    blockQuery: { finality: "final" } | { blockId: number } = { finality: "final" },
+  ) => (await provider).callFunction({ contractId, method, args, blockQuery }) as Promise<T | undefined>;
+  /** The latest final block's height, to read several views of one state. */
+  const finalHeight = async () => (await (await provider).viewBlock({ finality: "final" })).header.height;
+  return Object.assign(call, { finalHeight });
 }
 
 export async function readDossier(network: string, contract: string, account: string): Promise<DossierRead> {
   const view = viewer(network);
   let dossier: DossierView | null | undefined;
+  let at: { blockId: number };
   try {
-    dossier = await view<DossierView | null>(contract, "get_dossier", { account_id: account });
+    at = { blockId: await view.finalHeight() };
+    dossier = await view<DossierView | null>(contract, "get_dossier", { account_id: account }, at);
   } catch (e) {
     if (noSuchMethod(e)) return { kind: "no-view" };
     // An id NEAR cannot parse is an account that has no dossier.
@@ -56,6 +95,11 @@ export async function readDossier(network: string, contract: string, account: st
     return { kind: "unreachable", reason: e instanceof Error ? e.message : String(e) };
   }
   if (!dossier) return { kind: "absent" };
+  const record = dossier;
+  const card = await view<unknown>(contract, "nft_token", { token_id: account }, at).then(
+    (t): CardCheck => compareCard(t, record),
+    (): CardCheck => ({ kind: "unread" }),
+  );
   const matches: Record<string, EntryFacts> = {};
   await Promise.all(
     dossier.entries.map(async (e) => {
@@ -75,7 +119,7 @@ export async function readDossier(network: string, contract: string, account: st
         tokens[t] = { symbol: meta.symbol, decimals: meta.decimals };
     }),
   );
-  return { kind: "found", view: dossier, matches, tokens };
+  return { kind: "found", view: dossier, card, matches, tokens };
 }
 
 /** Whether `get_roots(match_id)` lists the entry's root at its log size (a checkpoint or End). */

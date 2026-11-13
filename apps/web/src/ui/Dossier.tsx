@@ -1,6 +1,7 @@
 // The Dossier page (`/dossier/<account>`): a player's soulbound NEP-171 token on the pinned
-// contract. The card is the contract's own `nft_token` media, drawn here by the same builder
-// (`@tail/brand` dossierSvg, byte-identical to the contract's); below it, the record as a ledger,
+// contract. The card is the contract's own `nft_token` media, compared byte for byte with the
+// one the same builder draws here from the record (`@tail/brand` dossierSvg, the contract's
+// twin), with one line saying whether they agree; below it, the record as a ledger,
 // each entry with the root its match anchored and a check against NEAR's `get_roots`, and the
 // access rule (`requires`) it clears. `?fixture` shows a sample record that is not on NEAR.
 
@@ -8,11 +9,17 @@ import { type DossierEntry, type DossierResult, type DossierView, dossierSvg } f
 import { ArrowUpRight } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
-import { type DossierRead, type RootAnswer, readDossier, rootOnNear } from "../lib/dossier.ts";
+import {
+  type CardCheck,
+  type DossierRead,
+  type RootAnswer,
+  readDossier,
+  rootOnNear,
+} from "../lib/dossier.ts";
 import { day, money, short } from "../lib/format.ts";
 import { cn } from "../lib/utils.ts";
 import { PINS } from "../verify/pins.ts";
-import { GameIcon } from "./icons.tsx";
+import { GameIcon, GlyphIcon } from "./icons.tsx";
 import { Loading, PageState, Retry } from "./States.tsx";
 
 type Phase = { kind: "loading" } | DossierRead | { kind: "fixture"; view: DossierView };
@@ -74,25 +81,37 @@ export function DossierPage({ account }: { account: string }) {
       </PageState>
     );
   return phase.kind === "fixture" ? (
-    <Record view={phase.view} matches={{}} tokens={{}} sample />
+    <Record view={phase.view} card={null} matches={{}} tokens={{}} sample />
   ) : (
-    <Record view={phase.view} matches={phase.matches} tokens={phase.tokens} sample={false} />
+    <Record
+      view={phase.view}
+      card={phase.card}
+      matches={phase.matches}
+      tokens={phase.tokens}
+      sample={false}
+    />
   );
 }
 
-function Record({
+export function Record({
   view,
+  card,
   matches,
   tokens,
   sample,
 }: {
   view: DossierView;
+  /** The contract's card against the one drawn here; null for the sample, which isn't on NEAR. */
+  card: CardCheck | null;
   matches: Extract<DossierRead, { kind: "found" }>["matches"];
   tokens: Extract<DossierRead, { kind: "found" }>["tokens"];
   sample: boolean;
 }) {
   const handle = view.account_id.split(".")[0] ?? view.account_id;
-  const svg = dossierSvg(view);
+  // The contract's own picture whenever NEAR returned one; drawn here only when it didn't.
+  const contractMedia = card && card.kind !== "unread" ? card.media : null;
+  const src = contractMedia ?? `data:image/svg+xml;utf8,${encodeURIComponent(dossierSvg(view))}`;
+  const fromContract = contractMedia !== null;
   const alt =
     `${handle}'s dossier card: a trail through ${view.entries.length} recent matches, ` +
     `${view.matches} settled, ${view.survived} survived, ${view.tags} tags.`;
@@ -101,16 +120,19 @@ function Record({
       <div className="mx-auto grid w-full max-w-[68rem] gap-10 lg:grid-cols-[minmax(0,25rem)_minmax(0,1fr)] lg:gap-16">
         <figure className="self-start lg:sticky lg:top-12">
           <img
-            src={`data:image/svg+xml;utf8,${encodeURIComponent(svg)}`}
+            src={src}
             alt={alt}
             width={400}
             height={500}
             className="mx-auto h-auto w-full max-w-[25rem] drop-shadow-[0_24px_48px_oklch(0.12_0.02_255/0.65)]"
           />
           <figcaption className="mx-auto mt-4 max-w-[25rem] text-[0.8125rem] leading-relaxed text-text-3 text-pretty">
+            {card && <CardLine card={card} />}
             {sample
               ? "A sample record, not on NEAR. "
-              : `The contract draws this card on every read of nft_token("${view.account_id}"), so it changes as the record grows. `}
+              : fromContract
+                ? `The contract draws this card on every read of nft_token("${view.account_id}"), so it changes as the record grows. `
+                : "Drawn here from the record, with the contract's own builder. "}
             One segment per settled match, oldest first: a persimmon dot for a survival, a ring for a tag-out,
             a tick for each tag landed, a dashed grey segment for a refund.
           </figcaption>
@@ -273,6 +295,30 @@ function Entry({
         )}
       </div>
     </li>
+  );
+}
+
+/** One calm line: does the contract's NFT hold the picture drawn here from the same record? */
+function CardLine({ card }: { card: CardCheck }) {
+  const [glyph, label, line] =
+    card.kind === "same"
+      ? (["tick", "Checked", "Same picture as the contract's NFT, byte for byte."] as const)
+      : card.kind === "differs"
+        ? ([
+            "bar",
+            "Failed",
+            card.media
+              ? "Not the picture this record draws: the contract's NFT holds a different card."
+              : "The contract's NFT has no card to compare with this record's.",
+          ] as const)
+        : (["hollow", "Not checked", "NEAR didn't return the NFT, so its picture wasn't compared."] as const);
+  return (
+    <span
+      className={cn("mb-2 flex items-start gap-2", card.kind === "differs" ? "text-text" : "text-text-2")}
+    >
+      <GlyphIcon glyph={glyph} label={label} className="mt-px size-4" />
+      <span>{line}</span>
+    </span>
   );
 }
 
