@@ -79,6 +79,26 @@
 .d-toc a:hover {
   background: var(--g-sandHover);
 }
+/* You are here: the section being read gets the brand's location dot, the only persimmon on the page. */
+.d-toc a::before {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-right: var(--s);
+  border-radius: 50%;
+  background: var(--line-day);
+  transition:
+    background-color var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
+}
+.d-toc a[aria-current="location"] {
+  font-weight: 800;
+}
+.d-toc a[aria-current="location"]::before {
+  background: var(--persimmon);
+  transform: scale(1.25);
+}
 @media (min-width: 1100px) {
   .d-toc {
     position: sticky;
@@ -86,7 +106,8 @@
     background: none;
     padding: 0;
   }
-  .d-toc a:hover {
+  .d-toc a:hover,
+  .d-toc a[aria-current="location"] {
     background: var(--g-sand);
   }
 }
@@ -375,23 +396,57 @@
   display: grid;
   margin-bottom: var(--xl);
 }
-.d-built > div {
+.d-built > li {
   display: grid;
   gap: var(--xs);
   padding: var(--l) 0;
   border-top: 1px solid var(--line-day);
 }
-.d-built > div:first-child {
+.d-built > li:first-child {
   border-top: 0;
   padding-top: 0;
 }
-.d-built dt {
+.d-built-name {
+  display: inline-flex;
+  align-items: center;
+  align-self: start;
+  gap: var(--s);
+  min-height: 44px;
   font-weight: 700;
   font-size: 1.1875rem;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+  text-decoration-color: var(--line-day);
+  transition: text-decoration-color var(--dur) var(--ease);
+}
+.d-built-name:hover {
+  text-decoration-color: currentColor;
+}
+.d-built-name svg {
+  flex: none;
 }
 @media (min-width: 720px) {
-  .d-built > div {
-    grid-template-columns: 12rem minmax(0, 1fr);
+  .d-built > li {
+    grid-template-columns: 14rem minmax(0, 1fr);
     gap: var(--xl);
   }
+  .d-built > li p {
+    padding-top: 10px;
+  }
+}
+
+/* The card's key, on paper. */
+.d-key {
+  margin: var(--l) 0;
+  padding: var(--l) var(--xl);
+  border-radius: var(--r-m);
+  background: var(--g-sand);
+}
+.d-key .l-dossier-key {
+  margin-top: 0;
+  color: var(--t-ink);
+}
+.d-section > p + .d-rule {
+  margin-top: var(--xxl);
 }
