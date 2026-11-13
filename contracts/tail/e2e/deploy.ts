@@ -7,7 +7,8 @@
 // When the account exists, pass one of:
 //   --upgrade  deploy the new code in place with the account's full-access key from .keys/; state
 //              (balances, matches, pinned keys) is kept, so only use it when the state layout is
-//              unchanged. Checks the on-chain code hash and that the real keys are still pinned.
+//              unchanged. Checks the on-chain code hash and that the keys pinned before (enclave
+//              or local test referee) are still pinned; it makes no referee call.
 //   --upgrade --migrate
 //              the same, for code whose state layout changed: the deploy and the contract's
 //              `migrate(vrf_sender)` go in one transaction signed by the contract account, so no
@@ -45,29 +46,44 @@ const vrfSender =
   must("OUTLAYER_OWNER");
 log(`vrf_sender ${vrfSender}`);
 
-const api = must("OUTLAYER_API");
-const res = await fetch(
-  `${api}/call/${must("OUTLAYER_OWNER")}/${process.env["REFEREE_PROJECT"] || "tail-referee"}`,
-  {
-    method: "POST",
-    headers: { "X-Payment-Key": must("REFEREE_PAYMENT_KEY"), "Content-Type": "application/json" },
-    body: JSON.stringify({ input: { cmd: "pubkeys" } }),
-  },
-);
-const out = (await res.json()) as {
-  output?: { ok?: boolean; result?: { referee_pk_hex?: string; vrf_pk?: string } };
-};
-const refereePk = out.output?.result?.referee_pk_hex;
-const vrfPk = out.output?.result?.vrf_pk;
-if (!out.output?.ok || !refereePk || !vrfPk)
-  throw new Error(`referee pubkeys call failed (HTTP ${res.status})`);
-const outlayerVrf = ((await (await fetch(`${api}/vrf/pubkey`)).json()) as { vrf_public_key_hex: string })
-  .vrf_public_key_hex;
-if (outlayerVrf !== vrfPk) throw new Error(`referee vrf_pk ${vrfPk} is not OutLayer's ${outlayerVrf}`);
-log(`referee_pk ${refereePk}`);
-log(`vrf_pk ${vrfPk} (matches OutLayer /vrf/pubkey)`);
+type Config = Record<string, unknown>;
+const getConfig = async () =>
+  (await provider.callFunction({ contractId, method: "get_config", args: {} })) as Config;
 
+/** The live enclave's keys: its `verdicts` key from `pubkeys`, its VRF key checked against OutLayer. */
+async function enclaveKeys() {
+  const api = must("OUTLAYER_API");
+  const res = await fetch(
+    `${api}/call/${must("OUTLAYER_OWNER")}/${process.env["REFEREE_PROJECT"] || "tail-referee"}`,
+    {
+      method: "POST",
+      headers: { "X-Payment-Key": must("REFEREE_PAYMENT_KEY"), "Content-Type": "application/json" },
+      body: JSON.stringify({ input: { cmd: "pubkeys" } }),
+    },
+  );
+  const out = (await res.json()) as {
+    output?: { ok?: boolean; result?: { referee_pk_hex?: string; vrf_pk?: string } };
+  };
+  const refereePk = out.output?.result?.referee_pk_hex;
+  const vrfPk = out.output?.result?.vrf_pk;
+  if (!out.output?.ok || !refereePk || !vrfPk)
+    throw new Error(`referee pubkeys call failed (HTTP ${res.status})`);
+  const outlayerVrf = ((await (await fetch(`${api}/vrf/pubkey`)).json()) as { vrf_public_key_hex: string })
+    .vrf_public_key_hex;
+  if (outlayerVrf !== vrfPk) throw new Error(`referee vrf_pk ${vrfPk} is not OutLayer's ${outlayerVrf}`);
+  log(`referee_pk ${refereePk}`);
+  log(`vrf_pk ${vrfPk} (matches OutLayer /vrf/pubkey)`);
+  return { refereePk, vrfPk };
+}
+
+// What must be pinned afterwards. An upgrade keeps whichever referee is pinned (the enclave or the
+// local test referee; `apps/server/scripts/pin-referee.ts` switches between them), so it needs no
+// referee call; a fresh deploy pins the enclave.
+let want: { refereePk: string; vrfPk: string };
 if ((await exists(contractId)) && process.argv.includes("--upgrade")) {
+  const before = await getConfig();
+  want = { refereePk: String(before["referee_pk"]), vrfPk: String(before["vrf_pk"]) };
+  log(`keeping referee_pk ${want.refereePk}, vrf_pk ${want.vrfPk}`);
   const key = JSON.parse(readFileSync(`${keysDir}${contractId}.json`, "utf8")).private_key as KeyPairString;
   const code = wasm();
   const self = new Account(contractId, provider, key);
@@ -99,21 +115,20 @@ if ((await exists(contractId)) && process.argv.includes("--upgrade")) {
     }
     await deleteContract(contractId);
   }
+  want = await enclaveKeys();
   await createContract(contractId, {
     owner: parentId,
-    referee_pk: refereePk,
-    vrf_pk: vrfPk,
+    referee_pk: want.refereePk,
+    vrf_pk: want.vrfPk,
     vrf_sender: vrfSender,
     allowed_tokens: ALLOWED_TOKENS,
   });
   // The contract must be registered on each token before anyone can ft_transfer_call to it.
   for (const token of ALLOWED_TOKENS) await registerOnToken(token, contractId);
 }
-const config = (await provider.callFunction({ contractId, method: "get_config", args: {} })) as Record<
-  string,
-  unknown
->;
-if (config["referee_pk"] !== refereePk || config["vrf_pk"] !== vrfPk) throw new Error("pinned keys differ");
+const config = await getConfig();
+if (config["referee_pk"] !== want.refereePk || config["vrf_pk"] !== want.vrfPk)
+  throw new Error("pinned keys differ");
 if (config["vrf_sender"] !== vrfSender) throw new Error(`pinned vrf_sender is ${config["vrf_sender"]}`);
 log(JSON.stringify(config, null, 1));
 
