@@ -2,7 +2,7 @@
 // scene, listed first, and the script says the file holds every player's trail.
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeFixtures } from "../scripts/fixture.ts";
@@ -21,13 +21,15 @@ const entry = (over: Record<string, unknown> = {}) => ({
 });
 
 describe("publishing a match", () => {
+  const six = async () => 6;
   const relay = (status: number, body: unknown) =>
     (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
   const id = fx.full.match.id;
 
   test("a private match is refused and nothing is written", async () => {
     const dir = mkdtempSync(join(tmpdir(), "tail-publish-"));
-    const run = (f: typeof fetch) => publishMatch({ id, place: "Boston Common", dir, fetch: f });
+    const run = (f: typeof fetch) =>
+      publishMatch({ id, place: "Boston Common", dir, fetch: f, tokenDecimals: six });
     await expect(run(relay(403, { error: "private" }))).rejects.toThrow("private");
     const notPublic = { ...fx.full, match: { ...fx.full.match, publicReplay: false } };
     await expect(run(relay(200, notPublic))).rejects.toThrow(PublishError);
@@ -45,6 +47,7 @@ describe("publishing a match", () => {
       dir,
       featured: true,
       fetch: relay(200, fx.full),
+      tokenDecimals: six,
     });
     const index = parseIndex(JSON.parse(readFileSync(join(dir, "index.json"), "utf8")));
     expect(index.map((m) => [m.id, m.featured ?? false])).toEqual([
@@ -54,5 +57,22 @@ describe("publishing a match", () => {
     expect(index[0]).toMatchObject({ players: 5, minutes: 20, survivors: 2 });
     expect(readdirSync(dir).sort()).toEqual([`${id}.json`, `${id}.scene.json`, "index.json"].sort());
     expect(lines.join("\n")).toContain("EVERY PLAYER'S LOCATION TRAIL");
+  });
+
+  test("a public match names its place's map only if the map is there, and needs its token's decimals", async () => {
+    const root = mkdtempSync(join(tmpdir(), "tail-publish-"));
+    const dir = join(root, "matches");
+    const run = (o: { map?: string; tokenDecimals?: () => Promise<number | null> }) =>
+      publishMatch({ id, place: "Boston Common", dir, fetch: relay(200, fx.full), tokenDecimals: six, ...o });
+    await expect(run({ map: "boston-common" })).rejects.toThrow("no map public/maps/boston-common.json");
+    await expect(run({ map: "../etc" })).rejects.toThrow("map name");
+    await expect(run({ tokenDecimals: async () => null })).rejects.toThrow("decimals");
+    mkdirSync(join(root, "maps"));
+    writeFileSync(join(root, "maps", "boston-common.json"), "{}");
+    await run({ map: "boston-common" });
+    const index = parseIndex(JSON.parse(readFileSync(join(dir, "index.json"), "utf8")));
+    expect(index[0]?.map).toBe("boston-common");
+    const scene = JSON.parse(readFileSync(join(dir, `${id}.scene.json`), "utf8"));
+    expect(scene.decimals).toBe(6);
   });
 });

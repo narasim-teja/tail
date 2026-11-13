@@ -13,7 +13,7 @@ import { decodeBundle } from "../src/verify/bundle.ts";
 import { prepare } from "../src/verify/index.ts";
 import { ECONOMY_FILE, writeEconomyFixture } from "./economy-fixture.ts";
 import { FIXTURE_FILES, makeFixtures } from "./fixture.ts";
-import { sceneOfMatch, survivorsOf } from "./scene.ts";
+import { FIXTURE_DECIMALS, sceneOfMatch, survivorsOf } from "./scene.ts";
 
 const dir = join(import.meta.dir, "..", "public", "fixtures");
 mkdirSync(dir, { recursive: true });
@@ -28,7 +28,7 @@ const matchOf = (bundle: unknown) => prepare(decodeBundle(JSON.parse(JSON.string
 const full = matchOf(fx.full);
 writeFileSync(
   join(dir, "boston-common.scene.json"),
-  `${JSON.stringify(sceneOfMatch(full, "fixture", "Boston Common"))}\n`,
+  `${JSON.stringify(sceneOfMatch(full, "fixture", "Boston Common", FIXTURE_DECIMALS))}\n`,
 );
 const facts = (name: string, m: ReturnType<typeof matchOf>): DemoFacts => ({
   name,

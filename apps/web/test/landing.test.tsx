@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { HintKind, hintPrice } from "@tail/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { makeFixtures } from "../scripts/fixture.ts";
-import { sceneOf } from "../scripts/scene.ts";
+import { FIXTURE_DECIMALS, sceneOf } from "../scripts/scene.ts";
 import { Hints, STAKE, usdc } from "../src/landing/Beats.tsx";
 import { ledger } from "../src/landing/Money.tsx";
 import { rowState } from "../src/landing/near.ts";
@@ -91,7 +91,7 @@ describe("money on the front page", () => {
 });
 
 describe("the hero's scene", () => {
-  const scene = parseScene(JSON.parse(JSON.stringify(sceneOf(fx.full, "fixture", "Boston Common"))));
+  const scene = parseScene(JSON.parse(JSON.stringify(sceneOf(fx.full, "fixture", "Boston Common", FIXTURE_DECIMALS))));
   test("is the generated match's first chase, its lock filling from the logged contacts before the tag", () => {
     expect(scene.players).toEqual(["Ana", "Bo", "Cy", "Dee", "Eli"]);
     const chase = scene.chase;
@@ -104,7 +104,7 @@ describe("the hero's scene", () => {
   });
 
   test("a scene file that isn't one is refused", () => {
-    expect(() => parseScene({ ...scene, version: 2 })).toThrow("version");
+    expect(() => parseScene({ ...scene, version: 1 })).toThrow("version");
     expect(() => parseScene({ ...scene, tracks: [] })).toThrow("tracks");
   });
 });

@@ -84,6 +84,8 @@ describe("the published list", () => {
     expect(() => parseIndex([entry({ players: 2.5 })])).toThrow("players");
     expect(() => parseIndex([entry({ survivors: 4 })])).toThrow("survivors");
     expect(() => parseIndex([entry({ place: " " })])).toThrow("place");
+    expect(() => parseIndex([entry({ map: "../x" })])).toThrow("map");
+    expect(parseIndex([entry({ map: "boston-common" })])[0]?.map).toBe("boston-common");
   });
 
   test("the committed list parses (it ships empty until a match is published)", () => {

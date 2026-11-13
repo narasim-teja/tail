@@ -16,6 +16,8 @@ export interface PublishedMatch {
   survivors?: number;
   /** The match the front page plays; without one, the first in the list. */
   featured?: boolean;
+  /** The place's map the front page draws under it: public/maps/<map>.json. */
+  map?: string;
 }
 
 export class IndexError extends Error {
@@ -23,6 +25,7 @@ export class IndexError extends Error {
 }
 
 const ID = /^[0-9a-f]{32}$/;
+const MAP = /^[a-z0-9-]+$/;
 const count = (v: unknown, min: number, max: number) =>
   typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
 
@@ -36,7 +39,7 @@ export function parseIndex(json: unknown): PublishedMatch[] {
   return json.map((raw, i): PublishedMatch => {
     const e = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
     const bad = (what: string) => new IndexError(`entry ${i}: ${what}`);
-    const { id, place, playedAt, players, minutes, survivors, featured } = e;
+    const { id, place, playedAt, players, minutes, survivors, featured, map } = e;
     if (typeof id !== "string" || !ID.test(id)) throw bad("id isn't 32 lowercase hex characters");
     if (seen.has(id)) throw bad("the same match is listed twice");
     seen.add(id);
@@ -48,6 +51,8 @@ export function parseIndex(json: unknown): PublishedMatch[] {
     if (survivors !== undefined && !count(survivors, 0, players as number))
       throw bad("survivors isn't a whole number of the players");
     if (featured !== undefined && typeof featured !== "boolean") throw bad("featured isn't true or false");
+    if (map !== undefined && (typeof map !== "string" || !MAP.test(map)))
+      throw bad("map isn't a map's name (lowercase letters, digits, dashes)");
     return {
       id,
       place: place.trim(),
@@ -56,6 +61,7 @@ export function parseIndex(json: unknown): PublishedMatch[] {
       minutes: minutes as number,
       ...(survivors === undefined ? {} : { survivors: survivors as number }),
       ...(featured ? { featured: true } : {}),
+      ...(map === undefined ? {} : { map: map as string }),
     };
   });
 }
@@ -65,6 +71,9 @@ export const featuredOf = (list: readonly PublishedMatch[]): PublishedMatch | nu
   list.find((m) => m.featured) ?? list[0] ?? null;
 
 export const matchesDir = (base: string = import.meta.env.BASE_URL) => `${base}matches/`;
+
+/** A place's map for the front page's hero (src/landing/map.ts). */
+export const mapUrl = (name: string, base: string = import.meta.env.BASE_URL) => `${base}maps/${name}.json`;
 
 /** The site's list, or null when it can't be read (none deployed, or not the documented shape). */
 export async function readIndex(base: string = import.meta.env.BASE_URL): Promise<PublishedMatch[] | null> {
