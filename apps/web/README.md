@@ -400,7 +400,7 @@ receipts are unsigned. Check it the way you would a real match:
 
 ```sh
 cargo run -q -p referee-verify --bin tail-verify -- apps/web/public/fixtures/boston-common-economy.json
-````
+```
 
 **The referee, VRF and Handler-model keys in the fixture are public test keys** derived from
 strings in the script. They were never used on NEAR, the bundle names no transactions, and the page labels it
