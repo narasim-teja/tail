@@ -1,14 +1,23 @@
-// The site on Cloudflare: a Worker that only serves the built files in dist/ (no code of ours
-// runs there), answering on playtail.app. `public/_redirects` sends /docs and /dossier/* to the
-// page. Deploy from apps/web after `bun run build`: `bunx wrangler@4.156.0 deploy`.
+// The site on Cloudflare: a Worker that serves the built files in dist/, answering on
+// playtail.app. Its only code (worker/relay-proxy.ts) passes /relay/* to the relay, the way the
+// dev server does; `public/_redirects` sends /docs and /dossier/* to the page. Deploy from
+// apps/web after `bun run build`: `bunx wrangler@4.156.0 deploy`.
 {
   "$schema": "https://unpkg.com/wrangler@4.156.0/config-schema.json",
   "name": "playtail",
   "compatibility_date": "2026-10-23",
+  "main": "./worker/relay-proxy.ts",
   "assets": {
     "directory": "./dist",
+    "binding": "ASSETS",
     // An address with no file and no rewrite gets public/404.html, with a 404 status.
-    "not_found_handling": "404-page"
+    "not_found_handling": "404-page",
+    // Only /relay/* reaches the code; everything else is served as a file without it.
+    "run_worker_first": ["/relay/*"]
+  },
+  "vars": {
+    // The relay on Teja's Mac, through the Cloudflare tunnel tail-relay.
+    "RELAY_ORIGIN": "https://relay.playtail.app"
   },
   // No workers.dev or preview address: the site has one name.
   "workers_dev": false,

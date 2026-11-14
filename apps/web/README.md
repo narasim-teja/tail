@@ -280,12 +280,17 @@ Build-time, all optional.
 `dist/` is a static site. `public/_redirects` serves the page at `/` for `/docs` and
 `/dossier/<account>` (a 200 rewrite to `/`, not `/index.html`: Cloudflare refuses that as a loop),
 so those links open directly; every other page is `/` with a query. It is served on Cloudflare by a
-Worker with static assets only (`wrangler.jsonc`, no code of ours), on playtail.app:
+Worker on playtail.app (`wrangler.jsonc`) that serves `dist/` and whose only code,
+`worker/relay-proxy.ts`, passes `/relay/*` to the relay (`RELAY_ORIGIN`, the tunnel at
+relay.playtail.app) as the dev server's proxy does, so a match not yet published opens from the
+relay on the same origin:
 
-````sh
+```sh
 bun run --cwd apps/web build && cd apps/web && bunx wrangler@4.156.0 deploy
-``` `public/og.png` is the social card (`scripts/og-image.ts`, committed), named with absolute
-URLs from `VITE_SITE_URL` in `index.html`.
+```
+
+`public/og.png` is the social card (`scripts/og-image.ts`, committed), named with absolute URLs
+from `VITE_SITE_URL` in `index.html`.
 
 ## What the page checks, and how
 
