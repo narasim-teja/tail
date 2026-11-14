@@ -9,6 +9,7 @@ import { fromB64, toB64, toB64Url } from "../lib/b64";
 import { parseSettlement, type Settlement } from "../near/chain";
 import { replayDigest, type Signer } from "../proximity/auth";
 import { isMatchId, matchIdBytes, type Obj, obj, RelayError, RelayTransport, read } from "../proximity/relay";
+import { parseRequires, type Requires, requiresBody } from "../tail/requires";
 
 /** `POST /matches` refused because this host already has a lobby that can still start. */
 export class OpenLobbyError extends RelayError {
@@ -64,6 +65,8 @@ export interface NewMatch {
   minPlayers: number;
   maxPlayers: number;
   startByMs: number;
+  /** Open only to players whose Dossier meets this; null lets anyone join. */
+  requires: Requires | null;
 }
 
 /** The contract's phases. A locked lobby is still `lobby`, with `lockedUntilMs` set. */
@@ -101,6 +104,8 @@ export interface ChainMatch {
   settledAs: Settlement | null;
   /** On `refunded_rule_violation`: the rule End's replay found broken, in the contract's words. */
   violation: string | null;
+  /** Who may join, by their Dossier; null for a lobby anyone may join. */
+  requires: Requires | null;
 }
 
 export interface SealedKeys {
@@ -140,6 +145,14 @@ function settlementOf(v: unknown): Settlement | null {
   }
 }
 
+function requiresOf(v: unknown): Requires | null {
+  try {
+    return parseRequires(v);
+  } catch (e) {
+    throw new RelayError(0, `relay answer: ${(e as Error).message}`);
+  }
+}
+
 function parseChain(v: unknown): ChainMatch | null {
   if (v === null || v === undefined) return null;
   const c = obj(v, "chain");
@@ -166,6 +179,7 @@ function parseChain(v: unknown): ChainMatch | null {
     zoneHash: read.hex(c, "zone_hash"),
     settledAs: settlementOf(c["settled_as"]),
     violation: c["violation"] === null || c["violation"] === undefined ? null : read.str(c, "violation"),
+    requires: requiresOf(c["requires"]),
   };
 }
 
@@ -373,6 +387,8 @@ export class RelayClient extends RelayTransport {
       min_players: m.minPlayers,
       max_players: m.maxPlayers,
       start_by_ms: m.startByMs,
+      // Left out for a lobby anyone may join: the relay takes `requires` only as an object.
+      ...(m.requires ? { requires: requiresBody(m.requires) } : {}),
     });
     try {
       const r = await this.send(await this.sign(signer, "POST", "/matches", body));

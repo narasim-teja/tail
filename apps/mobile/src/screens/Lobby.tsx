@@ -2,7 +2,8 @@
 // across a park and a Share link carrying it, players as initials with names, stake and
 // length, Start for the host (enabled at min players), Leave. A lobby that can no longer start
 // offers only what the chain still allows (tail/lobby.ts): leave, or the host calls it off. The QR keeps the full match id:
-// it never expires, while the short code works only while the lobby is open.
+// it never expires, while the short code works only while the lobby is open. A lobby open only to
+// players with a record says its rule, and to someone not in it yet, their own record.
 import { useEffect, useRef, useState } from "react";
 import { Animated, Share, StyleSheet, View } from "react-native";
 import Svg, { Path, Rect } from "react-native-svg";
@@ -10,6 +11,7 @@ import { joinLink } from "../relay/client";
 import { TOP_UP, useApp } from "../state/app";
 import { handleOf, money } from "../tail/huntModel";
 import { type LobbyMay, type LobbyState, lobbyState } from "../tail/lobby";
+import { type DossierRecord, type Requires, recordText, requiresText } from "../tail/requires";
 import { haptic } from "../ui/haptics";
 import {
   Avatar,
@@ -42,6 +44,10 @@ export interface LobbyModel {
   minutes: number | null;
   players: { id: string; host: boolean; me: boolean }[];
   minPlayers: number;
+  /** Who may join, by their Dossier, as the chain has it; null when anyone may. */
+  requires: Requires | null;
+  /** This player's own Dossier counts; null while unknown. */
+  record: DossierRecord | null;
   state: LobbyState;
   /** What this person can do now, as the chain would take it (tail/lobby.ts). */
   may: LobbyMay;
@@ -292,6 +298,13 @@ export function LobbyView({
         </View>
       </Row>
 
+      {m.requires ? (
+        <Notice
+          title="Players with a record only"
+          detail={`${requiresText(m.requires)}.${!m.joined && m.record ? ` ${recordText(m.record)}` : ""}`}
+        />
+      ) : null}
+
       {line ? <Notice title={line.title} detail={line.detail} /> : null}
 
       <View style={styles.players}>
@@ -344,6 +357,12 @@ export function Lobby() {
   }));
   const isHost = !!m && m.host === me;
   const joined = players.some((p) => p.me);
+  const requires = chain?.requires ?? null;
+  // Someone deciding whether to join a lobby with a rule sees their own record next to it.
+  const gated = !!requires && !joined;
+  useEffect(() => {
+    if (gated) void app.readRecord();
+  }, [app, gated]);
   const { state, may } = lobbyState({
     match: m
       ? {
@@ -375,6 +394,8 @@ export function Lobby() {
         minutes: chain ? Math.round(chain.durationMs / 60_000) : null,
         players,
         minPlayers: chain?.minPlayers ?? 3,
+        requires,
+        record: app.record,
         state,
         may,
         isHost,

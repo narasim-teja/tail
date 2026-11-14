@@ -1,10 +1,19 @@
-// New match: stake, length, players, zone size (centred on you), public replay (off unless the
-// host turns it on). Picked with
+// New match: stake, length, players, zone size (centred on you), who can join (everyone, or only
+// players with a record on their Dossier), public replay (off unless the host turns it on). Picked with
 // the thumb, not typed: a few sensible choices each, and the zone drawn live on the map around
 // you so the host sees the playing field before anyone stakes.
 import { useEffect, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import { useApp } from "../state/app";
+import {
+  belowRule,
+  boundRequires,
+  type DossierRecord,
+  REQUIRE,
+  type Requires,
+  recordText,
+  ruleText,
+} from "../tail/requires";
 import { Icon } from "../ui/brand";
 import { Button, Caption, Choice, Notice, Row, Screen, Stepper, Title, ToggleRow } from "../ui/kit";
 import { MapPanel } from "../ui/map";
@@ -17,6 +26,8 @@ export interface CreateModel {
   error: string | null;
   /** The lobby this host already has open, when the relay refused a second one. */
   openLobby: string | null;
+  /** The host's own Dossier counts; null while unknown. The host joins too, so the rule applies. */
+  record: DossierRecord | null;
 }
 
 export interface NewMatchForm {
@@ -25,6 +36,8 @@ export interface NewMatchForm {
   minPlayers: number;
   radiusM: number;
   publicReplay: boolean;
+  /** Null: anyone may join. */
+  requires: Requires | null;
 }
 
 /** USDC has 6 decimals. */
@@ -36,17 +49,24 @@ const LENGTHS = [15, 30, 45, 60].map((m) => ({ value: m, label: `${m} min` }));
 const ZONES = [200, 400, 800, 1500].map((r) => ({ value: r, label: r < 1000 ? `${r} m` : `${r / 1000} km` }));
 /** The server's player bounds. */
 const PLAYERS = { min: 3, max: 12 };
+const WHO = [
+  { value: "everyone", label: "Everyone" },
+  { value: "record", label: "Players with a record" },
+] as const;
 
 export function CreateView({
   m,
   onCreate,
   onOpenLobby,
   onBack,
+  initialRule = null,
 }: {
   m: CreateModel;
   onCreate: (f: NewMatchForm) => void;
   onOpenLobby: (matchId: string) => void;
   onBack: () => void;
+  /** Who can join when the form opens; null is Everyone (the design preview sets a rule). */
+  initialRule?: Requires | null;
 }) {
   const [stake, setStake] = useState(1);
   const [minutes, setMinutes] = useState(30);
@@ -55,6 +75,9 @@ export function CreateView({
   // Private unless the host chooses otherwise: a replay shows every player's location trail, so
   // publishing it is a choice the host makes, not the default.
   const [publicReplay, setPublicReplay] = useState(false);
+  const [who, setWho] = useState<(typeof WHO)[number]["value"]>(initialRule ? "record" : "everyone");
+  const [rule, setRule] = useState<Requires>(initialRule ?? { minMatches: 1, minSurvived: 0 });
+  const requires = who === "record" ? rule : null;
   const here = m.here;
   const open = m.openLobby;
   return (
@@ -67,7 +90,14 @@ export function CreateView({
             disabled={!here}
             hint={here ? undefined : "Waiting for your location"}
             onPress={() =>
-              onCreate({ stake: BigInt(stake) * USDC, minutes, minPlayers: players, radiusM, publicReplay })
+              onCreate({
+                stake: BigInt(stake) * USDC,
+                minutes,
+                minPlayers: players,
+                radiusM,
+                publicReplay,
+                requires,
+              })
             }
           />
           <Button kind="quiet" symbol="chevron.left" title="Back" onPress={onBack} />
@@ -109,6 +139,36 @@ export function CreateView({
         onChange={setPlayers}
       />
       <Caption muted>{`Up to ${PLAYERS.max} can join.`}</Caption>
+      <Choice label="Who can join" options={WHO} value={who} onChange={setWho} />
+      {requires ? (
+        <>
+          <Stepper
+            label="Matches played, at least"
+            value={requires.minMatches}
+            min={REQUIRE.min}
+            max={REQUIRE.max}
+            onChange={(n) => setRule(boundRequires({ ...requires, minMatches: n }))}
+          />
+          <Stepper
+            label="Matches survived, at least"
+            value={requires.minSurvived}
+            min={0}
+            max={requires.minMatches}
+            onChange={(n) => setRule(boundRequires({ ...requires, minSurvived: n }))}
+          />
+          <Caption muted>{`Players need ${ruleText(requires)}. Only matches that paid out count.`}</Caption>
+          {m.record && belowRule(m.record, requires) ? (
+            <Notice
+              title="Your record is below this, so you couldn't join your own lobby."
+              detail={recordText(m.record)}
+            />
+          ) : m.record ? (
+            <Caption muted>{`${recordText(m.record)} You join too, so it applies to you.`}</Caption>
+          ) : null}
+        </>
+      ) : (
+        <Caption muted>Anyone with the code can join.</Caption>
+      )}
       <ToggleRow label="Public replay" value={publicReplay} onChange={setPublicReplay} />
       <Caption muted>
         {publicReplay
@@ -134,11 +194,12 @@ export function Create() {
   const app = useApp();
   useEffect(() => {
     app.startLocating();
+    void app.readRecord();
     return () => app.endLocating();
   }, [app]);
   return (
     <CreateView
-      m={{ here: app.here, busy: app.busy, error: app.error, openLobby: app.openLobby }}
+      m={{ here: app.here, busy: app.busy, error: app.error, openLobby: app.openLobby, record: app.record }}
       onCreate={(f) =>
         void app.createMatch({
           stake: f.stake,
@@ -147,6 +208,7 @@ export function Create() {
           maxPlayers: 12,
           radiusM: f.radiusM,
           publicReplay: f.publicReplay,
+          requires: f.requires,
         })
       }
       onOpenLobby={(id) => void app.openMatch(id)}

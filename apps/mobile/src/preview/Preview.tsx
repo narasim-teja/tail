@@ -109,6 +109,8 @@ const lobby = (o: Partial<LobbyModel> = {}): LobbyModel => ({
     { id: "maya.tail-dev.testnet", host: false, me: false },
   ],
   minPlayers: 3,
+  requires: null,
+  record: null,
   state: { kind: "waiting", need: 1 },
   may: { join: false, leave: true, start: false, callOff: false },
   isHost: true,
@@ -278,7 +280,28 @@ export const STATES: Record<string, () => ReactNode> = {
   ),
   create: () => (
     <CreateView
-      m={{ here: { lat: ME.lat, lon: ME.lon, acc: 6 }, busy: null, error: null, openLobby: null }}
+      m={{
+        here: { lat: ME.lat, lon: ME.lon, acc: 6 },
+        busy: null,
+        error: null,
+        openLobby: null,
+        record: null,
+      }}
+      onCreate={noop}
+      onOpenLobby={noop}
+      onBack={noop}
+    />
+  ),
+  "create-record-below": () => (
+    <CreateView
+      m={{
+        here: { lat: ME.lat, lon: ME.lon, acc: 6 },
+        busy: null,
+        error: null,
+        openLobby: null,
+        record: { matches: 1, survived: 0 },
+      }}
+      initialRule={{ minMatches: 3, minSurvived: 1 }}
       onCreate={noop}
       onOpenLobby={noop}
       onBack={noop}
@@ -286,7 +309,13 @@ export const STATES: Record<string, () => ReactNode> = {
   ),
   "create-open-lobby": () => (
     <CreateView
-      m={{ here: { lat: ME.lat, lon: ME.lon, acc: 6 }, busy: null, error: null, openLobby: "ab".repeat(16) }}
+      m={{
+        here: { lat: ME.lat, lon: ME.lon, acc: 6 },
+        busy: null,
+        error: null,
+        openLobby: "ab".repeat(16),
+        record: null,
+      }}
       onCreate={noop}
       onOpenLobby={noop}
       onBack={noop}
@@ -312,6 +341,22 @@ export const STATES: Record<string, () => ReactNode> = {
         joined: false,
         state: { kind: "ready" },
         may: { join: true, leave: false, start: false, callOff: false },
+      })}
+      actions={lobbyActions}
+    />
+  ),
+  "lobby-join-record": () => (
+    <LobbyView
+      m={lobby({
+        players: three.map((p) => ({ ...p, me: false })),
+        isHost: false,
+        joined: false,
+        requires: { minMatches: 3, minSurvived: 1 },
+        record: { matches: 1, survived: 0 },
+        state: { kind: "ready" },
+        may: { join: true, leave: false, start: false, callOff: false },
+        error:
+          "This lobby needs 3 matches played and 1 survived. You have 1 played and 0 survived. Only matches that paid out count.",
       })}
       actions={lobbyActions}
     />

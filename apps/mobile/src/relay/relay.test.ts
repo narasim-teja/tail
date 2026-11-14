@@ -13,7 +13,7 @@ import * as relayAuth from "../../../server/src/auth.ts";
 import * as relayCodes from "../../../server/src/codes.ts";
 import type { Store } from "../../../server/src/db.ts";
 import { HttpError } from "../../../server/src/errors.ts";
-import { RequestAuth } from "../../../server/src/routes/util.ts";
+import { field, RequestAuth } from "../../../server/src/routes/util.ts";
 import { fromB64, toB64 } from "../lib/b64";
 import { hudDigest, type Signer } from "../proximity/auth";
 import { RelayError } from "../proximity/relay";
@@ -230,6 +230,7 @@ describe("lobby codes", () => {
         minPlayers: 3,
         maxPlayers: 3,
         startByMs: 1,
+        requires: null,
       }),
     ).toEqual({ matchId: ID, code: "K7M-4QX" });
     const view = {
@@ -277,7 +278,18 @@ describe("lobby codes", () => {
     ]);
     // A contract from before v2 says nothing about settlement.
     const old = (await relay({ ...view, chain }).client.getMatch(ID)).chain;
-    expect([old?.settledAs, old?.violation]).toEqual([null, null]);
+    expect([old?.settledAs, old?.violation, old?.requires]).toEqual([null, null, null]);
+    const gated = { ...chain, phase: "lobby", requires: { min_matches: 3, min_survived: 1 } };
+    expect((await relay({ ...view, chain: gated }).client.getMatch(ID)).chain?.requires).toEqual({
+      minMatches: 3,
+      minSurvived: 1,
+    });
+    await expect(
+      relay({
+        ...view,
+        chain: { ...gated, requires: { min_matches: "3", min_survived: 1 } },
+      }).client.getMatch(ID),
+    ).rejects.toThrow("min_matches is not a count");
     await expect(
       relay({ ...view, chain: { ...chain, settled_as: "kept" } }).client.getMatch(ID),
     ).rejects.toThrow("not a settlement");
@@ -393,6 +405,7 @@ describe("signed match view and refusals", () => {
     minPlayers: 3,
     maxPlayers: 3,
     startByMs: 1,
+    requires: null,
   };
   const answering = (status: number, body: unknown) =>
     new RelayClient("http://r", {
@@ -414,6 +427,26 @@ describe("signed match view and refusals", () => {
     const other = await busy.createMatch(signer, form).catch((x: unknown) => x);
     expect(other).not.toBeInstanceOf(OpenLobbyError);
     expect(other).toMatchObject({ status: 409, message: "a lobby is already being made for you" });
+  });
+
+  test("a lobby open only to players with a record sends `requires` as the relay reads it", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const client = new RelayClient("http://r", {
+      contractId: CONTRACT,
+      fetch: (async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ match_id: ID, zone_hash: "00".repeat(32), code: "K7M-4QX" }));
+      }) as unknown as typeof fetch,
+    });
+    await client.createMatch(signer, { ...form, requires: { minMatches: 3, minSurvived: 1 } });
+    await client.createMatch(signer, form);
+    const [gated, open] = bodies;
+    expect(gated?.["requires"]).toEqual({ min_matches: 3, min_survived: 1 });
+    // The relay's own field checks (apps/server routes/matches.ts) take it.
+    const r = field.obj(gated ?? {}, "requires");
+    expect([field.int(r, "min_matches", 0, 1_000), field.int(r, "min_survived", 0, 1_000)]).toEqual([3, 1]);
+    // Anyone may join: no `requires` at all, since the relay takes it only as an object.
+    expect(open !== undefined && "requires" in open).toBe(false);
   });
 
   test("too many and too large read as short plain sentences", async () => {

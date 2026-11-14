@@ -27,7 +27,7 @@ import {
 } from "../identity/identity";
 import { keychain } from "../identity/keychain";
 import { anchoredRoots, matchFacts } from "../near/chain";
-import { NearRpc } from "../near/rpc";
+import { NearError, NearRpc } from "../near/rpc";
 import { PLAYER_GAS } from "../near/tx";
 import { payoutProblem, withdrawCall, withdrawGas, withdrawRefusal } from "../near/withdraw";
 import { meshProfile } from "../proximity/carry/mesh";
@@ -52,6 +52,7 @@ import {
 } from "../relay/client";
 import { checkHandlerLines, type HandlerCheck } from "../tail/handler";
 import { TailHunt } from "../tail/hunt";
+import { type DossierRecord, dossierRefusal, parseRecord, refusalText } from "../tail/requires";
 import { type Receipts, receiptRoot, receiptRootKey, watchResults } from "../tail/results";
 import { checkedZone, type Zone } from "../tail/zone";
 import { assertWith, attestor, radioPort } from "./device";
@@ -129,6 +130,11 @@ class AppModel {
   /** Create was refused because this host already has this lobby open; Create offers to open it. */
   openLobby: string | null = null;
   balance: bigint | null = null;
+  /**
+   * This player's Dossier counts (contract `get_dossier`), for lobbies open only to players with
+   * a record; null until read, or when NEAR or the contract couldn't say.
+   */
+  record: DossierRecord | null = null;
   briefing: Briefing | null = null;
   /** Why the last try to read this player's orders failed; Briefing shows it and waits for Try again. */
   briefError: string | null = null;
@@ -525,7 +531,7 @@ class AppModel {
         throw e;
       }
       this.setMatch(matchId);
-      await this.callContract("join_match", { match_id: matchId });
+      await this.joinMatch(matchId);
     });
   }
 
@@ -555,7 +561,35 @@ class AppModel {
   }
 
   join() {
-    return this.act("Joining", () => this.callContract("join_match", { match_id: this.matchId }));
+    return this.act("Joining", () => this.joinMatch(this.needMatch()));
+  }
+
+  /**
+   * `join_match`. The contract refuses a player whose Dossier is below the lobby's rule; that
+   * refusal is said in plain words with the player's own record, read again at that moment.
+   */
+  private async joinMatch(matchId: string): Promise<void> {
+    try {
+      await this.callContract("join_match", { match_id: matchId });
+    } catch (e) {
+      const rule = e instanceof NearError ? dossierRefusal(e.message) : null;
+      if (!rule) throw e;
+      await this.readRecord();
+      throw new Error(refusalText(rule, this.record));
+    }
+  }
+
+  /** Reads this player's Dossier counts for Create and a lobby with a rule (`record`). */
+  async readRecord(): Promise<void> {
+    const me = this.me;
+    if (!me || !CONTRACT_ID) return;
+    try {
+      this.record = parseRecord(await this.rpc.view<unknown>(CONTRACT_ID, "get_dossier", { account_id: me }));
+    } catch {
+      // Unknown, not empty: the screens then say nothing about the player's record.
+      this.record = null;
+    }
+    this.emit();
   }
 
   leave() {
@@ -661,6 +695,7 @@ class AppModel {
     await forgetAccount(keychain);
     this.identity = { ...this.identity, accountId: null };
     this.wallet = null;
+    this.record = null;
     this.page = null;
     this.emit();
   }
