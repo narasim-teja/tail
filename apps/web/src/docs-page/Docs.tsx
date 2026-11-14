@@ -40,6 +40,7 @@ export const SECTIONS = [
   { id: "money", title: "One stake, one number" },
   { id: "proof", title: "What a tag proves" },
   { id: "check", title: "Check a match yourself" },
+  { id: "play", title: "Play it yourself" },
   { id: "dossier", title: "The dossier" },
   { id: "limits", title: "What we don't claim" },
   { id: "today", title: "Where it stands today" },
@@ -368,6 +369,44 @@ cargo run -q -p referee-verify -- /tmp/match.json`}</Code>
             </Rule>
           </Section>
 
+          <Section id="play">
+            <p>
+              The app is built from source with Xcode; it is not on the App Store or TestFlight. A match needs
+              three iPhones and a relay they can all reach.
+            </p>
+            <Rule name="Install the app">
+              <p>
+                Turn on Developer Mode on each phone and follow "Build onto a phone" in the{" "}
+                <a className="l-link" href={repoFile("apps/mobile/README.md")} {...ext}>
+                  app's README
+                </a>
+                . Your Apple team needs the App Attest capability. On first launch allow Bluetooth and
+                location.
+              </p>
+            </Rule>
+            <Rule name="Point it at a relay">
+              <p>
+                Set <code>TAIL_RELAY_URL</code> in <code>.env.local</code> before you build, or type the
+                address in the app under Settings, then Advanced. To run your own relay:
+              </p>
+              <Code>{"bun run --cwd apps/server start"}</Code>
+              <p>
+                Our relay is <code>https://relay.playtail.app</code>. The referee accepts App Attest keys only
+                for our App ID (<code>APP_ID</code> in <code>crates/referee-wasi/src/cmd/mod.rs</code>), so a
+                build signed by another Apple team plays against its own relay and referee, with that constant
+                changed.
+              </p>
+            </Rule>
+            <Rule name="Play">
+              <p>
+                The host creates a match and the others join with its code. Matches are private by default;
+                turn on Public replay to let anyone open the replay afterwards. With no phones at all,{" "}
+                <code>apps/server/scripts/ghost-match.ts</code> plays a match of simulated phones on your own
+                testnet contract, through the relay and the local test referee.
+              </p>
+            </Rule>
+          </Section>
+
           <Section id="dossier">
             <p>
               Every player holds a Dossier: one{" "}
@@ -441,32 +480,36 @@ cargo run -q -p referee-verify -- /tmp/match.json`}</Code>
           </Section>
 
           <Section id="today">
-            <Rule name="Has run">
+            <Rule name="Works">
               <ul className="d-list">
                 <li>
-                  The current protocol (v2) is live on NEAR testnet. On 2026-11-13 the contract was upgraded
-                  in place and a full match of test players ran through it and the local test referee.
+                  The contract on NEAR testnet runs the current protocol: the verdict chain, checkpoints with
+                  consistency proofs, demand-priced hints, the End replay and payout, and the Dossier NFT.
                 </li>
                 <li>
-                  That evening two iPhones and a test player played a match indoors: a tag from real mutual
-                  Bluetooth contact, two demand-priced hints, a forfeit after {darkRule} dark, and End paid
-                  the survivor after the contract's replay. tail‑verify re-ran it identically.
+                  Two iPhones with App Attest have played a match indoors with one simulated player: a tag
+                  from real mutual Bluetooth contact, two priced hints, a forfeit after {darkRule} dark, and
+                  End paid the survivor after the contract's replay. tail‑verify re-runs it identically.
                 </li>
                 <li>
-                  A match of test players ran end to end in the OutLayer enclave on 2026-11-12, on the earlier
-                  protocol (v1).
+                  This site, the replay and its checks, and the dossier page read the live contract. The relay
+                  runs on our Mac behind a Cloudflare tunnel.
                 </li>
               </ul>
             </Rule>
-            <Rule name="Has not">
+            <Rule name="Not yet">
               <ul className="d-list">
-                <li>A match outdoors in a park. Range and pocket-mode tests haven't run either.</li>
-                <li>A v2 match in the hardware enclave.</li>
                 <li>
-                  A Handler line from the model in a v2 match: the test referee has no network and uses
-                  templates.
+                  The enclave. The contract pins the local test referee; the OutLayer build is deployed but
+                  has never completed a call, because OutLayer's testnet holds each call for over a minute,
+                  too slow for 10-second ticks.
                 </li>
-                <li>The App Store.</li>
+                <li>Outdoor, range and pocket-mode tests in a park.</li>
+                <li>
+                  A model Handler line in a match on phones: the local test referee now asks NEAR AI, but no
+                  phone match has used it yet.
+                </li>
+                <li>Mesh carry by default, and the App Store.</li>
               </ul>
             </Rule>
           </Section>

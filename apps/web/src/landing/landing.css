@@ -958,7 +958,7 @@
   font-weight: 800;
 }
 
-/* ── Why a tag can't be faked: eight reasons on ruled lines ─────────────────────── */
+/* ── Faking your GPS won't get you a tag: eight reasons on ruled lines ─────────── */
 
 .l-proof {
   background: linear-gradient(in oklch, var(--g-noon), var(--g-evening));

@@ -1,4 +1,4 @@
-// What a tag proves. The front page carries it as the reasons a tag can't be faked (a headline and
+// What a tag proves. The front page carries it as what it takes to fake a tag (a headline and
 // a line each, every number from @tail/protocol, and where things stand today); the docs carry
 // the steps from two phones to the visitor's browser with where to check each, and every limit.
 
@@ -76,7 +76,7 @@ export function steps(replayHref: string): Step[] {
 
 const icon = { size: 26, strokeWidth: 1.75, "aria-hidden": true } as const;
 
-/** The front page's version: why a tag can't be faked, a headline and one line each. */
+/** The front page's version: what stands between a spoofer and a tag, a headline and one line each. */
 export const REASONS: { icon: ReactNode; title: string; line: string }[] = [
   {
     icon: <Bluetooth {...icon} />,
@@ -95,8 +95,8 @@ export const REASONS: { icon: ReactNode; title: string; line: string }[] = [
   },
   {
     icon: <LockKeyhole {...icon} />,
-    title: "Nobody sees where you are",
-    line: "Reports are sealed (X25519, ChaCha20-Poly1305) to the referee, which is built to run in an Intel TDX enclave on OutLayer. The relay carrying them can't open them.",
+    title: "The relay can't see where you are",
+    line: "Reports are sealed (X25519, ChaCha20-Poly1305) to the referee, which is built to run in an Intel TDX enclave on OutLayer. The relay carrying them can't open them; while the test referee runs on our machine, we can.",
   },
   {
     icon: <Dices {...icon} />,
@@ -129,7 +129,7 @@ export function ProofStrip() {
     <section className="l-proof" id="proof" aria-labelledby="proof-title" tabIndex={-1}>
       <div className="l-proof-in">
         <h2 id="proof-title" className="l-h2">
-          Why a tag can't be faked from the couch
+          Faking your GPS won't get you a tag
         </h2>
         <p className="l-lede">
           Most location games believe whatever GPS your phone reports, so spoofers win. TAIL wants two phones

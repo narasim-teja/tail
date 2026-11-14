@@ -43,7 +43,7 @@ export function Hero({
             {featured ? "Watch a real match" : "Watch the demo match"}
           </a>
           <a className="l-button l-button-sand" href="#proof">
-            Why it can't be faked
+            How a tag is proven
           </a>
         </div>
       </div>
