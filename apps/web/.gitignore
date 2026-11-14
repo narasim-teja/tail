@@ -4,3 +4,4 @@ dist/
 screenshots/
 public/fixtures/
 test-results/
+.wrangler/

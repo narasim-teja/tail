@@ -88,9 +88,9 @@ describe("which page an address opens", () => {
       .trim()
       .split("\n")
       .map((l) => l.trim().split(/\s+/));
-    expect(rules).toContainEqual(["/dossier/*", "/index.html", "200"]);
-    expect(rules).toContainEqual(["/docs", "/index.html", "200"]);
-    expect(rules).toContainEqual(["/docs/", "/index.html", "200"]);
+    expect(rules).toContainEqual(["/dossier/*", "/", "200"]);
+    expect(rules).toContainEqual(["/docs", "/", "200"]);
+    expect(rules).toContainEqual(["/docs/", "/", "200"]);
   });
 });
 

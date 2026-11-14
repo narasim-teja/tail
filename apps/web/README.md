@@ -277,9 +277,14 @@ Build-time, all optional.
 
 ### Hosting
 
-`dist/` is a static site. `public/_redirects` sends `/docs` and `/dossier/<account>` to
-`index.html` for Cloudflare Pages (and Netlify), so those links open directly; every other page is
-`/` with a query. `public/og.png` is the social card (`scripts/og-image.ts`, committed), named with absolute
+`dist/` is a static site. `public/_redirects` serves the page at `/` for `/docs` and
+`/dossier/<account>` (a 200 rewrite to `/`, not `/index.html`: Cloudflare refuses that as a loop),
+so those links open directly; every other page is `/` with a query. It is served on Cloudflare by a
+Worker with static assets only (`wrangler.jsonc`, no code of ours), on playtail.app:
+
+````sh
+bun run --cwd apps/web build && cd apps/web && bunx wrangler@4.156.0 deploy
+``` `public/og.png` is the social card (`scripts/og-image.ts`, committed), named with absolute
 URLs from `VITE_SITE_URL` in `index.html`.
 
 ## What the page checks, and how
@@ -390,7 +395,7 @@ receipts are unsigned. Check it the way you would a real match:
 
 ```sh
 cargo run -q -p referee-verify --bin tail-verify -- apps/web/public/fixtures/boston-common-economy.json
-```
+````
 
 **The referee, VRF and Handler-model keys in the fixture are public test keys** derived from
 strings in the script. They were never used on NEAR, the bundle names no transactions, and the page labels it
