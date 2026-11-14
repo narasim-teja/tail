@@ -13,5 +13,10 @@
   // No workers.dev or preview address: the site has one name.
   "workers_dev": false,
   "preview_urls": false,
-  "routes": [{ "pattern": "playtail.app", "custom_domain": true }]
+  // www answers too; a zone Redirect Rule (dashboard: "Redirect from WWW to Root") sends it to the
+  // apex, the canonical address.
+  "routes": [
+    { "pattern": "playtail.app", "custom_domain": true },
+    { "pattern": "www.playtail.app", "custom_domain": true }
+  ]
 }
