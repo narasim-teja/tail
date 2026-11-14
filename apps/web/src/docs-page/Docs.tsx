@@ -487,9 +487,13 @@ cargo run -q -p referee-verify -- /tmp/match.json`}</Code>
                   consistency proofs, demand-priced hints, the End replay and payout, and the Dossier NFT.
                 </li>
                 <li>
-                  Two iPhones with App Attest have played a match indoors with one simulated player: a tag
-                  from real mutual Bluetooth contact, two priced hints, a forfeit after {darkRule} dark, and
-                  End paid the survivor after the contract's replay. tail‑verify re-runs it identically.
+                  On 2026-11-14 four iPhones with App Attest played a match outdoors at Chestnut Hill
+                  Reservoir: three tags from real mutual Bluetooth contact, three Handler hints (two voiced by
+                  NEAR AI's model), and End paid the survivor after the contract's replay. tail‑verify re-runs
+                  it identically.{" "}
+                  <a className="l-link" href="/?match=c043db6be8eedceaf6194989e59b47e6">
+                    Watch it
+                  </a>
                 </li>
                 <li>
                   This site, the replay and its checks, and the dossier page read the live contract. The relay
@@ -504,11 +508,7 @@ cargo run -q -p referee-verify -- /tmp/match.json`}</Code>
                   has never completed a call, because OutLayer's testnet holds each call for over a minute,
                   too slow for 10-second ticks.
                 </li>
-                <li>Outdoor, range and pocket-mode tests in a park.</li>
-                <li>
-                  A model Handler line in a match on phones: the local test referee now asks NEAR AI, but no
-                  phone match has used it yet.
-                </li>
+                <li>Bluetooth range and pocket-mode tests on their own.</li>
                 <li>Mesh carry by default, and the App Store.</li>
               </ul>
             </Rule>

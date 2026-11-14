@@ -47,7 +47,7 @@ function Rundown() {
       <h2 id="game" className="l-h2">
         How a match goes
       </h2>
-      <p className="l-lede">Three to twelve friends, one park, 30 to 60 minutes.</p>
+      <p className="l-lede">Three to twelve friends, one park, 15 to 60 minutes.</p>
       <ol className="l-rundown-list">
         {RUNDOWN.map((r) => (
           <li key={r.title} className="l-rundown-step">
