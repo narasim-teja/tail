@@ -408,18 +408,6 @@
     min-height: 440px;
   }
 }
-.l-hunt-caption {
-  margin-top: var(--m);
-  font-size: 0.875rem;
-  line-height: 1.45;
-  color: var(--t-inkSoft);
-  text-wrap: pretty;
-}
-.l-hunt-label {
-  color: var(--t-ink);
-  font-weight: 600;
-}
-
 /* ── The map panel ──────────────────────────────────────────────────────────────── */
 
 .l-map-box {

@@ -132,8 +132,8 @@ export function ProofStrip() {
           Why a tag can't be faked from the couch
         </h2>
         <p className="l-lede">
-          Plenty of location games trust your phone's GPS, and spoofers win. Here, a tag needs two phones that
-          were really there, and a trail of signatures anyone can check.
+          Most location games believe whatever GPS your phone reports, so spoofers win. TAIL wants two phones
+          that actually heard each other, and every step leaves a signature anyone can check.
         </p>
         <ul className="l-reasons">
           {REASONS.map((r) => (

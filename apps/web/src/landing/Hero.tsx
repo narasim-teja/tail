@@ -10,6 +10,7 @@ import { HeroMap, type Reading, readingAt, stillTime } from "./HeroMap.tsx";
 import { Eyebrow, HeadValue, HeatBar, LockArc } from "./instruments.tsx";
 import type { LandingData } from "./Landing.tsx";
 import type { MapData } from "./map.ts";
+import { STAKE, usdc } from "./rules.ts";
 import type { Scene } from "./scene.ts";
 
 export function Hero({
@@ -25,21 +26,16 @@ export function Hero({
   const label = featured
     ? `${featured.place}, ${day(Date.parse(featured.playedAt))}`
     : "A generated match on Boston Common";
-  const chase = scene?.chase;
-  const story =
-    scene && chase
-      ? `${scene.players[chase.hunter]} closes on ${scene.players[chase.target]} until the lock fills, then strikes.`
-      : null;
   return (
     <section className="l-hero" aria-labelledby="hero-title">
       <div className="l-hero-words">
         <h1 id="hero-title" className="l-hero-title">
-          Tag, in a real park. <span className="l-hero-b">Every tag&nbsp;proven.</span>
+          Real-world tag. <span className="l-hero-b">Someone in your group chat is hunting&nbsp;you.</span>
         </h1>
         <p className="l-hero-line">
-          Think Among Us, on foot. You get one secret target, and someone secretly has you. Stay close until
-          your lock fills, then strike to take their stake. A tag counts only when both phones heard each
-          other over Bluetooth, and NEAR re-checks the whole match before anyone is paid.
+          Everyone puts ${usdc(STAKE).replace(/\.00$/, "")} on their own head and gets one secret target. Find
+          yours in the park, stay close until your lock fills, then strike to take their money. A tag only
+          counts if both phones picked up each other's Bluetooth, so faking your GPS won't get you one.
         </p>
         <div className="l-actions">
           <a className="l-button" href={replayHref}>
@@ -50,12 +46,8 @@ export function Hero({
           </a>
         </div>
       </div>
-      <figure className="l-hunt">
+      <figure className="l-hunt" aria-label={label}>
         {scene ? <Hunt scene={scene} map={map} reduced={reduced} /> : <div className="l-hunt-map" />}
-        <figcaption className="l-hunt-caption">
-          <span className="l-hunt-label">{story ? `${label}.` : label}</span>
-          {story && <span> {story}</span>}
-        </figcaption>
       </figure>
     </section>
   );

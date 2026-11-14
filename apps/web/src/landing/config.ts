@@ -28,5 +28,8 @@ export function configOf(env: Record<string, string | undefined>, base = "/"): S
 
 export const config = configOf(import.meta.env, import.meta.env.BASE_URL);
 
+/** Props for a link off this site: it opens in a new tab, and the page it opens can't reach back. */
+export const EXTERNAL = { target: "_blank", rel: "noopener noreferrer" } as const;
+
 /** A file in the repository, on its default branch. */
 export const repoFile = (path: string, repoUrl = config.repoUrl) => `${repoUrl}/blob/main/${path}`;

@@ -1,7 +1,7 @@
 // The site's frame, shared by the front page and the docs: the top bar and the footer.
 
 import { markSvg } from "@tail/brand";
-import { config } from "./config.ts";
+import { config, EXTERNAL } from "./config.ts";
 import { Logo } from "./logos.tsx";
 import { siteOf } from "./site.ts";
 import { TECH } from "./tech.ts";
@@ -32,7 +32,7 @@ export function SiteTop({ current }: { current: "home" | "docs" }) {
         <a href={config.docsUrl} {...(current === "docs" ? { "aria-current": "page" as const } : {})}>
           Docs
         </a>
-        <a className="l-nav-icon" href={config.repoUrl} rel="noopener" aria-label="Source on GitHub">
+        <a className="l-nav-icon" href={config.repoUrl} {...EXTERNAL} aria-label="Source on GitHub">
           <Logo name="github" size={22} />
         </a>
       </nav>
@@ -49,7 +49,7 @@ export function SiteFooter() {
           <ul className="l-foot-tech">
             {TECH.map((t) => (
               <li key={t.name}>
-                <a className="l-foot-link" href={t.href} rel="noopener">
+                <a className="l-foot-link" href={t.href} {...EXTERNAL}>
                   <Logo name={t.logo} size={18} />
                   {t.name}
                 </a>
@@ -75,7 +75,7 @@ export function SiteFooter() {
               </a>
             </li>
             <li>
-              <a className="l-foot-link" href={config.repoUrl} rel="noopener">
+              <a className="l-foot-link" href={config.repoUrl} {...EXTERNAL}>
                 <Logo name="github" size={18} />
                 GitHub
               </a>

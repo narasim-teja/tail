@@ -7,7 +7,7 @@ import { DOSSIER_ENTRIES } from "@tail/brand";
 import { HINT_BPS, HINT_NAME, LOCK_EPOCHS } from "@tail/protocol";
 import { type ReactNode, useEffect, useState } from "react";
 import { Hints } from "../landing/Beats.tsx";
-import { config, repoFile } from "../landing/config.ts";
+import { config, EXTERNAL, repoFile } from "../landing/config.ts";
 import { DossierKey } from "../landing/DossierCard.tsx";
 import { HeatBar, LockArc } from "../landing/instruments.tsx";
 import { Logo } from "../landing/logos.tsx";
@@ -129,7 +129,7 @@ const Code = ({ children }: { children: string }) => (
   </pre>
 );
 
-const ext = { rel: "noopener" } as const;
+const ext = EXTERNAL;
 const NEP171 = "https://nomicon.io/Standards/Tokens/NonFungibleToken/Core";
 const dossierHref = config.dossierAccount
   ? `${import.meta.env.BASE_URL}dossier/${encodeURIComponent(config.dossierAccount)}`
