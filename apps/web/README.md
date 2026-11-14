@@ -191,19 +191,27 @@ takeover does.
   scene is cut from the bundle by the replay's own model (`scripts/scene.ts`), including the
   hunter's lock, heat and head as they changed. It runs only on screen with the tab visible;
   Reduce Motion draws one still frame of the strike.
+- **How a match goes.** The rules in four lines (stake, a secret target, close in and strike,
+  outlast the clock), each with an icon.
 - **Lock and heat, Strike, Hints.** One sentence each, the instruments doing the talking. Lock and
   heat share a fold: they are one number seen from both sides, so the hunter's arc and the
   target's bar climb together. The Handler's sheet prices each hint with `hintPrice` at a 5 USDC
   stake for the demand the visitor sets (pinned by a test).
-- **How it's checked.** Four steps, a line each, a link to the docs' six, and one line on where
-  things stand (testnet, a test referee, iPhone only) with a link to everything not claimed.
+- **Why a tag can't be faked.** Eight reasons, a line each, every number from `@tail/protocol`
+  (mutual Bluetooth codes, App Attest, GPS plausibility, sealed reports, the VRF draw, the Merkle
+  log on NEAR, the contract's End replay, checking it yourself), a link to the docs' eight steps,
+  and one line on where things stand (testnet, a test referee, iPhone only) with a link to
+  everything not claimed.
 - **Matches.** The published matches, each with how the pinned contract settled it, read live with
   `get_match` (paid out, refunded, not on NEAR, or that NEAR didn't answer). That is the contract's
   record, not the replay's checks, which run when a row is opened. With none published, the
   generated demos (`public/fixtures/demos.json`, written by `make-fixture.ts`) are offered,
   labelled as generated and not on NEAR.
-- **A dossier.** One player's card, the contract's own `nft_token` media, when
-  `VITE_DOSSIER_ACCOUNT` is set and NEAR returns it; otherwise the section is absent.
+- **The dossier.** What the soulbound NFT is, with a key to its card's marks. The card is the
+  contract's own `nft_token` media for `VITE_DOSSIER_ACCOUNT` when it is set and NEAR returns it;
+  otherwise the "a full record" golden vector drawn by `dossierSvg`, labelled as an example.
+- **Footer.** The logos of what TAIL is built on, each linking to its site. Links off the site
+  open in a new tab.
 
 Everything the first screen needs (type, the match list, the scene and its map, the demos) is
 fetched before the first render, so nothing moves when a font or file arrives. The browser's theme
@@ -265,7 +273,7 @@ Build-time, all optional.
 | `VITE_SITE_URL`        | the canonical origin (default `https://playtail.app`; https only): the canonical link, `og:url`, `og:image`, the footer                                              |
 | `VITE_REPO_URL`        | the source repository (default `https://github.com/narasim-teja/tail`): GitHub in the top bar and footer, the docs' links into the repo (GitHub-style `/blob/main/`) |
 | `VITE_DOCS_URL`        | where Docs links to (default the site's own `/docs`)                                                                                                                 |
-| `VITE_DOSSIER_ACCOUNT` | the player whose Dossier the front page shows; unset, the section is left out                                                                                        |
+| `VITE_DOSSIER_ACCOUNT` | the player whose Dossier the front page shows; unset, it shows an example card                                                                                       |
 
 ### Hosting
 
