@@ -1,0 +1,51 @@
+# The gate (`bun run check`) on a clean checkout, on GitHub's own Ubuntu runners: Biome,
+# TypeScript, every Bun test (the iPhone app's included), the Rust workspace, the NEAR contract and
+# the OutLayer referee module. The Swift lint and the staged-secret scan need Xcode and a local
+# commit, so they stay local. Rust toolchains come from the rust-toolchain.toml files.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Rust toolchains
+        # Each pinned toolchain, with its components and targets, from its own rust-toolchain.toml.
+        run: |
+          rustup toolchain install
+          (cd crates/referee-wasi && rustup toolchain install)
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            contracts/tail -> target
+            crates/referee-wasi -> target
+
+      - name: Install
+        # apps/mobile keeps its own lockfile outside the root workspace; its tests run in `bun test`.
+        run: |
+          bun install --frozen-lockfile
+          (cd apps/mobile && bun install --frozen-lockfile)
+
+      - name: Gate
+        run: bun run check ts rust contract referee
