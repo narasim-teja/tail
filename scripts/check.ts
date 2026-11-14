@@ -39,16 +39,19 @@ const steps: Step[] = [
     },
     { name: `${c}: test`, group: "contract", run: () => $`cargo test --locked`.cwd(`${root}${c}`).quiet() },
   ]),
-  // The OutLayer referee is its own workspace and only builds for wasm32-wasip2.
+  // The referee is its own workspace, built for wasm32-wasip2 (OutLayer) and natively (the local
+  // test referee, whose host and HTTPS backends only the native build compiles).
   ...(existsSync(`${root}crates/referee-wasi/Cargo.toml`)
-    ? (["fmt", "clippy"] as const).map(
+    ? (["fmt", "clippy wasm32-wasip2", "clippy native"] as const).map(
         (kind): Step => ({
           name: `crates/referee-wasi: ${kind}`,
           group: "referee",
           run: () =>
             (kind === "fmt"
               ? $`cargo fmt --check`
-              : $`cargo clippy --target wasm32-wasip2 --all-targets --locked -- -D warnings`
+              : kind === "clippy native"
+                ? $`cargo clippy --all-targets --locked -- -D warnings`
+                : $`cargo clippy --target wasm32-wasip2 --all-targets --locked -- -D warnings`
             )
               .cwd(`${root}crates/referee-wasi`)
               .quiet(),
