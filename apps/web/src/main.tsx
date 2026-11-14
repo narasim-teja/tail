@@ -4,6 +4,9 @@ import { signInFromHash, takeSignIn } from "./replay/load.ts";
 import { routeOf } from "./route.ts";
 
 const route = routeOf(location.pathname, location.search, import.meta.env.BASE_URL);
+// Which page this is, for the stylesheets: only the replay is a fixed full-screen stage; the
+// dossier and presence pages scroll like the front page and the docs.
+document.documentElement.dataset["page"] = route.kind;
 
 // First, before any request or render: a private replay's sign-in leaves the address bar, so a
 // copied or shared address carries no signature. On the front page and the docs a fragment is a

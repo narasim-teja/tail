@@ -121,10 +121,13 @@ body {
   /* Light type on dark reads thin; a hair of tracking and weight compensates. */
   letter-spacing: 0.006em;
   -webkit-font-smoothing: antialiased;
-  overflow: hidden;
 }
 
-#root {
+/* The replay is one fixed stage that never scrolls; every other page scrolls normally. */
+:root[data-page="replay"] body {
+  overflow: hidden;
+}
+:root[data-page="replay"] #root {
   position: fixed;
   inset: 0;
 }
