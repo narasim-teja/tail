@@ -29,13 +29,14 @@ export function Hero({
   return (
     <section className="l-hero" aria-labelledby="hero-title">
       <div className="l-hero-words">
+        <p className="l-eyebrow l-eyebrow-muted l-hero-kicker">Real-world tag</p>
         <h1 id="hero-title" className="l-hero-title">
-          Real-world tag. <span className="l-hero-b">Someone in your group chat is hunting&nbsp;you.</span>
+          One of your friends is hunting&nbsp;you.
         </h1>
         <p className="l-hero-line">
           Everyone puts ${usdc(STAKE).replace(/\.00$/, "")} on their own head and gets one secret target. Find
-          yours in the park, stay close until your lock fills, then strike to take their money. A tag only
-          counts if both phones picked up each other's Bluetooth, so faking your GPS won't get you one.
+          them, stay close until your lock fills, then strike to take their money. A tag only counts when both
+          phones pick up each other's Bluetooth, so faking your GPS won't help.
         </p>
         <div className="l-actions">
           <a className="l-button" href={replayHref}>

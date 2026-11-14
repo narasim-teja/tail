@@ -309,16 +309,13 @@
 .l-hero-title {
   font-size: clamp(2.5rem, 1.6rem + 3vw, 4rem);
   line-height: 1.02;
-  font-weight: 800;
+  font-weight: 900;
   letter-spacing: -0.033em;
   text-wrap: balance;
-  color: var(--t-inkSoft);
 }
-.l-hero-b {
+.l-hero-kicker {
   display: block;
-  margin-top: var(--xs);
-  font-weight: 900;
-  color: var(--t-ink);
+  margin-bottom: var(--l);
 }
 .l-hero-line {
   margin-top: var(--xl);
