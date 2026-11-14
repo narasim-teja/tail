@@ -125,7 +125,7 @@ export type Loaded =
   | { kind: "private"; refused: boolean }
   /** 409: the match has not ended (or not settled) yet. */
   | { kind: "not-finished" }
-  /** 410: the relay deleted the match's trails after its retention window, so it has no replay. */
+  /** 410: the relay deleted the match's trails (a private match's a day after End, or by hand), so it has no replay. */
   | { kind: "purged" }
   | { kind: "missing" }
   | { kind: "error"; message: string };

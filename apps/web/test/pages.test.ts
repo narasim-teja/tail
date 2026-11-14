@@ -22,11 +22,11 @@ const answer = (status: number) => {
 };
 
 describe("pages with no film", () => {
-  test("a 410 after the retention window says the trails were deleted, not to check the connection", async () => {
+  test("a 410 says the trails were deleted, not to check the connection", async () => {
     expect(await answer(410)).toEqual({ kind: "purged" });
     const p = pageState({ kind: "purged" });
     expect(p).toMatchObject({ title: "This replay is gone", retry: false });
-    expect(p.body).toContain("deleted this match's trails after its retention window");
+    expect(p.body).toContain("deleted this match's trails");
     expect(p.body).not.toContain("connection");
   });
 

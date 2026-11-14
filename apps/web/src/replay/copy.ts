@@ -159,7 +159,7 @@ export function pageState(p: PagePhase): { title: string; body: string; retry: b
     case "purged":
       return {
         title: "This replay is gone",
-        body: "The relay deleted this match's trails after its retention window, so it no longer serves the replay.",
+        body: "The relay deleted this match's trails, so it no longer serves the replay. It does that a day after a private match ends, and its operator can delete any match.",
         retry: false,
       };
     case "missing":
