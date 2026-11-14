@@ -359,14 +359,16 @@ export async function checkGpu(
 
 export function checkSigner(attested: readonly string[], signer: string): Check {
   const s = signer.toLowerCase();
-  const ok = attested.some((a) => a.toLowerCase() === s);
+  // Several nodes in one report can hold the same key; name each key once.
+  const keys = [...new Set(attested.map((a) => a.toLowerCase()))];
+  const ok = keys.includes(s);
   return {
     id: "signer",
     ok,
     by: "local",
     detail: ok
       ? `The key that signed this line, ${s}, is the key the attested TEE holds.`
-      : `The key that signed this line, ${s}, isn't in NEAR AI's report (it holds ${attested.join(", ") || "none"}). Keys change when a node restarts, so an older line can fall out.`,
+      : `The key that signed this line, ${s}, isn't in NEAR AI's report (it holds ${keys.join(", ") || "none"}). Keys change when a node restarts, so an older line can fall out.`,
   };
 }
 

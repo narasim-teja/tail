@@ -14,17 +14,36 @@ import {
   nodeOk,
 } from "../verify/nearai.ts";
 import { type Attested, attestation } from "../verify/nearai-live.ts";
+import { useReplay } from "./context.tsx";
 import type { Check } from "./marks.ts";
 import { ProofLine, Section } from "./sheet.tsx";
 
 export function HandlerVerified({ check }: { check: HandlerCheck | null }) {
+  const { source } = useReplay();
   if (!check) return null;
+  // A generated match's lines are written by hand and signed with a public test key: no NEAR AI
+  // model made them, and the name they log is not one NEAR AI serves. The panel says so, then
+  // checks NEAR AI's live attestation for the model real matches use, so the checks still run.
+  const generated = source.kind === "fixture";
   return (
     <Section label="Verified">
       <ul>
-        <SignatureLine check={check} />
+        <SignatureLine check={check} generated={generated} />
         {check.signature === "signed" && check.signer && (
-          <AttestationLines signer={check.signer} model={check.model ?? HANDLER_MODEL} />
+          <>
+            {generated && (
+              <ProofLine
+                check="info"
+                detail={`This generated match's Handler lines were written by hand and signed with a public test key, not by NEAR AI. Below is NEAR AI's live attestation for ${HANDLER_MODEL}, the model real matches use; the test key isn't in it.`}
+              >
+                A test key signed this line
+              </ProofLine>
+            )}
+            <AttestationLines
+              signer={check.signer}
+              model={generated ? HANDLER_MODEL : (check.model ?? HANDLER_MODEL)}
+            />
+          </>
         )}
       </ul>
     </Section>
@@ -32,22 +51,28 @@ export function HandlerVerified({ check }: { check: HandlerCheck | null }) {
 }
 
 /** The NEAR AI signature on the Handler's chat, recovered in the browser (see HandlerCheck). */
-function SignatureLine({ check }: { check: HandlerCheck }) {
+function SignatureLine({ check, generated }: { check: HandlerCheck; generated: boolean }) {
   const s = check.signature;
   return (
     <ProofLine
       check={s === "signed" ? "pass" : s === "bad" ? "fail" : "info"}
       detail={
-        s === "signed"
-          ? `The key ${short(check.signer ?? "", 6)} signed hashes of this chat's request and response for ${check.model} (ECDSA, recovered in your browser). The response hash isn't matched to the quote here.`
-          : s === "bad"
-            ? "The signature in the log doesn't come from the address logged with it."
-            : s === "unsigned"
-              ? "No model signature was logged for this line (a template line, or the lookup failed), so there is no key to tie to NEAR AI's hardware."
-              : "This replay doesn't carry the text the model signed, so the signature wasn't checked."
+        s === "signed" && generated
+          ? `The key ${short(check.signer ?? "", 6)} signed hashes of this line's request and response (ECDSA, recovered in your browser), the way NEAR AI signs a real chat.`
+          : s === "signed"
+            ? `The key ${short(check.signer ?? "", 6)} signed hashes of this chat's request and response for ${check.model} (ECDSA, recovered in your browser). The response hash isn't matched to the quote here.`
+            : s === "bad"
+              ? "The signature in the log doesn't come from the address logged with it."
+              : s === "unsigned"
+                ? "No model signature was logged for this line (a template line, or the lookup failed), so there is no key to tie to NEAR AI's hardware."
+                : "This replay doesn't carry the text the model signed, so the signature wasn't checked."
       }
     >
-      {s === "signed" ? "The model's chat is signed" : "The model's signature"}
+      {s === "signed" && generated
+        ? "The line is signed"
+        : s === "signed"
+          ? "The model's chat is signed"
+          : "The model's signature"}
     </ProofLine>
   );
 }
