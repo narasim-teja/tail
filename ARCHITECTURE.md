@@ -479,8 +479,8 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   2026-11-13) and says so; the browser's TDX check needs NEAR AI's API to answer it. The response
   hash is not matched to the words, which only the asker's phone holds. The browser signature
   check is tested on fixture signatures; a real NEAR AI signature was verified only in a spike.
-  The local test referee has no network and always uses templates, so no v2 match has a model
-  line yet.
+  The local test referee asks NEAR AI for the line when the relay holds `NEARAI_API_KEY`, and
+  falls back to a template otherwise; no v2 match on phones has had a model line yet.
 
 ### 14. Which referee code signed
 
