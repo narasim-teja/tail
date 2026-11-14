@@ -42,6 +42,16 @@ const MAPS: Record<string, MapSpec> = {
       { osm: "Massachusetts State House", name: "State House", kind: "place" },
     ],
   },
+  "chestnut-hill-reservoir": {
+    place: "Chestnut Hill Reservoir",
+    // The 2026-11-14 park match's zone centre, so the match sits where the map is drawn.
+    lat: 42.33708,
+    lon: -71.15412,
+    extent: [-760, -560, 760, 560],
+    view: [-520, -360, 520, 360],
+    streets: ["Beacon Street", "Chestnut Hill Avenue", "Commonwealth Avenue", "Reservoir Road"],
+    places: [{ osm: "Chestnut Hill Reservoir", name: "Chestnut Hill Reservoir", kind: "water" }],
+  },
 };
 
 type LatLon = { lat: number; lon: number };
