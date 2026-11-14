@@ -44,8 +44,10 @@ export function Stage(props: { decoded: DecodedBundle; prepared: Prepared; sourc
   const verify = useMemo(() => createVerifyStore(decoded.verdicts.length, USDC_GUESS), [decoded]);
   const scene = useRef<SceneHandle | null>(null);
   const [three, setThree] = useState(canUse3D);
-  // undefined while the map looks for the park's name; null once it has given up.
-  const [place, setPlace] = useState<string | null | undefined>(undefined);
+  // A match the site published carries its place. Otherwise the map looks for the park's name:
+  // undefined while it looks, null once it has given up.
+  const published = source.kind === "match" ? source.place : undefined;
+  const [place, setPlace] = useState<string | null | undefined>(published);
   useEffect(() => {
     const h = setTimeout(() => setPlace((p) => (p === undefined ? null : p)), 4_000);
     return () => clearTimeout(h);
@@ -143,7 +145,7 @@ export function Stage(props: { decoded: DecodedBundle; prepared: Prepared; sourc
           insets={insets}
           onFail={onFail}
           onPick={onPick}
-          onPlace={setPlace}
+          onPlace={published ? () => {} : setPlace}
         />
 
         {/* Soft dusk at the edges so the chrome reads without boxes. */}

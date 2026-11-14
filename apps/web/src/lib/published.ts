@@ -66,9 +66,12 @@ export function parseIndex(json: unknown): PublishedMatch[] {
   });
 }
 
-/** The front page's match: the one marked featured, else the newest. */
+/**
+ * The match the front page's hero plays: only one marked featured (else the hero plays the
+ * generated match). The main button's real match is chosen separately (landing/Landing.tsx).
+ */
 export const featuredOf = (list: readonly PublishedMatch[]): PublishedMatch | null =>
-  list.find((m) => m.featured) ?? list[0] ?? null;
+  list.find((m) => m.featured) ?? null;
 
 export const matchesDir = (base: string = import.meta.env.BASE_URL) => `${base}matches/`;
 

@@ -21,7 +21,14 @@ import { matchesDir, type PublishedMatch, readIndex } from "../lib/published.ts"
 export type Source =
   | { kind: "fixture"; name: string; url: string }
   /** A real match, by id: `from` the site's published copy or the relay. Checked the same either way. */
-  | { kind: "match"; matchId: string; url: string; from: "relay" | "site" };
+  | {
+      kind: "match";
+      matchId: string;
+      url: string;
+      from: "relay" | "site";
+      /** The place the site published it under; the replay names the match by it. */
+      place?: string;
+    };
 
 export function sourceFromUrl(search: string): Source {
   const q = new URLSearchParams(search);
@@ -46,8 +53,10 @@ export async function resolveSource(
 ): Promise<Source> {
   const src = sourceFromUrl(search);
   if (src.kind !== "match" || new URLSearchParams(search).has("relay")) return src;
-  const listed = (await index())?.some((m) => m.id === src.matchId) ?? false;
-  return listed ? { ...src, from: "site", url: `${matchesDir(base)}${src.matchId}.json` } : src;
+  const listed = (await index())?.find((m) => m.id === src.matchId);
+  return listed
+    ? { ...src, from: "site", url: `${matchesDir(base)}${src.matchId}.json`, place: listed.place }
+    : src;
 }
 
 /**

@@ -19,12 +19,13 @@ const entry = (over: Record<string, unknown> = {}) => ({
 
 describe("where a match's bundle is read from", () => {
   const listed = async () => parseIndex([entry()]);
-  test("a match the site publishes is read from the site's copy, not the relay", async () => {
+  test("a match the site publishes is read from the site's copy, not the relay, and named by its place", async () => {
     expect(await resolveSource(`?match=${ID}`, listed, "/")).toEqual({
       kind: "match",
       matchId: ID,
       url: `/matches/${ID}.json`,
       from: "site",
+      place: "Boston Common",
     });
   });
 
@@ -67,11 +68,12 @@ describe("where a match's bundle is read from", () => {
 });
 
 describe("the published list", () => {
-  test("reads the documented shape, newest first, and finds the featured match", () => {
+  test("reads the documented shape, newest first, and finds the featured match only if one is marked", () => {
     const list = parseIndex([entry({ id: "cd".repeat(16), survivors: 1 }), entry({ featured: true })]);
     expect(list[0]).toEqual(entry({ id: "cd".repeat(16), survivors: 1 }));
     expect(featuredOf(list)?.id).toBe(ID);
-    expect(featuredOf(parseIndex([entry()]))?.id).toBe(ID);
+    // Nothing marked: the hero plays the generated match, whatever the site publishes.
+    expect(featuredOf(parseIndex([entry()]))).toBeNull();
     expect(featuredOf([])).toBeNull();
     expect(parseIndex([])).toEqual([]);
   });

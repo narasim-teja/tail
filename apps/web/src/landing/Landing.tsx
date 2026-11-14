@@ -57,8 +57,11 @@ function useThemeColor() {
 export function Landing({ data }: { data: LandingData }) {
   const reduced = useReducedMotion();
   useThemeColor();
-  const { featured } = data;
-  const replayHref = featured ? matchHref(featured.id) : demoHref({ name: "boston-common", query: "" });
+  // The hero plays the featured match, or the generated one; the main button opens a real match
+  // whenever the site publishes one (the featured, else the newest), and the generated one only
+  // when there is none.
+  const real = data.featured ?? data.index?.[0] ?? null;
+  const replayHref = real ? matchHref(real.id) : demoHref({ name: "boston-common", query: "" });
   return (
     <div className="l-page">
       <a className="l-skip" href="#main">
@@ -66,7 +69,7 @@ export function Landing({ data }: { data: LandingData }) {
       </a>
       <SiteTop current="home" />
       <main id="main">
-        <Hero data={data} reduced={reduced} replayHref={replayHref} />
+        <Hero data={data} reduced={reduced} replayHref={replayHref} real={real !== null} />
         <Beats reduced={reduced} />
         <ProofStrip />
         <div className="l-sunset" aria-hidden="true" />

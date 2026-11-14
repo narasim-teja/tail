@@ -190,7 +190,9 @@ takeover does.
   featured published one, else the generated Boston Common fixture, labelled as generated; its
   scene is cut from the bundle by the replay's own model (`scripts/scene.ts`), including the
   hunter's lock, heat and head as they changed. It runs only on screen with the tab visible;
-  Reduce Motion draws one still frame of the strike.
+  Reduce Motion draws one still frame of the strike. The main button opens a real match whenever
+  the site publishes one (the featured one, else the newest), so the hero can play the generated
+  match while the button still opens a real one.
 - **How a match goes.** The rules in four lines (stake, a secret target, close in and strike,
   outlast the clock), each with an icon.
 - **Lock and heat, Strike, Hints.** One sentence each, the instruments doing the talking. Lock and

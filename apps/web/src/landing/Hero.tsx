@@ -17,10 +17,13 @@ export function Hero({
   data,
   reduced,
   replayHref,
+  real,
 }: {
   data: LandingData;
   reduced: boolean;
   replayHref: string;
+  /** The main button opens a real match, not the generated one. */
+  real: boolean;
 }) {
   const { featured, scene, map } = data;
   const label = featured
@@ -40,7 +43,7 @@ export function Hero({
         </p>
         <div className="l-actions">
           <a className="l-button" href={replayHref}>
-            {featured ? "Watch a real match" : "Watch the demo match"}
+            {real ? "Watch a real match" : "Watch the demo match"}
           </a>
           <a className="l-button l-button-sand" href="#proof">
             How a tag is proven
