@@ -4,6 +4,7 @@ import {
   belowRule,
   boundRequires,
   dossierRefusal,
+  hostBlock,
   parseRecord,
   parseRequires,
   REQUIRE,
@@ -70,5 +71,16 @@ describe("a lobby open only to players with a record", () => {
     expect(parseRecord(null)).toEqual({ matches: 0, survived: 0 });
     expect(parseRecord({ matches: 4, survived: 2, tags: 1 })).toEqual({ matches: 4, survived: 2 });
     expect(() => parseRecord({ matches: 4 })).toThrow("survived is not a count");
+  });
+
+  test("the host can't set a rule above their own record; an unread record leaves it to the relay", () => {
+    const rule = { minMatches: 2, minSurvived: 1 };
+    expect(hostBlock(null, null)).toBeNull();
+    expect(hostBlock({ matches: 0, survived: 0 }, null)).toBeNull();
+    expect(hostBlock(null, rule)).toBeNull();
+    expect(hostBlock({ matches: 0, survived: 0 }, rule)).toBe("You need a match that paid out first");
+    expect(hostBlock({ matches: 2, survived: 0 }, rule)).toBe("Your record is below this rule");
+    expect(hostBlock({ matches: 1, survived: 1 }, rule)).toBe("Your record is below this rule");
+    expect(hostBlock({ matches: 2, survived: 1 }, rule)).toBeNull();
   });
 });

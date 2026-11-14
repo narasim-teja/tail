@@ -9,6 +9,7 @@ import {
   belowRule,
   boundRequires,
   type DossierRecord,
+  hostBlock,
   REQUIRE,
   type Requires,
   recordText,
@@ -80,6 +81,12 @@ export function CreateView({
   const requires = who === "record" ? rule : null;
   const here = m.here;
   const open = m.openLobby;
+  // The host joins their own lobby at once, so a rule they don't meet makes a lobby nobody can
+  // start. The steppers stop at the host's own record, and Create waits for that record to be
+  // read. The contract still decides at join_match; this only keeps the host from a dead end.
+  const record = m.record;
+  const playedMax = record ? Math.min(REQUIRE.max, record.matches) : REQUIRE.max;
+  const blocked = hostBlock(record, requires);
   return (
     <Screen
       footer={
@@ -87,8 +94,8 @@ export function CreateView({
           <Button
             title={m.busy ?? `Create, $${stake} each`}
             busy={!!m.busy}
-            disabled={!here}
-            hint={here ? undefined : "Waiting for your location"}
+            disabled={!here || blocked !== null}
+            hint={!here ? "Waiting for your location" : (blocked ?? undefined)}
             onPress={() =>
               onCreate({
                 stake: BigInt(stake) * USDC,
@@ -146,25 +153,34 @@ export function CreateView({
             label="Matches played, at least"
             value={requires.minMatches}
             min={REQUIRE.min}
-            max={REQUIRE.max}
+            max={Math.max(REQUIRE.min, playedMax)}
             onChange={(n) => setRule(boundRequires({ ...requires, minMatches: n }))}
           />
           <Stepper
             label="Matches survived, at least"
             value={requires.minSurvived}
             min={0}
-            max={requires.minMatches}
+            max={Math.min(requires.minMatches, record ? record.survived : requires.minMatches)}
             onChange={(n) => setRule(boundRequires({ ...requires, minSurvived: n }))}
           />
           <Caption muted>{`Players need ${ruleText(requires)}. Only matches that paid out count.`}</Caption>
-          {m.record && belowRule(m.record, requires) ? (
+          {!record ? (
+            <Caption muted>You join too, so the rule can't ask for more than you have.</Caption>
+          ) : record.matches < REQUIRE.min ? (
+            <Notice
+              title="You need a match that paid out first"
+              detail={`${recordText(record)} You join your own lobby, so you can only ask for a record you have.`}
+            />
+          ) : belowRule(record, requires) ? (
             <Notice
               title="Your record is below this, so you couldn't join your own lobby."
-              detail={recordText(m.record)}
+              detail={recordText(record)}
             />
-          ) : m.record ? (
-            <Caption muted>{`${recordText(m.record)} You join too, so it applies to you.`}</Caption>
-          ) : null}
+          ) : (
+            <Caption
+              muted
+            >{`${recordText(record)} You join too, so the rule can't ask for more than you have.`}</Caption>
+          )}
         </>
       ) : (
         <Caption muted>Anyone with the code can join.</Caption>

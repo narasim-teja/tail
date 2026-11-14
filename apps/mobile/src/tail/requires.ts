@@ -50,6 +50,17 @@ export const belowRule = (d: DossierRecord, r: Requires) =>
 /** "You have 1 played and 0 survived." */
 export const recordText = (d: DossierRecord) => `You have ${d.matches} played and ${d.survived} survived.`;
 
+/**
+ * Why the host can't create a lobby with this rule, as far as the app can tell, or null. The host
+ * joins their own lobby at once, so the relay refuses a rule above the host's own record; this
+ * mirrors that refusal before the tap. An unread record blocks nothing: the relay decides.
+ */
+export function hostBlock(record: DossierRecord | null, r: Requires | null): string | null {
+  if (!r || !record) return null;
+  if (record.matches < REQUIRE.min) return "You need a match that paid out first";
+  return belowRule(record, r) ? "Your record is below this rule" : null;
+}
+
 type Obj = Record<string, unknown>;
 
 const count = (o: Obj, k: string): number => {
