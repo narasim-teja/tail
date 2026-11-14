@@ -2,11 +2,11 @@
 //
 //   create (relay hosts on chain) → players join with their own keys → start: lock the lobby,
 //   referee `start`, apply Start, hand out sealed PlayerKeys → every TICK_MS: flush unapplied
-//   verdicts, voice issued hints (each sealed line to its asker only), referee `tick` with the
-//   queued sealed batches and the voice receipts, store everything it returned in one
-//   transaction, push HUDs, apply its verdicts with their consistency proofs → when the referee
-//   says `over`: `end`, apply End, `declassify` the sealed log, keep it and the reveal for the
-//   replay.
+//   verdicts, referee `tick` with the queued sealed batches and the voice receipts so far, store
+//   everything it returned in one transaction, push HUDs, apply its verdicts with their
+//   consistency proofs → when the referee says `over`: voice what is left, `end`, apply End,
+//   `declassify` the sealed log, keep it and the reveal for the replay. Beside the ticks, off
+//   their path, the Handler voices issued hints (each sealed line to its asker only).
 //
 // Protocol v2: the relay never sees a log entry during play. It keeps the leaf hashes (which
 // reveal nothing, and serve inclusion and consistency proofs) and the referee's sealed copy of
@@ -25,6 +25,10 @@
 // - Across processes on one database, a match is stepped only by the holder of its lease row
 //   (db.ts `holdLease`), and every write of new state re-checks the lease in its transaction, so
 //   a second relay on the same file cannot fork a match either.
+// - Voice never holds up a tick: a model call can take 13 s (3 s for the line, 10 s for its
+//   signature). One voice worker per match runs beside the ticks, one hint at a time; a hint
+//   leaves `pending` once (db.ts `setVoiced`), so its line is sent once, and its receipt goes to
+//   the first tick or `end` that starts after it is stored, which then marks it consumed.
 
 import type { Logger } from "@tail/log";
 import {
@@ -66,8 +70,23 @@ import {
 
 /** Sealed batches per tick; the referee refuses more than 256. */
 export const MAX_BATCHES_PER_TICK = 256;
-/** A hint not voiced within this long is dropped: the referee waits 120 s for its receipt. */
-export const VOICE_WINDOW_MS = 90_000;
+/**
+ * The referee logs a hint's receipt only within this long of the hint (crates/referee-core
+ * `RECEIPT_WINDOW_MS`; test/loop.test.ts checks the two agree).
+ */
+export const RECEIPT_WINDOW_MS = 120_000;
+/**
+ * What a stored receipt may still wait before a referee call carries it: the rest of a tick
+ * interval, then the next step's verdict flush (each apply, its RPC and up to 5 s of `awaitSeq`)
+ * before its tick, with room for a slow or retried step.
+ */
+const RECEIPT_HEADROOM_MS = 60_000;
+/**
+ * A hint older than this is dropped, before its voice call and again before its line is stored:
+ * a line stored later could miss the referee's window, and a line whose receipt never reaches the
+ * log must not be sent.
+ */
+export const VOICE_WINDOW_MS = RECEIPT_WINDOW_MS - RECEIPT_HEADROOM_MS;
 /**
  * How long a lease on a match lasts without renewal. Each step renews it, and so does each write;
  * a process that dies leaves the match to another after this long.
@@ -136,6 +155,8 @@ export class Matches {
   private readonly running = new Set<string>();
   /** Per match, the tick in flight: settles once its result is stored (or the call failed). */
   private readonly ticking = new Map<string, Promise<void>>();
+  /** Per match, the voice worker in flight (`voiceBeside`): at most one. */
+  private readonly voicing = new Map<string, Promise<void>>();
   /** Steps and Starts in flight, for `drain`. */
   private readonly busy = new Set<Promise<unknown>>();
   /** The next look at interrupted Starts another process held the lease of (`reopenStarts`). */
@@ -574,13 +595,19 @@ export class Matches {
     // Another process is stepping this match; look again next tick, and take over if it stops.
     if (!this.lease(matchId)) return true;
     if (!(await this.flushVerdicts(matchId))) return true;
-    await this.voicePending(matchId);
     if (m.phase === "running") {
+      // Retries any hint the last worker could not voice.
+      this.voiceBeside(matchId);
       if (m.start_ms !== null && this.now() < m.start_ms) return true;
       await this.tick(matchId);
       // The tick's verdicts go on chain now, not a tick later: a Tag or a Forfeit moves money.
       const flushed = await this.flushVerdicts(matchId);
-      if (this.d.store.match(matchId)?.phase !== "ending" || !flushed) return true;
+      if (this.d.store.match(matchId)?.phase !== "ending") {
+        // This tick's hints start now rather than a step later.
+        this.voiceBeside(matchId);
+        return true;
+      }
+      if (!flushed) return true;
     }
     const done = await this.finish(matchId);
     if (done) this.d.store.releaseLease(matchId, this.holder);
@@ -676,10 +703,13 @@ export class Matches {
     if (!m?.state) throw new Error("ending match has no state");
     const haveEnd = this.d.store.verdicts(matchId).some((v) => v.kind === "End");
     if (!haveEnd) {
-      // The hints of the last tick get their lines now, while `end` can still log the receipts.
-      // One the Handler could not voice is dropped before `end` is asked: voiced after End, its
-      // line would have no receipt in the log. Dropped first, so `end` asked again (its answer
-      // lost) is passed the same receipts, and answers with the End it recorded.
+      // The hints of the last tick get their lines now, while `end` can still log the receipts:
+      // the worker in flight finishes first, then what is still pending is voiced here, so no
+      // two calls voice one hint. One the Handler could not voice is dropped before `end` is
+      // asked: voiced after End, its line would have no receipt in the log. Dropped first, so
+      // `end` asked again (its answer lost) is passed the same receipts, and answers with the
+      // End it recorded.
+      await this.voicing.get(matchId);
       await this.voicePending(matchId);
       const unvoiced = this.d.store.voiceHints(matchId, "pending").map((h) => h.id);
       if (unvoiced.length) {
@@ -921,12 +951,35 @@ export class Matches {
   }
 
   /**
-   * Has the referee voice each issued hint. The line comes back sealed and signed for the asker,
-   * so it goes to the asker's HUD sockets only; its receipt goes into the next tick.
+   * Starts the match's voice worker unless one is in flight (which picks up new hints itself).
+   * Not awaited: the step goes on to its tick. `drain` waits for it, and `finish` before `end`.
+   * Like the step that starts it, it runs after `stop` too: a stopped loop only schedules no
+   * further steps.
+   */
+  private voiceBeside(matchId: string) {
+    if (this.voicing.has(matchId)) return;
+    const worker = this.voicePending(matchId)
+      .catch((e: unknown) => this.d.log.error({ matchId, err: (e as Error).message }, "voice worker failed"))
+      .finally(() => this.voicing.delete(matchId));
+    this.voicing.set(matchId, worker);
+    void this.track(worker);
+  }
+
+  /**
+   * Has the referee voice each pending hint once, one at a time, including hints issued while
+   * it runs. The line comes back sealed and signed for the asker, so it goes to the asker's HUD
+   * sockets only; its receipt goes into the next tick. A failed hint is tried again on a later
+   * step. Voice reads any state blob of the match: it changes no state, and a tick running
+   * meanwhile does not change the keys it uses.
    */
   private async voicePending(matchId: string) {
-    for (const h of this.d.store.voiceHints(matchId, "pending")) {
-      if (this.now() - h.issued_ms > VOICE_WINDOW_MS) {
+    const tried = new Set<number>();
+    for (;;) {
+      const h = this.d.store.voiceHints(matchId, "pending").find((x) => !tried.has(x.id));
+      if (!h) return;
+      tried.add(h.id);
+      const stale = () => this.now() - h.issued_ms > VOICE_WINDOW_MS;
+      if (stale()) {
         this.d.store.setVoiceStatus([h.id], "dropped");
         continue;
       }
@@ -939,13 +992,26 @@ export class Matches {
           this.d.store.setVoiceStatus([h.id], "dropped");
           continue;
         }
-        this.d.store.setVoiced(h.id, {
-          sealed: v.sealed,
-          signedText: v.signedText,
-          hintId: v.hintId,
-          receipt: v.receipt,
+        // The call itself can take 13 s: the window is checked again at the store.
+        if (stale()) {
+          this.d.log.warn({ matchId, hint: h.id }, "voice answered too late for its receipt; dropped");
+          this.d.store.setVoiceStatus([h.id], "dropped");
+          continue;
+        }
+        // Stored only while this process holds the match and the hint is still pending (not
+        // dropped by `finish` meanwhile): otherwise the line is not sent, as no receipt of it
+        // would reach the log.
+        let stored = false;
+        this.leasedTx(matchId, () => {
+          stored = this.d.store.setVoiced(h.id, {
+            sealed: v.sealed,
+            signedText: v.signedText,
+            hintId: v.hintId,
+            receipt: v.receipt,
+          });
         });
-        this.d.hub.send(matchId, h.asker, { type: "handler", match_id: matchId, sealed: b64(v.sealed) });
+        if (stored)
+          this.d.hub.send(matchId, h.asker, { type: "handler", match_id: matchId, sealed: b64(v.sealed) });
       } catch (e) {
         this.d.log.warn({ matchId, hint: h.id, err: (e as Error).message }, "voice failed; will retry");
       }

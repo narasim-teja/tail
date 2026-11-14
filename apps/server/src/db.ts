@@ -1078,15 +1078,18 @@ export class Store {
   }
 
   /** The voice answer for a pending hint: the asker's sealed line and the receipt for the next tick. */
+  /** True if the hint was still pending and is now voiced; a hint is voiced at most once. */
   setVoiced(
     id: number,
     v: { sealed: Uint8Array; signedText: string | null; hintId: number; receipt: Uint8Array },
-  ) {
-    this.db
-      .query(
-        "UPDATE voice_hints SET sealed = ?, signed_text = ?, hint_id = ?, receipt = ?, status = 'voiced' WHERE id = ? AND status = 'pending'",
-      )
-      .run(v.sealed, v.signedText, v.hintId, v.receipt, id);
+  ): boolean {
+    return (
+      this.db
+        .query(
+          "UPDATE voice_hints SET sealed = ?, signed_text = ?, hint_id = ?, receipt = ?, status = 'voiced' WHERE id = ? AND status = 'pending'",
+        )
+        .run(v.sealed, v.signedText, v.hintId, v.receipt, id).changes === 1
+    );
   }
 
   setVoiceStatus(ids: number[], status: VoiceHintRow["status"]) {

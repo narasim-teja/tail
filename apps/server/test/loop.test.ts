@@ -4,8 +4,9 @@
 // chain right after it rather than a tick later.
 
 import { describe, expect, test } from "bun:test";
+import { decodeLogEntry } from "@tail/protocol";
 import { Store } from "../src/db.ts";
-import { LEASE_MS } from "../src/matches.ts";
+import { LEASE_MS, RECEIPT_WINDOW_MS, VOICE_WINDOW_MS } from "../src/matches.ts";
 import { FakeChain, FakeReferee, until } from "./fakes.ts";
 import { appliedSeqs, ended, lobby, req, setup, started } from "./harness.ts";
 
@@ -178,6 +179,139 @@ describe("end", () => {
     expect(calls.slice(calls.indexOf("end"))).not.toContain("voice");
     expect(env.store.voiceHints(m.id, "dropped").length).toBe(1);
     expect(appliedSeqs(env)).toEqual([1, 2, 3]);
+  });
+});
+
+describe("voice", () => {
+  const voices = (env: ReturnType<typeof setup>) => env.referee.calls.filter((c) => c === "voice").length;
+  /** The Handler messages the asker (player 0) is sent. */
+  const lines = (env: ReturnType<typeof setup>, matchId: string) => {
+    const got: string[] = [];
+    env.hub.subscribe(matchId, 0, {
+      send: (t: string) => {
+        if ((JSON.parse(t) as { type: string }).type === "handler") got.push(t);
+      },
+    });
+    return got;
+  };
+  /** A stepped relay whose hint (tick 1) is voiced only once `gate` opens. */
+  const slowHandler = async (over: Parameters<typeof setup>[0] = {}) => {
+    const env = setup({ tickMs: 60_000, ...over });
+    env.matches.stop();
+    env.referee.hintAtTick = 1;
+    env.referee.overAt = 6;
+    const gate = Promise.withResolvers<void>();
+    env.referee.voiceGate = gate.promise;
+    const m = await started(env);
+    return { env, m, gate, got: lines(env, m.id) };
+  };
+
+  test("the voice window leaves headroom inside the referee's receipt window", async () => {
+    const lib = await Bun.file(new URL("../../../crates/referee-core/src/lib.rs", import.meta.url)).text();
+    const rust = /pub const RECEIPT_WINDOW_MS: u64 = ([\d_]+);/.exec(lib)?.[1];
+    expect(Number(rust?.replaceAll("_", ""))).toBe(RECEIPT_WINDOW_MS);
+    expect(VOICE_WINDOW_MS).toBeLessThan(RECEIPT_WINDOW_MS);
+  });
+
+  test("a line stored while a tick is in flight goes to the next tick, and only it is consumed then", async () => {
+    const { env, m, gate } = await slowHandler();
+    expect(await env.matches.step(m.id)).toBe(true);
+    // Tick 2 is held at the referee; the line is stored meanwhile.
+    const tick = env.referee.tick.bind(env.referee);
+    const held = Promise.withResolvers<void>();
+    let entered = false;
+    env.referee.tick = async (i) => {
+      entered = true;
+      await held.promise;
+      return tick(i);
+    };
+    const s = env.matches.step(m.id);
+    await until(() => entered, "tick 2 in flight");
+    gate.resolve();
+    await until(() => env.store.voiceHints(m.id, "voiced").length === 1, "the line stored mid-tick");
+    held.resolve();
+    expect(await s).toBe(true);
+    env.referee.tick = tick;
+    // Tick 2 did not carry the receipt, so it must not have marked it consumed.
+    expect(env.store.voiceHints(m.id, "voiced").length).toBe(1);
+    expect(await env.matches.step(m.id)).toBe(true);
+    expect(env.referee.ticksSeen.map((t) => t.receipts)).toEqual([0, 0, 1]);
+    expect(env.store.voiceHints(m.id, "consumed").length).toBe(1);
+  });
+
+  test("a hint dropped while its voice runs stays dropped, and its line is not sent", async () => {
+    const { env, m, gate, got } = await slowHandler();
+    expect(await env.matches.step(m.id)).toBe(true);
+    await until(() => voices(env) === 1, "the voice call");
+    const [h] = env.store.voiceHints(m.id, "pending");
+    env.store.setVoiceStatus([h?.id as number], "dropped");
+    gate.resolve();
+    // To End, which waits for the worker: by then its answer has been handled.
+    while (await env.matches.step(m.id));
+    expect(env.store.voiceHints(m.id, "dropped").length).toBe(1);
+    expect(got).toEqual([]);
+    expect(env.referee.ticksSeen.every((t) => t.receipts === 0)).toBe(true);
+    expect(env.store.log(m.id).some((e) => decodeLogEntry(e).kind === "HintReceipt")).toBe(false);
+    expect(voices(env)).toBe(1);
+  });
+
+  test("a line that comes back too late for the referee's receipt window is dropped, not sent", async () => {
+    const clock = { ms: Date.now() };
+    const { env, m, gate, got } = await slowHandler({ now: () => clock.ms });
+    expect(await env.matches.step(m.id)).toBe(true);
+    await until(() => voices(env) === 1, "the voice call");
+    clock.ms += VOICE_WINDOW_MS + 1;
+    gate.resolve();
+    await until(() => env.store.voiceHints(m.id, "dropped").length === 1, "the hint dropped");
+    expect(await env.matches.step(m.id)).toBe(true);
+    expect(got).toEqual([]);
+    expect(env.referee.ticksSeen.map((t) => t.receipts)).toEqual([0, 0]);
+    expect(voices(env)).toBe(1);
+  });
+
+  test("a slow Handler holds up no tick, its receipt goes to the first tick after it, and no hint is voiced twice", async () => {
+    const env = setup({ tickMs: 60_000 });
+    env.matches.stop();
+    env.referee.hintAtTick = 1;
+    env.referee.overAt = 6;
+    const gate = Promise.withResolvers<void>();
+    env.referee.voiceGate = gate.promise;
+    const m = await started(env);
+    // Tick 1 issues the hint and its voice starts; ticks 2 and 3 run while it hangs.
+    for (let k = 0; k < 3; k++) expect(await env.matches.step(m.id)).toBe(true);
+    expect(env.referee.ticksSeen.map((t) => t.receipts)).toEqual([0, 0, 0]);
+    expect(voices(env)).toBe(1);
+    gate.resolve();
+    await until(() => env.store.voiceHints(m.id, "voiced").length === 1, "the line to be stored");
+    expect(await env.matches.step(m.id)).toBe(true);
+    expect(env.referee.ticksSeen.map((t) => t.receipts)).toEqual([0, 0, 0, 1]);
+    // Logged once, voiced once, through to End.
+    while (await env.matches.step(m.id));
+    expect(env.store.match(m.id)?.phase).toBe("ended");
+    expect(env.referee.ticksSeen.map((t) => t.receipts)).toEqual([0, 0, 0, 1, 0, 0]);
+    expect(voices(env)).toBe(1);
+    expect(env.store.voiceHints(m.id, "consumed").length).toBe(1);
+  });
+
+  test("a voice still running when the match ends is waited for, and its receipt goes to `end`", async () => {
+    const env = setup({ tickMs: 60_000 });
+    env.matches.stop();
+    env.referee.hintAtTick = 1;
+    env.referee.overAt = 2;
+    const gate = Promise.withResolvers<void>();
+    env.referee.voiceGate = gate.promise;
+    const m = await started(env);
+    expect(await env.matches.step(m.id)).toBe(true);
+    // Tick 2 ends the match; `end` waits for the line rather than dropping a paid hint.
+    const last = env.matches.step(m.id);
+    await until(() => env.referee.ticksSeen.length === 2, "the last tick");
+    expect(env.referee.calls).not.toContain("end");
+    gate.resolve();
+    expect(await last).toBe(false);
+    expect(env.referee.ticksSeen.map((t) => t.receipts)).toEqual([0, 0]);
+    expect(env.store.log(m.id).some((e) => decodeLogEntry(e).kind === "HintReceipt")).toBe(true);
+    expect(voices(env)).toBe(1);
+    expect(env.store.voiceHints(m.id, "consumed").length).toBe(1);
   });
 });
 

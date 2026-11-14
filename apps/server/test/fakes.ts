@@ -431,6 +431,8 @@ export class FakeReferee implements Referee {
   failEnrolls = 0;
   /** Throw a transport error on the next N voice calls (the Handler not answering in time). */
   failVoices = 0;
+  /** While set, voice calls wait for it (a model taking its time). */
+  voiceGate: Promise<void> | undefined;
   /** The next `end` is recorded, as the referee records it, but its answer is lost on the way. */
   loseNextEndAnswer = false;
   /** Per match, the End recorded and the input it was made from: a repeat gets it back. */
@@ -840,6 +842,7 @@ export class FakeReferee implements Referee {
   }
   async voice(i: VoiceInput): Promise<VoiceResult> {
     this.calls.push("voice");
+    await this.voiceGate;
     if (this.failVoices > 0) {
       this.failVoices--;
       throw new RefereeError("voice", "request failed: timeout", false);
