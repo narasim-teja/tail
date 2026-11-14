@@ -450,3 +450,36 @@
 .d-section > p + .d-rule {
   margin-top: var(--xxl);
 }
+
+/* The app itself, in match order: two columns on a phone, four in a row on a wide screen. */
+.d-phones {
+  margin: 0;
+}
+.d-phones ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--xl) var(--l);
+}
+@media (min-width: 720px) {
+  .d-phones ol {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+.d-phones li {
+  display: grid;
+  gap: var(--s);
+  align-content: start;
+}
+.d-phones img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--r-l);
+  border: 1px solid var(--line-day);
+}
+.d-phones figcaption {
+  margin-top: var(--l);
+}

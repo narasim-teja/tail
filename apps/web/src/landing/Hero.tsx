@@ -32,7 +32,7 @@ export function Hero({
   return (
     <section className="l-hero" aria-labelledby="hero-title">
       <div className="l-hero-words">
-        <p className="l-eyebrow l-eyebrow-muted l-hero-kicker">Real-world tag</p>
+        <p className="l-eyebrow l-eyebrow-muted l-hero-kicker">Real-world tag, on your iPhone</p>
         <h1 id="hero-title" className="l-hero-title">
           One of your friends is hunting&nbsp;you.
         </h1>

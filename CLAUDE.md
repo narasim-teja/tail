@@ -1,23 +1,32 @@
 # TAIL
 
 Instructions for anyone changing this repo, people and coding agents alike. `AGENTS.md` is a
-symlink to this file. The game is in [docs/IDEA.md](docs/IDEA.md); the build spec, constants and
-wire formats are in [docs/TECHNICAL.md](docs/TECHNICAL.md), which wins on mechanics.
+symlink to this file.
+
+What to read: [README.md](README.md) for the game and how to try it (written for people);
+[ARCHITECTURE.md](ARCHITECTURE.md) for every claim, the code that enforces it and where it stops;
+`packages/protocol/README.md` for wire formats and constants; `crates/referee-core/README.md` for
+the rules; `contracts/tail/README.md` for the contract. The original design docs (`docs/IDEA.md`,
+`docs/TECHNICAL.md`, which wins on mechanics) are local only and absent from a public clone.
 
 ## Layout
 
 ```
 packages/protocol/   TS wire formats + crypto; vectors/ are the golden test vectors
 packages/log/        pino logger with secret redaction (every TS service logs through it)
+packages/appattest/  App Attest checks in TypeScript (the relay's own)
+packages/brand/      logo, colours, icons, the Dossier card
 crates/tail-protocol Rust twin of packages/protocol (features: beacon, seal)
 crates/appattest     App Attest assertion verification (p256)
 crates/referee-core  pure, deterministic rules engine
 crates/referee-sim   scripted matches through referee-core
-crates/referee-wasi  OutLayer enclave wrapper (own workspace, wasm32-wasip2)
+crates/referee-verify tail-verify: re-runs a finished match from its bundle
+crates/referee-wasi  OutLayer enclave wrapper (own workspace, wasm32-wasip2), or the local test referee
 contracts/tail/      NEAR contract (own workspace, cargo near)
-apps/server/          Bun + Hono relay (untrusted: liveness only)
+apps/server/         Bun + Hono relay (untrusted: liveness only)
 apps/mobile/         Expo dev-client iOS app (+ modules/tail-radio, Swift)
-apps/web/         web replay + verifier
+apps/web/            site, docs, replay + verifier
+assets/              README media: demo GIF, diagrams (hand-written SVG, Mermaid twins in ARCHITECTURE.md)
 docs/, spikes/       local only (gitignored): design docs and throwaway spikes
 vendor/, .keys/      local only: cloned reference repos, generated keys
 ```
@@ -53,7 +62,8 @@ from them that belongs in the public repo goes into `README.md` or `ARCHITECTURE
   When a spike fails, take the listed fallback and update TECHNICAL.md.
 - **One wire format.** `packages/protocol` (TS) and `crates/referee-core` (Rust) agree byte for
   byte, pinned by `packages/protocol/vectors/*.json`.
-- **Claim only what runs.** The README is screened by an AI judge. Anything stubbed says so.
+- **Claim only what runs.** The README is read by human judges and screened by AI ones. Anything
+  stubbed says so. Keep the README in plain words; technical detail goes in ARCHITECTURE.md.
 - **Secrets.** Real values live in `.env`, `.env.local` and `.keys/` (all ignored). Every new
   variable gets a placeholder in `.env.example` in the same change. Never print a private key,
   payment key or API key to the terminal; print a fact about it (present, length, prefix).

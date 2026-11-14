@@ -131,12 +131,14 @@ const Code = ({ children }: { children: string }) => (
 );
 
 const ext = EXTERNAL;
+/** The four-iPhone match played outdoors on 2026-11-14 (README, "Try it"). */
+const REAL_MATCH = `${import.meta.env.BASE_URL}?match=c043db6be8eedceaf6194989e59b47e6`;
 const NEP171 = "https://nomicon.io/Standards/Tokens/NonFungibleToken/Core";
 const dossierHref = config.dossierAccount
   ? `${import.meta.env.BASE_URL}dossier/${encodeURIComponent(config.dossierAccount)}`
   : `${import.meta.env.BASE_URL}dossier/example?fixture`;
 
-/** The limits, from the root README's opening and "What this does not claim". */
+/** The limits, as the root README's "Where it stands" and ARCHITECTURE.md state them. */
 export const NOT_CLAIMED: { title: string; line: string }[] = [
   {
     title: "A test referee, not the enclave",
@@ -171,18 +173,71 @@ export const NOT_CLAIMED: { title: string; line: string }[] = [
     line: "Verdicts land on NEAR during play. A hint names only who asked, but a tag or a forfeit names both players. The relay also sees timing, sizes and how many contacts each tick found.",
   },
   {
-    title: "Not a full defence against relaying",
-    line: "An accomplice relaying Bluetooth both ways within about 30 seconds, plus location spoofing on an attested phone, could fake proximity. There is no distance bounding.",
+    title: "A two-person cheat still works",
+    line: "A friend next to your target could pick up their phone's Bluetooth code and pass it to you over the internet, and back again, within about 30 seconds. If you also fake your GPS on a real iPhone, the referee would see contact. Closing that needs a radio that measures distance by timing, such as ultra-wideband.",
   },
   {
     title: "Foreground only",
-    line: "The app must stay open. Pocket mode turns the screen off with the proximity sensor while the app keeps running.",
+    line: "The app has to stay open while you play.",
   },
   {
     title: "Testnet, iPhone only",
     line: "It runs on NEAR testnet with test USDC. It is an iPhone app, installed directly, not from the App Store.",
   },
 ];
+
+/** Frames from two phones' screen recordings of the real match at Chestnut Hill Reservoir. */
+const PHONES = [
+  {
+    file: "hunt",
+    h: 1222,
+    caption: "The lock fills while both phones hear each other",
+    alt: "The hunt screen: target Bhanu, lock at 3 of 4, heat, a head of $1.00 and a map of the play area",
+  },
+  {
+    file: "handler",
+    h: 1232,
+    caption: "A hint from the Handler",
+    alt: "A line from the Handler: They're within 150 metres. Look sharp.",
+  },
+  {
+    file: "strike",
+    h: 1232,
+    caption: "Lock full: strike",
+    alt: "The lock is full at 4 of 4 and the screen turns orange with a Strike button",
+  },
+  {
+    file: "tagged",
+    h: 1232,
+    caption: "When someone gets you",
+    alt: "Tagged: bhanu got you. Your head is theirs now.",
+  },
+] as const;
+
+function Phones() {
+  return (
+    <figure className="d-phones">
+      <ol>
+        {PHONES.map((p) => (
+          <li key={p.file}>
+            <img
+              src={`${import.meta.env.BASE_URL}screens/${p.file}.jpg`}
+              width={600}
+              height={p.h}
+              alt={p.alt}
+              loading="lazy"
+              decoding="async"
+            />
+            <span className="d-caption">{p.caption}</span>
+          </li>
+        ))}
+      </ol>
+      <figcaption className="d-caption">
+        The app during the real match at Chestnut Hill Reservoir, 2026-11-14.
+      </figcaption>
+    </figure>
+  );
+}
 
 export function Docs() {
   const replay = demoHref({ name: "boston-common", query: "" });
@@ -198,13 +253,14 @@ export function Docs() {
         <header className="d-header">
           <h1 className="d-h1">How TAIL works, and how to check it</h1>
           <p className="d-lede">
-            TAIL is tag for 3 to 12 friends in a real park, with money on every head and a proof behind every
-            tag. Here are the rules, where the money goes, what a tag proves, and how to check each claim
-            yourself.
+            TAIL is an iPhone game of tag for 3 to 12 friends in a real park, with money on every head and a
+            proof behind every tag. Here are the rules, where the money goes, what a tag proves, and how to
+            check each claim yourself.
           </p>
         </header>
         <Toc />
         <main id="main" className="d-main">
+          <Phones />
           <Section id="rules">
             <Rule name="Stake">
               <p>
@@ -332,8 +388,8 @@ export function Docs() {
                 assertions or recompute contact from their sightings: tail‑verify does both.
               </p>
               <p>
-                <a className="l-link" href={replay}>
-                  Open the generated Boston Common match
+                <a className="l-link" href={REAL_MATCH}>
+                  Open the real match at Chestnut Hill Reservoir
                 </a>
               </p>
             </Rule>
@@ -456,7 +512,7 @@ cargo run -q -p referee-verify -- /tmp/match.json`}</Code>
                 <code>get_dossier</code> with <code>{'{"account_id":"<account>"}'}</code> returns the record
                 itself. The live contract has held dossiers since 2026-11-13. Not there yet: the{" "}
                 <code>nft_metadata_update</code> event the source logs at settlement (the live contract
-                predates it), and a control in the app for <code>requires</code>.
+                predates it).
               </p>
               <p>
                 <a className="l-link" href={dossierHref}>
@@ -491,7 +547,7 @@ cargo run -q -p referee-verify -- /tmp/match.json`}</Code>
                   Reservoir: three tags from real mutual Bluetooth contact, three Handler hints (two voiced by
                   NEAR AI's model), and End paid the survivor after the contract's replay. tail‑verify re-runs
                   it identically.{" "}
-                  <a className="l-link" href="/?match=c043db6be8eedceaf6194989e59b47e6">
+                  <a className="l-link" href={REAL_MATCH}>
                     Watch it
                   </a>
                 </li>
@@ -508,8 +564,7 @@ cargo run -q -p referee-verify -- /tmp/match.json`}</Code>
                   has never completed a call, because OutLayer's testnet holds each call for over a minute,
                   too slow for 10-second ticks.
                 </li>
-                <li>Bluetooth range and pocket-mode tests on their own.</li>
-                <li>Mesh carry by default, and the App Store.</li>
+                <li>The App Store. For now the app is built from source with Xcode.</li>
               </ul>
             </Rule>
           </Section>

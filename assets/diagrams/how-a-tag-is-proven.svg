@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="960" height="520" role="img" aria-labelledby="t d" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif">
+<title id="t">How a tag gets proven</title>
+<desc id="d">Two iPhones hear each other over Bluetooth. The relay passes on their sealed, App Attest-signed reports. The referee opens them, decides contact, signs the tag and logs it in a Merkle tree. The NEAR contract takes only signed verdicts and replays the match before it pays. Afterwards anyone can re-check the match in a browser against NEAR.</desc>
+<defs>
+  <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#A79F96"/></marker>
+  <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#EE6A3F"/></marker>
+</defs>
+<rect width="960" height="520" rx="16" fill="#1C2430"/>
+<text x="40" y="50" font-size="19" font-weight="700" fill="#F1ECE5" text-anchor="start">How a tag gets proven</text>
+<rect x="38" y="84" width="200" height="272" rx="12" fill="#243040" stroke="#3A4757" stroke-width="1.5"/>
+<text x="56" y="110" font-size="13" font-weight="700" fill="#EE6A3F" text-anchor="start">1</text>
+<text x="56" y="136" font-size="18" font-weight="700" fill="#F1ECE5" text-anchor="start">Two iPhones</text>
+<text x="56" y="156" font-size="12" font-weight="400" fill="#5D6672" text-anchor="start">apps/mobile</text>
+<text x="56" y="186" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">Each phone sends out a</text>
+<text x="56" y="206" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">Bluetooth code that</text>
+<text x="56" y="226" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">changes every 15 s, and</text>
+<text x="56" y="246" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">notes the codes it hears</text>
+<text x="56" y="266" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">from phones nearby.</text>
+<line x1="242" y1="220" x2="262" y2="220" stroke="#A79F96" stroke-width="2" marker-end="url(#a)"/>
+<rect x="266" y="84" width="200" height="272" rx="12" fill="#243040" stroke="#3A4757" stroke-width="1.5"/>
+<text x="284" y="110" font-size="13" font-weight="700" fill="#EE6A3F" text-anchor="start">2</text>
+<text x="284" y="136" font-size="18" font-weight="700" fill="#F1ECE5" text-anchor="start">Relay</text>
+<text x="284" y="156" font-size="12" font-weight="400" fill="#5D6672" text-anchor="start">apps/server</text>
+<text x="284" y="186" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">Every 5 s it passes on</text>
+<text x="284" y="206" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">each phone's report,</text>
+<text x="284" y="226" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">signed with the phone's</text>
+<text x="284" y="246" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">App Attest key and sealed</text>
+<text x="284" y="266" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">for the referee. The relay</text>
+<text x="284" y="286" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">can't open them.</text>
+<line x1="470" y1="220" x2="490" y2="220" stroke="#A79F96" stroke-width="2" marker-end="url(#a)"/>
+<rect x="494" y="84" width="200" height="272" rx="12" fill="#243040" stroke="#3A4757" stroke-width="1.5"/>
+<text x="512" y="110" font-size="13" font-weight="700" fill="#EE6A3F" text-anchor="start">3</text>
+<text x="512" y="136" font-size="18" font-weight="700" fill="#F1ECE5" text-anchor="start">Referee</text>
+<text x="512" y="156" font-size="12" font-weight="400" fill="#5D6672" text-anchor="start">crates/referee-*</text>
+<text x="512" y="186" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">Opens the reports and</text>
+<text x="512" y="206" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">counts contact only when</text>
+<text x="512" y="226" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">both phones heard each</text>
+<text x="512" y="246" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">other. Fills the lock, signs</text>
+<text x="512" y="266" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">the tag, and logs it all in</text>
+<text x="512" y="286" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">a Merkle tree.</text>
+<rect x="506" y="304" width="176" height="40" rx="10" fill="none" stroke="#EE6A3F" stroke-width="1" stroke-dasharray="3 3"/>
+<text x="594" y="321" font-size="12" font-weight="600" fill="#EE6A3F" text-anchor="middle">Built for a TDX enclave</text>
+<text x="594" y="337" font-size="12" font-weight="400" fill="#EE6A3F" text-anchor="middle">Runs on our Mac for now</text>
+<line x1="698" y1="220" x2="718" y2="220" stroke="#A79F96" stroke-width="2" marker-end="url(#a)"/>
+<rect x="722" y="84" width="200" height="272" rx="12" fill="#243040" stroke="#EE6A3F" stroke-width="2"/>
+<text x="740" y="110" font-size="13" font-weight="700" fill="#EE6A3F" text-anchor="start">4</text>
+<text x="740" y="136" font-size="18" font-weight="700" fill="#F1ECE5" text-anchor="start">NEAR contract</text>
+<text x="740" y="156" font-size="12" font-weight="400" fill="#5D6672" text-anchor="start">contracts/tail</text>
+<text x="740" y="186" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">Holds the stakes and</text>
+<text x="740" y="206" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">takes only verdicts the</text>
+<text x="740" y="226" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">referee signed, in order.</text>
+<text x="740" y="246" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">At the end it replays the</text>
+<text x="740" y="266" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">whole match, then pays.</text>
+<rect x="38" y="408" width="880" height="84" rx="12" fill="none" stroke="#3A4757" stroke-width="1.5" stroke-dasharray="6 5"/>
+<text x="56" y="438" font-size="13" font-weight="700" fill="#EE6A3F" text-anchor="start">5</text>
+<text x="76" y="438" font-size="16" font-weight="700" fill="#F1ECE5" text-anchor="start">Anyone, after the match</text>
+<text x="76" y="464" font-size="14" font-weight="400" fill="#A79F96" text-anchor="start">Open the replay at playtail.app: your browser re-checks every signature, Merkle root and payout against NEAR.</text>
+<line x1="822" y1="404" x2="822" y2="364" stroke="#A79F96" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#a)"/>
+<text x="812" y="390" font-size="12" font-weight="400" fill="#5D6672" text-anchor="end">checks against</text>
+</svg>

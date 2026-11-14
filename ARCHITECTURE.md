@@ -1,46 +1,108 @@
-# What is proven, and how to check it
+# TAIL architecture: what is proven, and how to check it
 
 This file lists each thing TAIL claims to prove, how the proof is built, where it is enforced,
-how you can check it yourself, and where it stops. Wire formats and constants are in
-`packages/protocol/README.md`; the rules are in `crates/referee-core/README.md`.
+how you can check it yourself, and where it stops. Start with the three tables below; the
+sections after them give each claim in full. Wire formats and constants are in
+`packages/protocol/README.md`, the rules in `crates/referee-core/README.md`, the contract's
+methods in `contracts/tail/README.md`. The game and a plain-language overview are in `README.md`;
+the repo layout, commands and rules for changing the code are in `CLAUDE.md`.
 
-## What runs where today (2026-11-13)
+## Components
 
-Read every claim below with this in mind:
+| Component        | Path                                                                 | Language                              | Does                                                                                                    | Trusted for            |
+| ---------------- | -------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------- |
+| iPhone app       | `apps/mobile`, `apps/mobile/modules/tail-radio`                      | TypeScript (Expo), Swift              | Broadcasts and hears Bluetooth tokens, signs and seals a report every 5 s, monitors the log, shows HUDs | Honest sensor readings |
+| Relay            | `apps/server`                                                        | TypeScript (Bun, Hono, SQLite)        | Forwards sealed reports, ticks the referee every 10 s, submits verdicts to NEAR and pays gas            | Liveness only          |
+| Referee          | `crates/referee-core` (rules), `crates/referee-wasi` (keys, sealing) | Rust                                  | Decides contact, lock, tags, hints and forfeits; signs verdicts; keeps the Merkle log                   | The rules during play  |
+| Contract         | `contracts/tail`                                                     | Rust (near-sdk 5.30.1)                | Custody, the verdict chain, log checkpoints, the End replay, payout, the Dossier NFT                    | Custody and settlement |
+| Protocol         | `packages/protocol`, `crates/tail-protocol`                          | TypeScript and Rust, byte for byte    | Wire formats, crypto, hint pricing, Merkle proofs, the settle replay; pinned by `vectors/*.json`        |                        |
+| Browser verifier | `apps/web`                                                           | TypeScript (React, MapLibre, deck.gl) | Replays a finished match and re-checks it against NEAR                                                  |                        |
+| tail-verify      | `crates/referee-verify`                                              | Rust                                  | Re-runs the referee on a finished match and requires every verdict byte for byte                        |                        |
+| Handler model    | NEAR AI Cloud                                                        |                                       | Turns one coarse fact into a line of dialogue                                                           | Flavour text           |
 
-- **The code in this repository is protocol v2.** It passes the gate, `bun run check`.
-- **The live contract runs this code.** `tail.tail-dev-a38d13.testnet` was upgraded in place on
-  2026-11-13 (`contracts/tail/e2e/deploy.ts --upgrade --migrate`), and a v2 match with test
-  players settled on it through the contract's End replay.
-- **The live contract pins the local test referee.** That is the same referee code built
-  natively and run on the relay's machine. It is not an enclave. `get_config` shows
-  `referee_pk` `d35338a9…6594` and `vrf_pk` `ad82f28f…defcb`, both local keys. It was pinned
-  when OutLayer testnet stopped running calls (HTTP 524) on 2026-11-12. While this referee is
-  pinned, every guarantee that rests on the referee reduces to trusting whoever runs that machine.
-- **OutLayer's active build has never run a call.** On 2026-11-13 the wasm built from this
-  source, `092ec57c…41f694` (775,347 bytes), was uploaded and made the active version
-  (`get_project` on `outlayer.testnet` names it), and the `ALLOW_UNATTESTED` author secret was
-  set so test players can fill seats. It has the `devices` command the relay here asks before
-  every Start. That evening OutLayer's testnet API took requests, but every call, to this build
-  or to the v2 build `3f9320a6…85690` before it, returned HTTP 524 after about 125 s. So the
-  contract stays on the local referee, no v2 match has run in an enclave, and the replay does not
-  pin this build yet (claim 14).
-- **Real phones have run v2, indoors, on the local referee.** On 2026-11-13 two iPhones (17 Pro
-  Max, 14) and one test player played match `5f36dbbb…` on the upgraded contract. Both phones
-  re-enrolled with a fresh App Attest attestation after the referee's device records were reset
-  (claim 1), played on signed HUDs, and one bought two demand-priced hints. A Tag landed from
-  mutual Bluetooth contact (claim 4), the test player forfeited after 180 s dark, and End's
-  replay paid the survivor. During play the phones fetched consistency proofs for their log
-  monitors (claim 9); after End they found every report under End's root (claim 10). The
-  dossiers were updated (claim 16) and `tail-verify` re-ran the match identically (claim 15). Its
-  Handler lines were templates. In a second match (`93ba284e…`) mesh carry delivered reports
-  between the two phones but crowded out the beacon, so it stays off. Chain recovery, a fork or
-  relay-fault alarm, presence proofs shared from the phone, the phone's signed private-replay link
-  and a NEAR AI line in a v2 match have run only in tests. No range, pocket-mode or outdoor test
-  has run.
-- **One account owns the relay, the contract and the OutLayer project**
-  (`tail-dev-a38d13.testnet`, see Trust). So "the relay cannot sign a verdict" holds only while
-  the enclave is pinned, and even then the same owner could publish a new referee version.
+## What runs today (2026-11-14)
+
+| What            | State                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Code            | Protocol v2. It passes the gate, `bun run check`.                                                                                                                                                                                                                                                                                                                                                                          |
+| Contract        | `tail.tail-dev-a38d13.testnet` runs this code. It was upgraded in place on 2026-11-13 (`contracts/tail/e2e/deploy.ts --upgrade --migrate`), and a v2 match with test players settled on it through the End replay.                                                                                                                                                                                                         |
+| Referee it pins | **The local test referee**: the same referee code built natively and run on the relay's machine, not an enclave. `get_config` shows `referee_pk` `d35338a9…6594` and `vrf_pk` `ad82f28f…defcb`, both local keys. Pinned when OutLayer testnet stopped running calls (HTTP 524) on 2026-11-12. While it is pinned, every guarantee that rests on the referee reduces to trusting whoever runs that machine.                 |
+| OutLayer build  | `092ec57c…41f694` (775,347 bytes), built from this source, uploaded and active on 2026-11-13 (`get_project` on `outlayer.testnet` names it), with the `ALLOW_UNATTESTED` author secret set so test players can fill seats. Every call to it, or to the v2 build `3f9320a6…85690` before it, returned HTTP 524 after about 125 s. No v2 match has run in an enclave, and the replay does not pin this build yet (claim 14). |
+| Ownership       | One account, `tail-dev-a38d13.testnet`, owns the relay, the contract and the OutLayer project (Trust). So "the relay cannot sign a verdict" holds only while the enclave is pinned, and even then the same owner could publish a new referee version.                                                                                                                                                                      |
+
+Matches on real phones, all on the local test referee:
+
+- **2026-11-14, `c043db6b…`, outdoors at Chestnut Hill Reservoir, four iPhones.** Three tags from
+  mutual Bluetooth contact, three Handler hints (two lines from NEAR AI's model, whose signing key
+  the replay ties to NEAR AI's attested TDX key; one template line after the model missed its 3 s
+  budget), and End's replay paid the survivor. `tail-verify`, with the keys pinned from
+  `get_match`, re-ran its 431 log entries and 15 verdicts identically and re-checked 308 reports
+  against App Attest. It is published at playtail.app.
+- **2026-11-13, `5f36dbbb…`, indoors, two iPhones (17 Pro Max, 14) and one test player** on the
+  upgraded contract. Both phones re-enrolled with a fresh App Attest attestation after the
+  referee's device records were reset (claim 1), played on signed HUDs, and one bought two
+  demand-priced hints. A Tag landed from mutual Bluetooth contact (claim 4), the test player
+  forfeited after 180 s dark, and End's replay paid the survivor. During play the phones fetched
+  consistency proofs for their log monitors (claim 9); after End they found every report under
+  End's root (claim 10). The dossiers were updated (claim 16) and `tail-verify` re-ran the match
+  identically (claim 15). Its Handler lines were templates.
+- **`93ba284e…`**: mesh carry delivered reports between the two phones but crowded out the
+  beacon, so it stays off.
+- **Only in tests so far:** chain recovery, a fork or relay-fault alarm, presence proofs shared
+  from the phone, and the phone's signed private-replay link. No range or pocket-mode test has
+  run.
+
+## Claims at a glance
+
+| #   | Claim                                               | Enforced in                                                         | Check it                                                                 | Where it stops                                                                                          |
+| --- | --------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| 1   | The reports came from a real iPhone running our app | `crates/appattest`, `crates/referee-wasi/src/cmd/enroll.rs`         | `cargo test -p appattest`                                                | Doesn't rule out jailbroken phones or many accounts on one phone; the replay trusts the `attested` flag |
+| 2   | The report was not altered                          | `crates/referee-core/src/engine.rs`                                 | `tail-verify` re-checks every App Attest assertion                       | A refused batch that never opened is the referee's word                                                 |
+| 3   | The report is from its 15-second window             | `crates/referee-core/src/engine.rs`                                 | `cargo test -p referee-sim` (`replayed-token`)                           | A token rebroadcast within 15 to 30 s still counts                                                      |
+| 4   | The two phones were in mutual radio contact         | `engine.rs` (`contact_holds`, `lock_epochs`)                        | `tail-verify` recomputes contact; the replay's tag evidence              | No distance bounding (the wormhole attack); the contract never sees the radio evidence                  |
+| 5   | The movement was physically plausible               | `crates/referee-core/src/engine.rs`                                 | Scenarios `teleport`, `simulated-location`, `vehicle-freeze`             | Plausibility only: Apple does not attest the GPS chip                                                   |
+| 6   | The ring of targets was drawn fairly                | `contracts/tail`, `crates/tail-protocol/src/ring.rs`                | `get_match`; the replay rebuilds the ring                                | The VRF requester can ask again for the same seed; the VRF key is local today                           |
+| 7   | Every tag and hint followed the ring; money waits   | `contracts/tail/src/lib.rs` (`settle`), `tail-protocol` settle      | `cd contracts/tail && cargo test`                                        | Invented contact behind a ring-valid tag is paid; only `tail-verify` catches it, after End              |
+| 8   | The verdict history cannot fork                     | `contracts/tail/src/lib.rs` (`apply`)                               | The replay against `get_verdict_head`; `?fixture=boston-common-tampered` | The referee can sign two verdicts for one seq; only one lands                                           |
+| 9   | The log is append-only                              | `contracts/tail` (`check_consistency`), `tail-protocol` merkle      | `get_roots`; `?fixture=boston-common-tampered-log`                       | Shows the log only grew, not that its entries are true                                                  |
+| 10  | My reports were not dropped                         | `apps/mobile/src/proximity/receipts.ts`                             | The phone's Results screen; the `verify_inclusion` view                  | Detects a drop, does not prevent it, and cannot say who dropped it                                      |
+| 11  | Two players were near each other (presence proof)   | `presence.ts` / `presence.rs`, the contract's `verify_inclusion`    | `playtail.app/?presence=…`                                               | As strong as the referee that logged the contact                                                        |
+| 12  | The relay learns no positions, contacts or hints    | `crates/referee-wasi/src/vault.rs`, sealing in `packages/protocol`  | The replay's `checkSalts`; `seal.json` and `hud.json` vectors            | The relay sees timing, sizes, refusals and who asked; the local referee's machine reads everything      |
+| 13  | The Handler's line came from the model              | `crates/referee-wasi/src/voice.rs`, `apps/web/src/verify/checks.ts` | `bun scripts/verify-nearai.ts`; the replay's Handler panel               | No image is pinned; the key is attested as of when you check                                            |
+| 14  | Which referee code signed                           | `apps/web/src/verify/pins.ts`                                       | Compare OutLayer's `executed_wasm_sha256` with `pins.ts`                 | Detects a swap after the fact; the local test referee has no attestation                                |
+| 15  | Every verdict follows from the logged inputs        | `crates/referee-verify` (`tail-verify`)                             | `cargo run -q -p referee-verify -- <bundle> --referee-pk … --vrf-pk …`   | Off-chain and after End; trusts the logged times and `attested` flags                                   |
+| 16  | A dossier counts only matches the contract checked  | `contracts/tail/src/dossier.rs`                                     | `cd contracts/tail && cargo test`; `/dossier/<account>`                  | Inherits claim 7's limit; records can be farmed in small matches                                        |
+
+## System
+
+The README draws this as an image (`assets/diagrams/how-a-tag-is-proven.svg`); this is the same
+system with every component and channel. A match is 3 to 12 phones and every phone listens to
+every other; the diagram shows two.
+
+```mermaid
+flowchart LR
+  subgraph park["Play area: 3 to 12 iPhones (apps/mobile)"]
+    A["iPhone A"]
+    B["iPhone B"]
+    A <-->|"BLE token, new every 15 s"| B
+  end
+  park -->|"Batch every 5 s: sightings + GPS,<br/>App Attest assertion, sealed to the referee"| R["Relay (apps/server)<br/>forwards; cannot open batches"]
+  R <-->|"tick every 10 s"| F["Referee (crates/referee-wasi + referee-core)<br/>contact, lock, tags, hints<br/>OutLayer TDX build deployed;<br/>local test referee pinned"]
+  F -->|"every batch, refusal,<br/>contact and verdict"| L[("Merkle log, RFC 6962")]
+  F -.->|"one coarse fact per hint"| H["NEAR AI Cloud<br/>Handler line, TDX-attested key"]
+  R -->|"signed verdicts; root every minute<br/>with a consistency proof; relay pays gas"| K["NEAR contract (contracts/tail)<br/>stakes, verdict chain, End replay,<br/>payout, Dossier NFT"]
+  L -.->|"root"| K
+  R -->|"bundle after End"| W["Browser replay (apps/web)<br/>re-checks signatures, Merkle paths, payouts"]
+  W -.->|"reads"| K
+  R -->|"bundle after End"| V["tail-verify (crates/referee-verify)<br/>re-runs the referee byte for byte"]
+```
+
+The ring of targets, drawn from the VRF at Start (`assets/diagrams/ring.svg` in the README):
+
+```mermaid
+flowchart LR
+  Ana -->|hunts| Bo -->|hunts| Cy -->|hunts| Dee -->|hunts| Ana
+```
 
 ## Data flow
 
@@ -478,9 +540,10 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   panel's GPU row is the script's saved result (`apps/web/public/nearai-attestation.json`,
   2026-11-13) and says so; the browser's TDX check needs NEAR AI's API to answer it. The response
   hash is not matched to the words, which only the asker's phone holds. The browser signature
-  check is tested on fixture signatures; a real NEAR AI signature was verified only in a spike.
-  The local test referee asks NEAR AI for the line when the relay holds `NEARAI_API_KEY`, and
-  falls back to a template otherwise; no v2 match on phones has had a model line yet.
+  check is tested on fixture signatures, and on 2026-11-14 it verified the two model lines of match
+  `c043db6b…` in a browser, their signer matching NEAR AI's attested key. The local test referee
+  asks NEAR AI for the line when the relay holds `NEARAI_API_KEY`, and falls back to a template
+  otherwise, as it did for that match's first hint.
 
 ### 14. Which referee code signed
 
@@ -566,11 +629,11 @@ Money only becomes withdrawable after the contract has replayed and checked the 
   among themselves, and whoever holds a player account's key carries its record. With the local
   test referee pinned, a record costs only that machine's cooperation. The relay passes an
   optional `requires` from `POST /matches`, and `apps/server/scripts/gated-lobby.ts` plays a gated
-  lobby with test players; that script has not been run on testnet, and the app has no control
-  for it. The live contract has held dossiers since the 2026-11-13 upgrade. After the iPhone
-  match, each player's live `nft_token` SVG was byte-identical to `dossierSvg` of their
-  `get_dossier`, checked by a script; the replay's dossier page has not been run against the live
-  contract in a browser. The live contract predates the `nft_metadata_update` event the source
+  lobby with test players; that script has not been run on testnet. The app's Create screen sets
+  `requires`, capped at the host's own record, and the relay refuses a rule the host does not
+  meet, since the host joins their own lobby. The live contract has held dossiers since the
+  2026-11-13 upgrade; on playtail.app the dossier page reads a player's live `nft_token` and finds
+  its SVG byte-identical to `dossierSvg` of their `get_dossier`. The live contract predates the `nft_metadata_update` event the source
   logs at settlement, so its settlements log none.
 
 ## Gaps the proofs leave

@@ -20,10 +20,13 @@ test player forfeited after 180 s dark. During play the log monitor fetched cons
 after End both phones found every report under End's root (36 lookups) and showed Results, and
 the dossiers were updated on chain. The same day's receipt-check, private-replay and Settings
 changes were committed after that match. Mesh carry ran on the same two phones in another match
-(below). Chain recovery (no report was refused), presence proofs shared from the phone, a NEAR AI
-Handler line, Leave match, the lobby's states after a failed Start, Call it off, the Settings
-screen as it is now and the signed private-replay link pass their tests here but have not run on
-a phone yet. Range, pocket and outdoor play are not tested yet.
+(below). On 2026-11-14 four players played match `c043db6b…` outdoors at Chestnut Hill Reservoir:
+three tags, three Handler hints (two lines from NEAR AI's model) and End's payout. On 2026-11-13 a
+lobby created with a record rule showed it on a phone, and a join below it was refused with the
+rule and the player's record. Chain recovery (no report was refused), presence proofs shared from
+the phone, Leave match, the lobby's states after a failed Start, Call it off, the Settings screen
+as it is now and the signed private-replay link pass their tests here but have not run on a phone
+yet. Range and pocket-mode tests have not run.
 
 ## Layout
 
