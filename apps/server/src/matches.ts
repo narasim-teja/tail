@@ -45,7 +45,14 @@ import { mintCode } from "./codes.ts";
 import type { Store, Trail, Zone } from "./db.ts";
 import { HttpError } from "./errors.ts";
 import type { HudHub } from "./hub.ts";
-import { type Chain, MAX_VERDICTS_PER_APPLY } from "./near.ts";
+import {
+  type Chain,
+  type DossierRecord,
+  MAX_VERDICTS_PER_APPLY,
+  meets,
+  NO_DOSSIER,
+  type Requires,
+} from "./near.ts";
 import {
   type Circle,
   MAX_DECLASSIFY_BATCHES,
@@ -103,7 +110,7 @@ export interface CreateMatchInput {
   startByMs: number;
   invites: string[];
   /** Settled matches played and survived that a player needs to join; null for anyone. */
-  requires: { minMatches: number; minSurvived: number } | null;
+  requires: Requires | null;
 }
 
 /**
@@ -165,6 +172,7 @@ export class Matches {
   ): Promise<{ matchId: string; zoneHash: string; code: string }> {
     // The referee refuses to start a match with no stake (ZeroStake); say so before anyone joins.
     if (i.stake <= 0n) throw new HttpError(400, "stake must be more than 0");
+    if (i.requires) await this.hostMeets(host, i.requires);
     // Each lobby is opened with the relay's NEAR (the match deposit), so a host holds one at a time.
     if (this.creating.has(host)) throw new HttpError(409, "a lobby is already being made for you");
     this.creating.add(host);
@@ -173,6 +181,27 @@ export class Matches {
       return await this.createFor(host, i);
     } finally {
       this.creating.delete(host);
+    }
+  }
+
+  /**
+   * The app joins the host to their lobby right after making it, and `join_match` holds the host
+   * to the lobby's `requires` like anyone. A lobby its host cannot join would only hold their one
+   * open lobby until called off, so it is refused here, before anything goes on chain.
+   */
+  private async hostMeets(host: string, r: Requires) {
+    let record: DossierRecord;
+    try {
+      record = (await this.d.chain.getDossier(host)) ?? NO_DOSSIER;
+    } catch (e) {
+      this.d.log.warn({ host, err: (e as Error).message }, "could not read the host's dossier");
+      throw new HttpError(502, "could not read your record on NEAR; try again");
+    }
+    if (!meets(record, r)) {
+      throw new HttpError(
+        409,
+        `your record is below this rule: you have ${record.matches} played and ${record.survived} survived`,
+      );
     }
   }
 
@@ -214,9 +243,7 @@ export class Matches {
       max_players: i.maxPlayers,
       start_by_ms: i.startByMs,
       invites: i.invites,
-      ...(i.requires
-        ? { requires: { min_matches: i.requires.minMatches, min_survived: i.requires.minSurvived } }
-        : {}),
+      ...(i.requires ? { requires: i.requires } : {}),
     });
     // Minted after the chain answers, with no await between the check and the insert, so two
     // creates cannot take the same code. A clash is one in hundreds of millions; redraw it.

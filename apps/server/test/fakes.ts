@@ -59,6 +59,7 @@ import type {
   ChainMatch,
   ChainRoots,
   ContractConfig,
+  DossierRecord,
   Finality,
   MatchCfg,
 } from "../src/near.ts";
@@ -116,8 +117,11 @@ export class FakeChain implements Chain {
    * (hex) and the VRF caller. The harness pins the referee of the relay it sets up.
    */
   pins = { referee_pk: "00".repeat(32), vrf_pk: "00".repeat(32), vrf_sender: "relay.testnet" };
-  /** Accounts holding their dossier. Registration mints one once the contract has dossiers. */
-  dossiers = new Set<string>();
+  /**
+   * Each dossier's settled-match totals, by account. Registration mints one (0/0) once the
+   * contract has dossiers.
+   */
+  dossiers = new Map<string, DossierRecord>();
   /** Each mint_dossier call that landed, in order. */
   minted: string[] = [];
   /** Per match, as the contract keeps it: the last verdict's digest and the last anchored log. */
@@ -144,7 +148,7 @@ export class FakeChain implements Chain {
   async createPlayerAccount(id: string, nearPk: Uint8Array) {
     this.accounts.set(id, nearPk);
     // As register_for on a contract with dossiers.
-    if (this.dossierDeposit !== null) this.dossiers.add(id);
+    if (this.dossierDeposit !== null) this.dossiers.set(id, { matches: 0, survived: 0 });
   }
   private dossierMethod(name: string) {
     if (this.dossierDeposit === null) throw new Error(`MethodNotFound: ${name}`);
@@ -155,6 +159,14 @@ export class FakeChain implements Chain {
     if (!this.accounts.has(id)) return "unregistered" as const;
     return this.dossiers.has(id) ? ("held" as const) : ("missing" as const);
   }
+  /** Each get_dossier read, in order. */
+  dossierReads: string[] = [];
+  async getDossier(id: string) {
+    this.dossierMethod("get_dossier");
+    this.dossierReads.push(id);
+    const d = this.dossiers.get(id);
+    return d ? { ...d } : null;
+  }
   /** As the contract's mint_dossier, called by the relay (owner "relay.testnet"). */
   async mintDossier(id: string, deposit: bigint) {
     if (deposit !== this.dossierMethod("mint_dossier"))
@@ -164,7 +176,7 @@ export class FakeChain implements Chain {
       throw new Error("only the account or its parent can mint its dossier");
     if (!this.accounts.has(id)) throw new Error("account not registered");
     if (this.dossiers.has(id)) throw new Error("this account already has a dossier");
-    this.dossiers.add(id);
+    this.dossiers.set(id, { matches: 0, survived: 0 });
     this.minted.push(id);
   }
   async createMatch(cfg: MatchCfg) {

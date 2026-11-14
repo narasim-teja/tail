@@ -62,8 +62,11 @@ seal hides their content, but which blob is whose, and when it changes, is the p
 `POST /matches` also takes an optional `requires: {min_matches, min_survived}` (whole numbers
 from 0 to 1000), passed to the contract's `create_match`: `join_match` then refuses a player
 whose dossier has fewer settled matches played or survived. It shows in `GET /matches/:id` as
-`chain.requires` (null for a lobby anyone may join). `scripts/gated-lobby.ts` shows it on
-testnet with ghosts.
+`chain.requires` (null for a lobby anyone may join). The app joins the host to their own lobby
+right away, and `join_match` holds the host to `requires` too, so the relay reads the host's
+`get_dossier` first (no dossier counts as 0 played, 0 survived) and makes nothing on chain for a
+host below it: 409 `your record is below this rule: you have N played and M survived`, or 502
+when the dossier cannot be read. `scripts/gated-lobby.ts` shows it on testnet with ghosts.
 
 ### Signed requests
 

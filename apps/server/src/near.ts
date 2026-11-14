@@ -136,6 +136,24 @@ export interface Requires {
   min_survived: number;
 }
 
+/** The totals of the contract's `DossierView` (`get_dossier`) that `Requires` is checked against. */
+export interface DossierRecord {
+  /** Settled (paid-out) matches played; refunded ones do not count. */
+  matches: number;
+  survived: number;
+}
+
+/**
+ * How `join_match` reads an account with no dossier (one registered before dossiers existed): an
+ * empty record, which clears `{0, 0}` and nothing above it.
+ */
+export const NO_DOSSIER: DossierRecord = { matches: 0, survived: 0 };
+
+/** The contract's `Dossier::meets`, which `join_match` applies. */
+export function meets(d: DossierRecord, r: Requires): boolean {
+  return d.matches >= r.min_matches && d.survived >= r.min_survived;
+}
+
 /**
  * The contract's `ConsistencyArg`: the RFC 9162 proof that a Checkpoint/End verdict's log extends
  * the match's last anchored log (size `from_size`, a U64 decimal string).
@@ -163,6 +181,8 @@ export interface Chain {
    * not registered in the contract. Only on a contract with dossiers (`dossier_deposit` set).
    */
   dossierStatus(accountId: string): Promise<"held" | "missing" | "unregistered">;
+  /** The account's dossier totals (`get_dossier`); null when it holds none. */
+  getDossier(accountId: string): Promise<DossierRecord | null>;
   /** `mint_dossier` for one of the relay's sub-accounts, the relay paying `deposit`. */
   mintDossier(accountId: string, deposit: bigint): Promise<void>;
   createMatch(cfg: MatchCfg): Promise<string>;
@@ -334,7 +354,17 @@ export class NearChain implements Chain {
 
   async dossierStatus(accountId: string) {
     if (!(await this.view<string | null>("get_payout", { account_id: accountId }))) return "unregistered";
-    return (await this.view<unknown>("get_dossier", { account_id: accountId })) ? "held" : "missing";
+    return (await this.getDossier(accountId)) ? "held" : "missing";
+  }
+
+  async getDossier(accountId: string): Promise<DossierRecord | null> {
+    const v = await this.view<Partial<DossierRecord> | null>("get_dossier", { account_id: accountId });
+    if (!v) return null;
+    const { matches, survived } = v;
+    // A record without its counts is unreadable, not an empty one.
+    if (typeof matches !== "number" || typeof survived !== "number")
+      throw new Error("get_dossier returned a record without matches and survived");
+    return { matches, survived };
   }
 
   async mintDossier(accountId: string, deposit: bigint) {

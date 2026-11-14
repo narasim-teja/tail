@@ -43,7 +43,7 @@ export function matchRoutes(
   // Signed by the host. {stake, duration_ms, zone, safehouses?, public_replay, min_players,
   // max_players, start_by_ms, invites?, requires?: {min_matches, min_survived}} → {match_id,
   // zone_hash, code}. `requires` goes to the contract, which refuses at join_match a player
-  // whose dossier has fewer settled matches or survivals.
+  // whose dossier has fewer settled matches or survivals; a host below it is refused here.
   app.post("/matches", async (c) => {
     const { account, body: b } = await d.auth.signed(c);
     const now = Date.now();
@@ -69,8 +69,8 @@ export function matchRoutes(
       }),
       requires: requires
         ? {
-            minMatches: field.int(requires, "min_matches", 0, MAX_REQUIRED),
-            minSurvived: field.int(requires, "min_survived", 0, MAX_REQUIRED),
+            min_matches: field.int(requires, "min_matches", 0, MAX_REQUIRED),
+            min_survived: field.int(requires, "min_survived", 0, MAX_REQUIRED),
           }
         : null,
     });

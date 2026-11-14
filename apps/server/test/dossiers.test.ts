@@ -20,7 +20,7 @@ function world(dossierDeposit: string | null = DEPOSIT) {
     const pk = ed25519.getPublicKey(ed25519.utils.randomSecretKey());
     seedDevice(store, id, pk);
     if (opts.registered ?? true) chain.accounts.set(id, pk);
-    if (opts.dossier) chain.dossiers.add(id);
+    if (opts.dossier) chain.dossiers.set(id, { matches: 0, survived: 0 });
     return id;
   };
   const backfill = (over: { maxPerRun?: number } = {}) =>

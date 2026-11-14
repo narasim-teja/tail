@@ -913,11 +913,19 @@ describe("creating a match", () => {
 });
 
 describe("gated lobbies", () => {
-  test("requires goes to create_match and shows in the public view; it must be small whole numbers", async () => {
+  /** A relay on a contract with dossiers, and a host whose dossier holds `record` (none: null). */
+  function gated(record: { matches: number; survived: number } | null) {
     const env = setup();
+    env.chain.dossierDeposit = "1";
     const host = player(env, "ana");
+    if (record) env.chain.dossiers.set(host.account, record);
     const make = (requires?: unknown) =>
       req(env, "POST", "/matches", { ...MATCH, start_by_ms: Date.now() + 600_000, requires }, host);
+    return { env, host, make };
+  }
+
+  test("requires goes to create_match and shows in the public view; it must be small whole numbers", async () => {
+    const { env, make } = gated({ matches: 1, survived: 1 });
     const r = await make({ min_matches: 1, min_survived: 1 });
     expect(r.status).toBe(200);
     const id = String(r.json["match_id"]);
@@ -942,6 +950,58 @@ describe("gated lobbies", () => {
     const env = setup();
     const l = await lobby(env);
     expect(env.chain.matches.get(l.id)?.requires).toBeNull();
+  });
+
+  // The app joins the host to their own lobby at once, and join_match holds them to `requires`:
+  // a host below it would only make a lobby they cannot join.
+  test("a host whose record meets requires makes the lobby", async () => {
+    const { env, host, make } = gated({ matches: 3, survived: 2 });
+    expect((await make({ min_matches: 3, min_survived: 2 })).status).toBe(200);
+    expect(env.chain.dossierReads).toEqual([host.account]);
+    expect(env.chain.matches.size).toBe(1);
+  });
+
+  test("a host below requires on matches played is refused, and nothing goes on chain", async () => {
+    const { env, host, make } = gated({ matches: 2, survived: 2 });
+    const r = await make({ min_matches: 3, min_survived: 0 });
+    expect(r.status).toBe(409);
+    expect(r.json["error"]).toBe("your record is below this rule: you have 2 played and 2 survived");
+    expect(env.chain.matches.size).toBe(0);
+    expect(env.store.openLobbiesOf(host.account)).toEqual([]);
+  });
+
+  test("a host below requires on matches survived is refused", async () => {
+    const { env, make } = gated({ matches: 5, survived: 1 });
+    const r = await make({ min_matches: 0, min_survived: 2 });
+    expect(r.status).toBe(409);
+    expect(r.json["error"]).toBe("your record is below this rule: you have 5 played and 1 survived");
+    expect(env.chain.matches.size).toBe(0);
+  });
+
+  test("a host with no dossier counts as 0 played and 0 survived", async () => {
+    const { env, make } = gated(null);
+    const r = await make({ min_matches: 1, min_survived: 0 });
+    expect(r.status).toBe(409);
+    expect(r.json["error"]).toBe("your record is below this rule: you have 0 played and 0 survived");
+    expect((await make({ min_matches: 0, min_survived: 0 })).status).toBe(200);
+    expect(env.chain.matches.size).toBe(1);
+  });
+
+  test("a dossier that cannot be read refuses the lobby", async () => {
+    const { env, make } = gated({ matches: 9, survived: 9 });
+    env.chain.getDossier = async () => {
+      throw new Error("NEAR RPC get_dossier did not answer within 4000 ms");
+    };
+    const r = await make({ min_matches: 1, min_survived: 1 });
+    expect(r.status).toBe(502);
+    expect(r.json["error"]).toBe("could not read your record on NEAR; try again");
+    expect(env.chain.matches.size).toBe(0);
+  });
+
+  test("a lobby without requires reads no dossier", async () => {
+    const { env, make } = gated(null);
+    expect((await make()).status).toBe(200);
+    expect(env.chain.dossierReads).toEqual([]);
   });
 });
 

@@ -16,19 +16,14 @@ import { Ghost } from "../src/ghosts/ghost.ts";
 import { Squad } from "../src/ghosts/squad.ts";
 import { CLEAN_TAG } from "../src/ghosts/trace.ts";
 import { startRelay } from "../src/main.ts";
-import { nearKeyPair } from "../src/near.ts";
+import { meets, NO_DOSSIER, nearKeyPair, type Requires } from "../src/near.ts";
 
 const STAKE = 100_000n; // 0.1 USDC.e
 // The shortest match the relay makes: CLEAN_TAG's hunter needs about a minute of lock after
 // walking in for 45 s, so the clock runs out first and all three survive.
 const DURATION_MS = 60_000;
 const ZONE = { latE7: 423_550_000, lonE7: -710_656_000, radiusM: 1500 }; // Boston Common
-const REQUIRES = { min_matches: 1, min_survived: 1 };
-
-interface Dossier {
-  matches: number;
-  survived: number;
-}
+const REQUIRES: Requires = { min_matches: 1, min_survived: 1 };
 
 loadRepoEnv();
 const run = Date.now().toString(36).slice(-6);
@@ -54,12 +49,7 @@ const veterans = ["a", "b", "c"].map(ghost);
 const fresh = ghost("new");
 let squad: Squad | undefined;
 
-const dossier = (accountId: string) =>
-  relay.chain.provider.callFunction({
-    contractId: config.contract,
-    method: "get_dossier",
-    args: { account_id: accountId },
-  }) as Promise<Dossier | null>;
+const dossier = async (accountId: string) => (await relay.chain.getDossier(accountId)) ?? NO_DOSSIER;
 
 /** Waits for a lobby the relay just created to show in the RPC view (it can trail by a block). */
 async function onChain(matchId: string) {
@@ -124,21 +114,19 @@ try {
     settled?.phase === "ended" && settled.players.every((p) => !p.out),
     first.match_id,
   );
-  const records = await Promise.all(veterans.map((g) => dossier(g.accountId)));
-  const veteran = veterans.find(
-    (_, i) => (records[i]?.matches ?? 0) >= 1 && (records[i]?.survived ?? 0) >= 1,
+  const records = await Promise.all(
+    veterans.map(async (g) => ({ ghost: g, record: await dossier(g.accountId) })),
   );
+  // The veteran hosts the gated lobby, so its record must meet REQUIRES, as the relay checks.
+  const veteran = records.find((r) => meets(r.record, REQUIRES))?.ghost;
   check(
     "a ghost's dossier now counts a settled match survived",
     veteran !== undefined,
-    records.map((r) => `${r?.matches ?? 0}/${r?.survived ?? 0}`).join(", "),
+    records.map((r) => `${r.record.matches}/${r.record.survived}`).join(", "),
   );
   if (!veteran) throw new Error("unreachable");
   const before = await dossier(fresh.accountId);
-  check(
-    "the fresh ghost has no settled match",
-    (before?.matches ?? 0) === 0 && (before?.survived ?? 0) === 0,
-  );
+  check("the fresh ghost has no settled match", before.matches === 0 && before.survived === 0);
 
   // ── the gated lobby ──────────────────────────────────────────────────────────────
   const gated = await lobby(veteran, { requires: REQUIRES });
