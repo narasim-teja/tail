@@ -39,8 +39,19 @@ export interface Config {
    * (scripts/pin-referee.ts), and main.ts refuses to start when they are not this referee's.
    */
   refereeMode: "outlayer" | "local";
-  /** Set in local mode: the native referee binary and the directory holding its keys. */
-  localReferee: { bin: string; dir: string } | null;
+  /**
+   * Set in local mode: the native referee binary, the directory holding its keys, and the NEAR
+   * AI key and model it voices the Handler with (the enclave reads its own author secret row
+   * instead). Without a key the local referee speaks its template lines.
+   */
+  localReferee: {
+    bin: string;
+    dir: string;
+    /** Never logged. */
+    nearaiApiKey: string | undefined;
+    /** Unset: the referee's default model, which it also checks against the model rules. */
+    nearaiModel: string | undefined;
+  } | null;
   /**
    * The account the referee's VRF alpha names as its caller, which the contract pins as
    * `vrf_sender`: the OutLayer project owner, or for the local test referee the relay account.
@@ -177,6 +188,8 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
             ),
             // Private keys: under the repo's ignored .keys/, never next to the relay's data.
             dir: opt("LOCAL_REFEREE_DIR", new URL("../../../.keys/local-referee", import.meta.url).pathname),
+            nearaiApiKey: opt("NEARAI_API_KEY", "") || undefined,
+            nearaiModel: opt("NEARAI_MODEL", "") || undefined,
           }
         : null,
     retentionMs: retentionHours * 3_600_000,
@@ -201,6 +214,7 @@ export function describeConfig(c: Config) {
         ? "local test referee (not an enclave)"
         : `${c.outlayerOwner}/${c.refereeProject}${c.refereeVersion ? `@${c.refereeVersion.slice(0, 12)}` : ""}`,
     refereePaymentKey: `present, ${c.refereePaymentKey.length} chars`,
+    handler: describeHandler(c),
     appId: c.appId,
     port: c.port,
     allowGhosts: c.allowGhosts,
@@ -210,6 +224,14 @@ export function describeConfig(c: Config) {
     enrolCaps: c.enrolCaps,
     replayUrl: c.replayUrl ?? null,
   };
+}
+
+/** Who voices the Handler's lines; for the local test referee, whether it has a NEAR AI key. */
+function describeHandler(c: Config): string {
+  if (c.localReferee === null) return "NEAR AI, with the key in the enclave's author row";
+  const { nearaiApiKey: key, nearaiModel: model } = c.localReferee;
+  if (!key) return "template lines only: NEARAI_API_KEY is not set";
+  return `NEAR AI ${model ?? "(referee's default model)"}, key present, ${key.length} chars`;
 }
 
 /**

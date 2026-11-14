@@ -121,5 +121,7 @@ async function checkPins(config: Config) {
       { contract: config.contract },
       "local test referee: verdicts are signed on this machine, not in an enclave",
     );
+    if (!config.localReferee?.nearaiApiKey)
+      log.warn("local test referee: NEARAI_API_KEY is not set, so the Handler speaks its template lines");
   }
 }

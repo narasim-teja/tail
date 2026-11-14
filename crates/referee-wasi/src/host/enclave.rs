@@ -25,6 +25,10 @@ pub fn author_secret(name: &str) -> Option<String> {
     env::var(name).filter(|v| !v.is_empty())
 }
 
+/// A deployed referee without `NEARAI_API_KEY` is a broken deployment: `voice` refuses rather
+/// than quietly serving template lines.
+pub const NEARAI_KEY_OPTIONAL: bool = false;
+
 fn host_var(name: &str) -> Result<String, String> {
     env::var(name)
         .filter(|v| !v.is_empty())

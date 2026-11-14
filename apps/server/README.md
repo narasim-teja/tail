@@ -397,7 +397,11 @@ nothing attests the code that signed, so:
   is reported down instead, since OutLayer comes back;
 - every replay bundle it serves says `referee.kind: "local"`, and the replay page labels the
   signatures as the test referee's;
-- the Handler answers with its template lines (no model call).
+- the Handler's lines come from NEAR AI Cloud as in the enclave, with NEAR AI's TEE signature,
+  when the relay has `NEARAI_API_KEY` (and `NEARAI_MODEL`, if set), which it passes to the
+  referee process; without a key the Handler speaks its template lines, and the relay says so at
+  startup. A model line is real NEAR AI output, but the referee that asked for it is not in an
+  enclave.
 
 ```sh
 cargo build --release --manifest-path crates/referee-wasi/Cargo.toml --bin tail-referee
@@ -429,7 +433,8 @@ Environment (placeholders in `.env.example`): `NEAR_NETWORK` (testnet only), `NE
 above), `RELAY_REPLAY_URL` (optional: the web replay, an http(s) address without a trailing slash,
 which `GET /health` names as `replay_url` so the app links each finished match there; null when
 unset), `REFEREE_MODE` (`outlayer` or `local`), and for local mode `LOCAL_REFEREE_BIN` and
-`LOCAL_REFEREE_DIR` (both optional). A missing value or a leftover placeholder stops the relay at startup.
+`LOCAL_REFEREE_DIR` (both optional) and `NEARAI_API_KEY`, `NEARAI_MODEL` (optional: the Handler's
+model call; read only in local mode, since the enclave has its own). A missing value or a leftover placeholder stops the relay at startup.
 
 Most tests run on fakes of the chain and the referee (`test/fakes.ts`). `test/local-referee.test.ts`
 builds the native referee (`cargo build --release`, a no-op when current, about 15 s cold) and

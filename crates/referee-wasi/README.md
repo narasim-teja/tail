@@ -278,10 +278,10 @@ priced the hint (how many hints the match bought in the last 5 minutes, public o
 line can say why intel was dear. The fallback template states only the fact. Thinking is off and
 `max_tokens` is 60.
 
-The completion has a hard 3 s deadline: a `wasi:io/poll` on the response plus a monotonic
-timer. After that, or on any error, a template sentence is used. The signature lookup retries
-for up to 10 s, and its signed text must end in `sha256(request):sha256(response)` of our exact
-bytes.
+The completion has a hard 3 s deadline: in the enclave a `wasi:io/poll` on the response plus a
+monotonic timer, in the local test referee `ureq`'s overall timeout. After that, or on any
+error, a template sentence is used. The signature lookup retries for up to 10 s, and its signed
+text must end in `sha256(request):sha256(response)` of our exact bytes.
 
 ## Measured (hosted testnet, 2026-11-12)
 
@@ -369,7 +369,8 @@ One process per command: one JSON object on stdin, one `{"ok": true, "result": â
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TAIL_LOCAL_REFEREE_DIR`   | Required. Holds `verdict.key` and `vrf.key` (ed25519 seeds), `state.key` (XChaCha20-Poly1305) and `storage/` (one file per record, `referee:box_sk` included). Each is generated on first use, mode 0600, dir 0700.    |
 | `TAIL_LOCAL_REFEREE_OWNER` | The sender in the VRF alpha, where OutLayer puts the caller. Default `local-test-referee`. It may not contain `:`.                                                                                                     |
-| `NEARAI_MODEL`             | Optional. Checked against the model rules; no model is called.                                                                                                                                                         |
+| `NEARAI_API_KEY`           | Optional. With it, `voice` asks NEAR AI Cloud exactly as the enclave does; without it, every line is the template.                                                                                                     |
+| `NEARAI_MODEL`             | Optional. The model `voice` asks; checked against the model rules ("Handler voice").                                                                                                                                   |
 | `ALLOW_UNATTESTED`         | Optional. `1` lets `enroll` take a device without an App Attest attestation (ghosts), stored and receipted as `attested: false`. On OutLayer the same name is read from the author secret row; set it on testnet only. |
 
 How it differs from the enclave:
@@ -382,10 +383,17 @@ How it differs from the enclave:
 - Storage writes are files renamed or hard-linked into place. `set_if_absent` is a hard link.
   Compare-and-swap runs under an advisory lock, so two processes on one directory stay
   consistent.
-- No network. `voice` always uses the template: `signed_text` is null, and the logged receipt
-  has no `chat_id` and no signature. `NEARAI_API_KEY` is not read.
+- `voice` makes the same two NEAR AI Cloud calls as the enclave (the completion with its 3 s
+  budget, then the signature lookup with its 10 s of retries), natively over HTTPS (`ureq` with
+  rustls, `src/http/native.rs`). The line and its signature are real NEAR AI output, which the
+  replay and `tail-verify` check as they would the enclave's. What is not attested is the
+  referee process itself: no enclave measurement backs the code that built the request and
+  sealed the line.
+  Without `NEARAI_API_KEY` every line is the template: `signed_text` is null, and the logged
+  receipt has no `chat_id` and no signature.
 
-`tests/local.rs` runs the built binary in a temporary directory, offline. It covers
+`tests/local.rs` runs the built binary in a temporary directory, offline (it removes
+`NEARAI_API_KEY` from the process, so `voice` speaks the template). It covers
 `pubkeys` (`box_pk_sig` under `referee_pk`, the same keys from a second process and from 8
 concurrent first calls), `enroll` Ã—3 (receipts naming `referee_pk`), re-enrolment (the same keys
 return the stored receipt; other keys are refused without `rebind_sig`, or with one from the

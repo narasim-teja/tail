@@ -11,9 +11,6 @@ use wasi::io::streams::StreamError;
 
 pub use wasi::http::types::Method;
 
-/// The enclave reaches the network (the manifest allows `cloud-api.near.ai`).
-pub const OFFLINE: Option<&str> = None;
-
 /// Responses we read are a few KB; anything far larger is not the API we called.
 const MAX_BODY: usize = 256 * 1024;
 /// `blocking-write-and-flush` takes at most 4096 bytes per call (wasi:io).

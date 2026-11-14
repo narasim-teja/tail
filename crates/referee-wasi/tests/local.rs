@@ -52,6 +52,10 @@ impl Drop for TempDir {
 fn spawn(dir: Option<&Path>, input: &Value) -> std::process::Child {
     let mut cmd = Command::new(BIN);
     cmd.env_remove("TAIL_LOCAL_REFEREE_DIR")
+        // With a key the referee would ask NEAR AI; the test stays offline and checks the
+        // template line, whatever the developer's shell holds.
+        .env_remove("NEARAI_API_KEY")
+        .env_remove("NEARAI_MODEL")
         .env("TAIL_LOCAL_REFEREE_OWNER", OWNER)
         // The test enrols software P-256 keys, which only a referee taking ghosts accepts.
         .env("ALLOW_UNATTESTED", "1")

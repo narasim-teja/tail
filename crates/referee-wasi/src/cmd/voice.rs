@@ -153,13 +153,11 @@ pub fn run(input: Value) -> Result<Value, String> {
     let fact = Fact::new(hint.hint, hint.value)?;
     let question = hint.question.as_deref().map(voice::clean_question).transpose()?;
     // A missing key or a refused model is a broken deployment, not a slow model: say so
-    // instead of quietly serving templates. Without a network (the local test referee) no
-    // model is asked, so no key is needed.
-    let key: Option<String> = match http::OFFLINE {
-        Some(_) => None,
-        None => {
-            Some(host::author_secret("NEARAI_API_KEY").ok_or("the NEARAI_API_KEY author secret is not set")?)
-        }
+    // instead of quietly serving templates. Only the local test referee may run without a key.
+    let key: Option<String> = match host::author_secret("NEARAI_API_KEY") {
+        Some(key) => Some(key),
+        None if host::NEARAI_KEY_OPTIONAL => None,
+        None => return Err("the NEARAI_API_KEY author secret is not set".into()),
     };
     let model = host::author_secret("NEARAI_MODEL").unwrap_or_else(|| DEFAULT_MODEL.to_owned());
     voice::check_model(&model)?;

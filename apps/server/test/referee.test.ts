@@ -35,7 +35,7 @@ function fakeBin() {
   const bin = join(dir, "tail-referee");
   writeFileSync(
     bin,
-    `#!/bin/sh\ncat > "$TAIL_LOCAL_REFEREE_DIR/stdin.json"\necho "\${ALLOW_UNATTESTED:-unset}" > "$TAIL_LOCAL_REFEREE_DIR/env.txt"\necho '${JSON.stringify(ANSWER)}'\n`,
+    `#!/bin/sh\ncat > "$TAIL_LOCAL_REFEREE_DIR/stdin.json"\necho "\${ALLOW_UNATTESTED:-unset}" > "$TAIL_LOCAL_REFEREE_DIR/env.txt"\necho "\${NEARAI_API_KEY:-unset} \${NEARAI_MODEL:-unset}" > "$TAIL_LOCAL_REFEREE_DIR/nearai.txt"\necho '${JSON.stringify(ANSWER)}'\n`,
   );
   chmodSync(bin, 0o755);
   return {
@@ -43,6 +43,7 @@ function fakeBin() {
     bin,
     input: () => JSON.parse(readFileSync(join(dir, "stdin.json"), "utf8")) as Record<string, unknown>,
     unattested: () => readFileSync(join(dir, "env.txt"), "utf8").trim(),
+    nearai: () => readFileSync(join(dir, "nearai.txt"), "utf8").trim(),
     done: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
@@ -59,6 +60,25 @@ describe("referee enroll", () => {
       expect(input["attestation"]).toBe(Buffer.from(PHONE.attestation).toString("base64"));
       expect(input["challenge"]).toBe(Buffer.from(PHONE.challenge).toString("base64"));
       expect(f.unattested()).toBe("unset");
+      expect(f.nearai()).toBe("unset unset");
+    } finally {
+      f.done();
+    }
+  });
+
+  test("the local referee gets NEARAI_API_KEY and NEARAI_MODEL when the relay has them, for `voice`", async () => {
+    const f = fakeBin();
+    try {
+      const r = new LocalReferee({
+        bin: f.bin,
+        dir: f.dir,
+        owner: "relay.testnet",
+        allowUnattested: false,
+        nearaiApiKey: "sk-test",
+        nearaiModel: "zai-org/GLM-5",
+      });
+      await r.enroll(PHONE);
+      expect(f.nearai()).toBe("sk-test zai-org/GLM-5");
     } finally {
       f.done();
     }

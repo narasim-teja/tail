@@ -18,6 +18,7 @@ describe("the logger", () => {
     "relayPrivateKey",
     "refereePaymentKey",
     "outlayerPaymentKey",
+    "nearaiApiKey",
     "paymentKey",
     "nearSeed",
     "secretKey",
@@ -29,6 +30,7 @@ describe("the logger", () => {
     "NEAR_RELAY_PRIVATE_KEY",
     "REFEREE_PAYMENT_KEY",
     "OUTLAYER_PAYMENT_KEY",
+    "NEARAI_API_KEY",
   ];
 
   for (const f of fields) {

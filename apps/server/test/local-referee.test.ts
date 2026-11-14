@@ -11,8 +11,8 @@
 // itself leaves referee time to the referee, so the test adds it in the transport.
 //
 // The script: three ghosts enrol unattested, join and start; the hunter strikes too early
-// (refused), asks a NEAR hint with a question (the Handler answers from its template: the local
-// referee has no network), walks to its target and strikes once its signed HUD shows a full lock;
+// (refused), asks a NEAR hint with a question (the Handler answers from its template: the test
+// gives the local referee no NEAR AI key), walks to its target and strikes once its signed HUD shows a full lock;
 // the bystander's batch goes through the mesh (POST /carry) once, and a resend of an old batch
 // is rejected. The match runs to End and is declassified, and the replay must pass the web
 // verifier's checks against what the chain holds.
@@ -370,7 +370,7 @@ describe("a match judged by the real (local) referee", () => {
     // The hint's fact reached the asker's HUD too.
     expect(hunter.huds.some((h) => h.hintFact)).toBe(true);
 
-    // The Handler: a template line (no network, so no model signature), sealed and signed to the
+    // The Handler: a template line (no NEAR AI key, so no model signature), sealed and signed to the
     // asker alone. The answer says nothing else: not the line, not where it came from or why.
     const voiced = answers.filter((a) => a.cmd === "voice").map((a) => a.result);
     expect(voiced).toHaveLength(1);

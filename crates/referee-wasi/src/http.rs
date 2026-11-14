@@ -1,7 +1,7 @@
 //! Minimal HTTPS client for the Handler voice, with a hard deadline. Two backends export the
 //! same functions, chosen by target like `host`:
 //! - `wasi_http` (wasm): raw `wasi:http` inside the enclave.
-//! - `offline` (native): the local test referee, which makes no network calls at all.
+//! - `native`: the local test referee, `ureq` over rustls, making the same calls.
 
 use std::fmt::Write as _;
 
@@ -11,9 +11,9 @@ mod wasi_http;
 pub use wasi_http::*;
 
 #[cfg(not(target_family = "wasm"))]
-mod offline;
+mod native;
 #[cfg(not(target_family = "wasm"))]
-pub use offline::*;
+pub use native::*;
 
 #[derive(Debug)]
 pub struct Response {
@@ -24,10 +24,6 @@ pub struct Response {
 #[derive(Debug)]
 pub enum Error {
     /// The deadline passed before the whole response arrived.
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        expect(dead_code, reason = "the offline backend fails before it could wait")
-    )]
     Timeout,
     Other(String),
 }

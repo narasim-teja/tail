@@ -421,6 +421,12 @@ export interface LocalRefereeOptions {
    * attestation). True only when the relay itself allows ghosts (testnet, ALLOW_GHOSTS=1).
    */
   allowUnattested: boolean;
+  /**
+   * NEARAI_API_KEY and NEARAI_MODEL for `voice`. With a key the referee asks NEAR AI as the
+   * enclave does; without one it speaks its template lines.
+   */
+  nearaiApiKey?: string | undefined;
+  nearaiModel?: string | undefined;
   timeoutMs?: number;
 }
 
@@ -441,6 +447,8 @@ export function localTransport(o: LocalRefereeOptions): RefereeTransport {
         TAIL_LOCAL_REFEREE_DIR: o.dir,
         TAIL_LOCAL_REFEREE_OWNER: o.owner,
         ...(o.allowUnattested ? { ALLOW_UNATTESTED: "1" } : {}),
+        ...(o.nearaiApiKey ? { NEARAI_API_KEY: o.nearaiApiKey } : {}),
+        ...(o.nearaiModel ? { NEARAI_MODEL: o.nearaiModel } : {}),
       },
     });
     proc.stdin.write(JSON.stringify({ cmd, ...input }));

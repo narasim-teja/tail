@@ -23,6 +23,7 @@ const SECRET_KEYS = [
   "relayPrivateKey",
   "refereePaymentKey",
   "outlayerPaymentKey",
+  "nearaiApiKey",
   "nearSeed",
   "near_seed",
   "seed",
@@ -33,6 +34,7 @@ const SECRET_KEYS = [
   "NEAR_RELAY_PRIVATE_KEY",
   "REFEREE_PAYMENT_KEY",
   "OUTLAYER_PAYMENT_KEY",
+  "NEARAI_API_KEY",
   "x-payment-key",
 ];
 

@@ -62,6 +62,10 @@ pub fn author_secret(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
+/// The local test referee may run without NEAR AI (a developer with no key, the tests): the
+/// Handler then speaks its template lines, and the relay says so when it starts.
+pub const NEARAI_KEY_OPTIONAL: bool = true;
+
 /// Always allowed. Locally the process boundary is the trust boundary: only the relay spawns
 /// this binary, and anyone who can spawn it can read its key directory anyway.
 #[expect(clippy::unnecessary_wraps, reason = "same signature as the OutLayer backend")]

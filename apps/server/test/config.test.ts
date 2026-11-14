@@ -61,6 +61,27 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...good, REFEREE_MODE: "enclave" })).toThrow("REFEREE_MODE");
   });
 
+  test("the local referee gets the NEAR AI key and model; only a fact about the key is printed", () => {
+    const nearai = "nearai-test-secret";
+    const local = loadConfig({
+      ...good,
+      REFEREE_MODE: "local",
+      NEARAI_API_KEY: nearai,
+      NEARAI_MODEL: "zai-org/GLM-5",
+    });
+    expect(local.localReferee).toMatchObject({ nearaiApiKey: nearai, nearaiModel: "zai-org/GLM-5" });
+    expect(JSON.stringify(describeConfig(local))).not.toContain(nearai);
+    expect(describeConfig(local).handler).toContain(`present, ${nearai.length} chars`);
+    const keyless = loadConfig({ ...good, REFEREE_MODE: "local" });
+    expect(keyless.localReferee).toMatchObject({ nearaiApiKey: undefined, nearaiModel: undefined });
+    expect(describeConfig(keyless).handler).toContain("NEARAI_API_KEY is not set");
+    expect(() => loadConfig({ ...good, REFEREE_MODE: "local", NEARAI_API_KEY: "your-key-here" })).toThrow(
+      "NEARAI_API_KEY",
+    );
+    // The enclave reads its own author secret row; the relay's copy is not read at all.
+    expect(() => loadConfig({ ...good, NEARAI_API_KEY: "your-key-here" })).not.toThrow();
+  });
+
   test("RELAY_REPLAY_URL is optional and must be an http(s) address the phone can append to", () => {
     expect(loadConfig(good).replayUrl).toBeUndefined();
     expect(loadConfig({ ...good, RELAY_REPLAY_URL: "" }).replayUrl).toBeUndefined();
